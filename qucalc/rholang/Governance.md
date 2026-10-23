@@ -3,7 +3,7 @@
 The `rho:gov:*` system processes and the [`gov.rho`](gov.rho) library port the
 **intent** of rgov's `rholang/core` (Group / Issue / Ballot / delegateVote /
 castVote / tallyVotes) onto the QuCalc substrate — the same capability + ZFA
-machinery as the [proof system](qucalc.rho). This is the RChain side of
+machinery as the [proof system](qucalc.rho). This is the rholo side of
 quantum-os's governance layer.
 
 > **Documentation**: the QuCalc documentation index (overview, mutual benefits,

@@ -1,8 +1,8 @@
-# QuCalc — native AI + group support for RChain
+# QuCalc — native AI + group support for rholo
 
 QuCalc is the Rust-first substrate that brings **native AI** (a deterministic ZFA
 proof system with dialectical synthesis) and **native group support** (liquid
-democracy + liquid trust governance) into the RChain node as *system contracts* —
+democracy + liquid trust governance) into the rholo node as *system contracts* —
 not as external oracles, not as off-chain services.
 
 It has two halves that mirror quantum-os's own split of "signed envelopes + a
@@ -18,9 +18,9 @@ deterministic, joiner-local recomputation":
 
 ## Why this matters — the mutual benefit
 
-### RChain gains native AI
+### rholo gains native AI
 
-`rho:qucalc:*` gives every RChain deploy a *capability-based AI proof primitive*:
+`rho:qucalc:*` gives every rholo deploy a *capability-based AI proof primitive*:
 
 - **`zfa`** — verify a twist history is a half-spin ZFA closure
   (`pauli_closed ∧ count_balanced`), with its scalar phase returned. Exact
@@ -32,7 +32,7 @@ deterministic, joiner-local recomputation":
 - **`fuse`** — dialectical synthesis (Blanket Fusion): thesis ⊕ antithesis through
   a shared middle term collapses to a stable fluxoid, minted as a capability.
 
-### RChain gains group support
+### rholo gains group support
 
 `rho:gov:*` + [`gov.rho`](../../../qucalc/rholang/gov.rho) bring liquid-democracy
 governance natively on-chain — groups, membership-as-capability, transitive
@@ -53,7 +53,7 @@ self-signed. That is the seam along which additional AI systems integrate.
 
 In exchange, [quantum-os](https://github.com/rchain-community/quantum-os) and the
 [Quantum Logical Framework](https://github.com/rchain-community/quantum-logical-framework)
-(both forked into the RChain community org) gain what RChain already provides:
+(both forked into the RChain community org) gain what rholo already provides:
 unforgeable names, a persistent content-addressed registry, consensus and
 replay-determinism, and a gas market for computation.
 
@@ -74,7 +74,7 @@ decision support
 
 | Document | Contents |
 |---|---|
-| [`quantum-to-rho.md`](quantum-to-rho.md) | The justification for quantum operators on RChain, and the precise translation of each quantum operator into the ρ-calculus and rholang. |
+| [`quantum-to-rho.md`](quantum-to-rho.md) | The justification for quantum operators on rholo, and the precise translation of each quantum operator into the ρ-calculus and rholang. |
 | [`multi-stakeholder-governance.md`](multi-stakeholder-governance.md) | The rationale for on-chain multi-stakeholder governance, and how the `rho:gov:*` layer realizes it (adapted from a Google Doc). |
 | [`architecture.md`](architecture.md) | The technical architecture: crate layout, ZFA predicate, dialectical synthesis, governance core, system processes, determinism guarantees. |
 | [`extensions.md`](extensions.md) | How to call the eight system processes: signatures, argument shapes, return values, and worked examples. Start here to use QuCalc from a deploy. |

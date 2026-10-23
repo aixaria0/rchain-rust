@@ -1,6 +1,6 @@
 # QuCalc — upstream references (quantum-os & the Quantum Logical Framework)
 
-QuCalc is the RChain realization of two sibling projects, both now forked into the
+QuCalc is the rholo realization of two sibling projects, both now forked into the
 RChain community org and linked throughout the QuCalc docs:
 
 - [`rchain-community/quantum-os`](https://github.com/rchain-community/quantum-os) — the
@@ -11,7 +11,7 @@ RChain community org and linked throughout the QuCalc docs:
   the machine-verified physics/logic substrate.
 
 This page indexes the documents the QuCalc docs draw on, grouped by the three capabilities
-QuCalc brings to RChain: **native AI**, **agent support**, and **decision support**. Links
+QuCalc brings to rholo: **native AI**, **agent support**, and **decision support**. Links
 point at the `main` branch of the forks.
 
 ## Native AI

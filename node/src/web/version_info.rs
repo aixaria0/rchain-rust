@@ -28,10 +28,10 @@ pub fn node_version() -> String {
     get(env!("CARGO_PKG_VERSION"), GIT_HEAD_COMMIT)
 }
 
-/// `--version`'s string: the package version and the commit, without the `RChain Node` prefix.
+/// `--version`'s string: the package version and the commit, without the `rholo node` prefix.
 ///
 /// clap renders `{command} {version}`, so reusing [`node_version`] here would print
-/// `rchain RChain Node 0.1.0 (…)` and read as a bug. The *commit* is what the two surfaces have to
+/// `rnode rholo node 0.1.0 (…)` and read as a bug. The *commit* is what the two surfaces have to
 /// agree on — it is how a room member ties an attestation to a binary — and they do, because both
 /// read [`GIT_HEAD_COMMIT`].
 pub fn cli_version() -> String {
@@ -41,7 +41,7 @@ pub fn cli_version() -> String {
 /// Format the node version string (port of `VersionInfo.get`).
 pub fn get(version: &str, git_head_commit: Option<&str>) -> String {
     format!(
-        "RChain Node {} ({})",
+        "rholo node {} ({})",
         version,
         git_head_commit.unwrap_or("commit # unknown")
     )
@@ -53,12 +53,12 @@ mod tests {
 
     #[test]
     fn get_formats_with_commit() {
-        assert_eq!(get("1.0.0", Some("abc123")), "RChain Node 1.0.0 (abc123)");
+        assert_eq!(get("1.0.0", Some("abc123")), "rholo node 1.0.0 (abc123)");
     }
 
     #[test]
     fn get_uses_unknown_when_no_commit() {
-        assert_eq!(get("1.0.0", None), "RChain Node 1.0.0 (commit # unknown)");
+        assert_eq!(get("1.0.0", None), "rholo node 1.0.0 (commit # unknown)");
     }
 
     /// **The build script's value is compiled in, and this is the test that fails if it stops
@@ -87,7 +87,7 @@ mod tests {
         );
         assert_eq!(
             node_version(),
-            format!("RChain Node {} ({commit})", env!("CARGO_PKG_VERSION")),
+            format!("rholo node {} ({commit})", env!("CARGO_PKG_VERSION")),
             "the commit must be the string the version reports"
         );
     }

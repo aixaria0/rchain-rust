@@ -1,6 +1,6 @@
-# RChain formal specification (Phase 0)
+# rholo formal specification (Phase 0)
 
-A machine-checked specification of the mathematical invariants that govern the RChain node, written
+A machine-checked specification of the mathematical invariants that govern the rholo node, written
 as a [Lean 4](https://lean-lang.org/) formalization. It is the source of truth the Rust node is
 written against: every law here maps to a Rust property/differential test in later phases.
 

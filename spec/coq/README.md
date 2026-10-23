@@ -1,4 +1,4 @@
-# RChain formal specification — the Coq track
+# rholo formal specification — the Coq track
 
 The Coq formalization, parallel to the Lean 4 track in [`../`](../). Coq is the home of the
 **substitution / α-equivalence / programming-language metatheory** (capture-avoiding de Bruijn

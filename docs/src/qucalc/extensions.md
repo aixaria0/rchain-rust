@@ -1,7 +1,7 @@
 # Using the QuCalc extensions
 
 QuCalc adds eight system processes to the node. They are called exactly like any
-other RChain system process — you `new` the URN into scope, send it your
+other rholo system process — you `new` the URN into scope, send it your
 arguments and a return channel, and receive the answer on that channel.
 
 ```rholang

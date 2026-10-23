@@ -198,7 +198,7 @@ fn add_ports(ports: &[i32], gateway: &dyn GatewayDevice, log: &mut dyn FnMut(Str
     ports
         .iter()
         .map(|p| {
-            let res = add_port(gateway, *p, "TCP", "RChain");
+            let res = add_port(gateway, *p, "TCP", "rholo");
             let msg = if res.is_ok() { "[success]" } else { "[failed]" };
             log(format!("Adding a port mapping for port TCP/{p} {msg}"));
             res.is_ok()
@@ -369,7 +369,7 @@ mod tests {
             external_port: 40400,
             internal_port: 40400,
             internal_client: "192.168.1.5".to_string(),
-            description: "RChain".to_string(),
+            description: "rholo".to_string(),
         };
         let header = show_port_mapping_header();
         assert!(header.contains("Protocol"));
@@ -377,7 +377,7 @@ mod tests {
         let row = show_port_mapping(&m);
         assert!(row.contains("TCP"));
         assert!(row.contains("40400"));
-        assert!(row.contains("RChain"));
+        assert!(row.contains("rholo"));
     }
 
     #[test]
@@ -516,7 +516,7 @@ mod port_forwarding_tests {
             external_port: port,
             internal_port: port,
             internal_client: "192.168.1.2".to_string(),
-            description: "RChain".to_string(),
+            description: "rholo".to_string(),
         }
     }
 
@@ -751,6 +751,6 @@ mod port_forwarding_tests {
         assert!(row.starts_with("TCP"), "{row}");
         assert!(row.contains("40400"), "{row}");
         assert!(row.contains("192.168.1.2"), "{row}");
-        assert!(row.contains("RChain"), "{row}");
+        assert!(row.contains("rholo"), "{row}");
     }
 }

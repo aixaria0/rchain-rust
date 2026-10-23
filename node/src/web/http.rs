@@ -2208,7 +2208,7 @@ mod tests {
     #[tokio::test]
     async fn version_returns_node_version_with_its_build_commit() {
         let v = version().await;
-        assert!(v.starts_with("RChain Node "), "{v}");
+        assert!(v.starts_with("rholo node "), "{v}");
         assert!(
             !v.contains("commit # unknown"),
             "the route must serve the build commit (built outside a git checkout? that is the one \

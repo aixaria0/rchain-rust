@@ -1,4 +1,4 @@
-# RChain
+# rholo
 
 > **Provenance.** This repository was developed through commit `14b8b77` on
 > [`PatrickMockridge/rchain-rust`](https://github.com/PatrickMockridge/rchain-rust) — a fork of
@@ -9,7 +9,7 @@
 > [`MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw`](https://arweave.net/MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw),
 > 22 August 2026 7:15pm.
 
-RChain is a blockchain platform whose smart-contract language — **rholang** — is not a language
+rholo is a blockchain platform whose smart-contract language — **rholang** — is not a language
 grafted onto a ledger, but a *concurrent, reflective process calculus*: the **ρ-calculus**. This book
 is the software's documentation: what rholang is, why it is the way it is, how it runs, and how the
 node that executes it works.

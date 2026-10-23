@@ -1,6 +1,6 @@
 # The laws
 
-RChain's behaviour is pinned by **laws** — one invariant per layer of the system. Each law maps a
+rholo's behaviour is pinned by **laws** — one invariant per layer of the system. Each law maps a
 language or system feature to its formalization: a Lean theorem, a Coq axiom, the executable K rule, and
 the Rust realization. This page is the full set, in the order the register numbers them, with each set
 saying **what it is about**.

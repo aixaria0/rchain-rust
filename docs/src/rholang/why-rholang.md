@@ -32,7 +32,7 @@ bolted on. That single fact has deep consequences:
   self-modifying systems all fall out of the fact that quoting code is primitive.
 
 The ladder continues one more rung: the **Calculus of Constructions** (CoC) is the dependent-type
-system that Lean and Coq implement. RChain embeds the ρ-calculus as the *base sort* of a Calculus of
+system that Lean and Coq implement. rholo embeds the ρ-calculus as the *base sort* of a Calculus of
 Constructions — which is what turns rholang's informal guarantees into **machine-checked theorems**
 (see [Part II](../formal/grammar-sorts.md) and [`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md)).
 

@@ -56,7 +56,7 @@ async fn http_surface_without_genesis() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    assert!(version.contains("RChain Node"), "version = {version}");
+    assert!(version.contains("rholo node"), "version = {version}");
     // A served node names the binary it is, not just its version number: `commit # unknown` is what
     // this route answered before the build script existed, and this string is the one a room member
     // reads to know which reducer produced an attestation (issue #32).
@@ -110,7 +110,7 @@ fn genesis_boot_exposes_block_over_http() {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        assert!(version.contains("RChain Node"), "version = {version}");
+        assert!(version.contains("rholo node"), "version = {version}");
         assert!(
             !version.contains("commit # unknown"),
             "the served version must carry the build commit, got {version}"

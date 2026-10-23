@@ -118,7 +118,7 @@ mod tests {
 
     /// `ARG GIT_HEAD_COMMIT=""` is the shipped Dockerfile's default, so the empty string has to mean
     /// "not provided" — otherwise a plain `docker build` embeds `""` and `/version` reads
-    /// `RChain Node 0.1.0 ()` rather than `commit # unknown`. Also: surrounding whitespace, which any
+    /// `rholo node 0.1.0 ()` rather than `commit # unknown`. Also: surrounding whitespace, which any
     /// `$(git rev-parse HEAD)` piped through a shell can carry.
     #[test]
     fn a_blank_or_whitespace_value_is_no_value() {
