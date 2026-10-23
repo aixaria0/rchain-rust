@@ -1,5 +1,17 @@
 # Running a validator: hardware requirements
 
+## TL;DR
+
+- **Storage- and uptime-bound, not CPU-bound.** The compute is modest; LMDB's synchronous small writes
+  and staying online are what bind.
+- **Minimal (testnet / low traffic):** 2–4 vCPU, 8 GB RAM, 100–250 GB **NVMe SSD**, 10 Mbit+ stable.
+- **Comfortable (mainnet validator):** 8+ vCPU, 16–32 GB RAM, **1 TB+ NVMe SSD**, 100 Mbit+ low-latency.
+- **NVMe SSD for the data dir is the single most important choice.** RAM must cover the restart, not
+  just steady state; start-up replay grows superlinearly with chain height.
+- **Uptime, not horsepower.** An absent validator holds finality back — there is no inactivity leak — so
+  a laptop that sleeps is a fine node and a bad validator.
+- Sizing is an estimate from the code's storage envelope; there is no in-repo production benchmark.
+
 A validator is **storage-bound and uptime-bound**, not CPU-bound. The compute envelope is modest; the
 binding constraints are the synchronous-write storage layer (LMDB) and being online continuously. This
 page gives a grounded sizing estimate derived from the code's storage envelope and execution model —
