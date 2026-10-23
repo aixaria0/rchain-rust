@@ -2308,6 +2308,97 @@ mod tests {
         assert_ne!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// A real handler holds the permit across its await; completion and
+    /// cancellation both return capacity without a waiting request queue.
+    #[tokio::test]
+    async fn in_flight_permit_covers_async_handler_and_releases_on_completion() {
+        use tower::ServiceExt;
+        let budget = InFlightAdmission::new(1);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(std::sync::Mutex::new(Some(entered_tx)));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new()
+            .route(
+                "/slow",
+                get({
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            if let Some(tx) = entered.lock().unwrap().take() {
+                                let _ = tx.send(());
+                            }
+                            release.notified().await;
+                            "done"
+                        }
+                    }
+                }),
+            )
+            .route_layer(middleware::from_fn_with_state(
+                Some(budget.clone()),
+                in_flight_admission,
+            ));
+
+        let running = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    axum::http::Request::builder()
+                        .uri("/slow")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .expect("handler reached")
+            .expect("handler notified");
+        assert_eq!(budget.semaphore.available_permits(), 0);
+        let refused = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/slow")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        release.notify_one();
+        assert_eq!(running.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(budget.semaphore.available_permits(), 1);
+
+        let cancelled = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    axum::http::Request::builder()
+                        .uri("/slow")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while budget.semaphore.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second handler acquired permit");
+        cancelled.abort();
+        let _ = cancelled.await;
+        assert_eq!(budget.semaphore.available_permits(), 1);
+    }
+
     #[tokio::test]
     async fn disabled_admission_does_not_claim_validator_health() {
         use tower::ServiceExt;
