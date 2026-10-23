@@ -1,0 +1,33 @@
+name: Incident 420 offline diagnostics
+
+on:
+  push:
+    branches:
+      - fix/issue420-readonly-incident-evidence
+    paths:
+      - tools/incident-*.py
+      - tests/test_incident_*.py
+      - docs/src/node/incident-420-triage.md
+      - .github/workflows/incident-420-offline.yml
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - tools/incident-*.py
+      - tests/test_incident_*.py
+      - docs/src/node/incident-420-triage.md
+      - .github/workflows/incident-420-offline.yml
+
+permissions:
+  contents: read
+
+jobs:
+  offline-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile bounded diagnostics
+        run: python3 -m py_compile tools/incident-snapshot.py tools/incident-oom-evidence.py tools/incident-root-evidence.py
+      - name: Run offline evidence regressions
+        run: python3 -m unittest discover -s tests -p 'test_incident_*.py' -v
