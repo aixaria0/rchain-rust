@@ -106,3 +106,14 @@ jobs:
 
       - name: Formal gate
         run: tools/check-lean-conformance.sh
+
+      - name: Diagnose the formal step
+        # The step is intermittently SIGTERM'd before it can print its own failure
+        # (issue #417). The sampler and build log are on the runner; print them
+        # where the next reader can see them.
+        if: failure()
+        run: |
+          echo '--- memory ---'; free -m || true
+          echo '--- top processes ---'; ps -eo pid,rss,pcpu,comm --sort=-rss | head -12 || true
+          echo '--- lean build tail ---'; tail -n 120 /tmp/lean-build.log || true
+          echo '--- memory sampler tail ---'; tail -n 200 /tmp/lean-memory.log || true

@@ -53,11 +53,41 @@ ulimit -s 65536 2>/dev/null || true
 # numbering, reference integrity and axiom accounting) only run when the module is elaborated, so
 # *building* it is the check. A `sorry` scan cannot see an `axiom`; this step is what can.
 if command -v lake >/dev/null 2>&1; then
-  if (cd "$SPEC" && timeout 1800 bash -c 'lake build && lake build rchain-corpus && lake build rchain-laws') >/tmp/lean-build.log 2>&1; then
+  : >/tmp/lean-build.log
+  : >/tmp/lean-memory.log
+  # **A memory/RSS sample beside the build.** The formal job is intermittently
+  # SIGTERM'd with no `ok`/`FAIL` line (issue #417). The runner is discarded, so
+  # the workflow's `if: failure()` step tails this file; without it the only
+  # surviving evidence is the step's absence.
+  (
+    while sleep 20; do
+      date -Is >>/tmp/lean-memory.log
+      free -m >>/tmp/lean-memory.log 2>&1 || true
+      ps -eo pid,rss,pcpu,comm --sort=-rss | head -8 >>/tmp/lean-memory.log 2>&1 || true
+      echo >>/tmp/lean-memory.log
+    done
+  ) &
+  sampler=$!
+  printf 'lake build: starting %s\n' "$(date -Is)"
+  # **The register is the memory peak.** `Rchain/Laws.lean` is one 103-row list
+  # whose elaboration is a unification problem (its own comment records the
+  # heartbeats it outgrew). Building it alone leaves that peak unshared with the
+  # rest of the library; the second build then uses the cached module.
+  if (cd "$SPEC" && timeout 1200 lake build Rchain.Laws) >>/tmp/lean-build.log 2>&1; then
+    ok "lake build Rchain.Laws (the register alone)"
+  else
+    fail "lake build Rchain.Laws — see /tmp/lean-build.log (a 124 there is the 1200 s bound above, not a proof error)"
+    tail -n 120 /tmp/lean-build.log || true
+  fi
+  if (cd "$SPEC" && timeout 1800 bash -c 'lake build && lake build rchain-corpus && lake build rchain-laws') >>/tmp/lean-build.log 2>&1; then
     ok "lake build (spec/, library + executables + the law-register checks)"
   else
     fail "lake build (spec/) — see /tmp/lean-build.log (a 124 there is the 1800 s bound above, not a proof error)"
+    tail -n 120 /tmp/lean-build.log || true
   fi
+  kill "$sampler" 2>/dev/null || true
+  wait "$sampler" 2>/dev/null || true
+  printf 'lake build: finished %s\n' "$(date -Is)"
 else
   fail "lake is not installed (elan: https://github.com/leanprover/elan)"
 fi
