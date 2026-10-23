@@ -1,14 +1,14 @@
-# A quantum-resistant rchain-rust: plan and alternatives
+# A quantum-resistant rholo: plan and alternatives
 
 > **This page is a plan, not a description of the code.** Nothing on it is implemented. It is kept in the
 > book at the owner's request, as an exception to the quarantine rule in `AGENTS.md`; every claim about
 > *existing* code cites the file it describes, and every other statement is a proposal.
 
-*Status: plan. Nothing here is implemented. Grounded in `rchain-rust` at `a22b7c2` (`dev`, 2026-10-07). Sizes and
+*Status: plan. Nothing here is implemented. Grounded in `rholo` (then `rchain-rust`) at `a22b7c2` (`dev`, 2026-10-07). Sizes and
 speeds are order-of-magnitude figures from the published parameter sets and common benchmarks; re-measure
 on the node's own hardware before fixing any budget.*
 
-**Tracking issue:** [rchain-community/rchain-rust#274](https://github.com/rchain-community/rchain-rust/issues/274)
+**Tracking issue:** [rhovision-org/rholo#274](https://github.com/rhovision-org/rholo/issues/274)
 (work items and owner; this document holds the alternatives).
 
 ---

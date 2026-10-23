@@ -25,7 +25,7 @@ COPY . .
 #
 # **The build argument exists because the context cannot answer it.** `.dockerignore` excludes `.git/`,
 # so `node/build.rs`'s `git rev-parse HEAD` finds nothing here and the image served
-# `RChain Node 0.1.0 (commit # unknown)` — measured, and the exact question the provenance work
+# `rholo node 0.1.0 (commit # unknown)` — measured, and the exact question the provenance work
 # (issue #32) set out to answer for the artifact that actually ships. `tools/devnet.sh build` passes
 # `--build-arg GIT_HEAD_COMMIT=$(git rev-parse HEAD)`; a plain `docker build` without it keeps the
 # honest `commit # unknown` rather than inventing one.

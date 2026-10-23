@@ -1,8 +1,8 @@
-# QuCalc — native AI + group support for RChain
+# QuCalc — native AI + group support for rholo
 
 QuCalc is the Rust-first substrate that brings **native AI** (a deterministic ZFA
 proof system with dialectical synthesis) and **native group support** (liquid
-democracy + liquid trust governance) into the RChain node as *system contracts* —
+democracy + liquid trust governance) into the rholo node as *system contracts* —
 not as external oracles, not as off-chain services.
 
 It has two halves that mirror quantum-os's own split of "signed envelopes + a
@@ -18,9 +18,9 @@ deterministic, joiner-local recomputation":
 
 ## Why this matters — the mutual benefit
 
-### RChain gains native AI
+### rholo gains native AI
 
-`rho:qucalc:*` gives every RChain deploy a *capability-based AI proof primitive*:
+`rho:qucalc:*` gives every rholo deploy a *capability-based AI proof primitive*:
 
 - **`zfa`** — verify a twist history is a half-spin ZFA closure
   (`pauli_closed ∧ count_balanced`), with its scalar phase returned. Exact
@@ -32,7 +32,7 @@ deterministic, joiner-local recomputation":
 - **`fuse`** — dialectical synthesis (Blanket Fusion): thesis ⊕ antithesis through
   a shared middle term collapses to a stable fluxoid, minted as a capability.
 
-### RChain gains group support
+### rholo gains group support
 
 `rho:gov:*` + [`gov.rho`](../../../qucalc/rholang/gov.rho) bring liquid-democracy
 governance natively on-chain — groups, membership-as-capability, transitive
@@ -51,30 +51,30 @@ unforgeable-identity machinery is model-agnostic — it does not care *which* AI
 produced the proof, only that the proof is ZFA-closed and the envelope is
 self-signed. That is the seam along which additional AI systems integrate.
 
-In exchange, [quantum-os](https://github.com/rchain-community/quantum-os) and the
-[Quantum Logical Framework](https://github.com/rchain-community/quantum-logical-framework)
-(both forked into the RChain community org) gain what RChain already provides:
+In exchange, [quantum-os](https://github.com/rhovision-org/quantum-os) and the
+[Quantum Logical Framework](https://github.com/rhovision-org/quantum-logical-framework)
+(both forked into the Rho Vision org, `rhovision-org`) gain what rholo already provides:
 unforgeable names, a persistent content-addressed registry, consensus and
 replay-determinism, and a gas market for computation.
 
 The concrete **AI / agent / decision-support** documents this integration is built
 on are indexed in [`references.md`](references.md): native AI
-([`AI.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/AI.md),
-[`TheQuantumBrain.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/TheQuantumBrain.md),
-[`DAICE_QLF_Framing.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/DAICE_QLF_Framing.md)),
+([`AI.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/AI.md),
+[`TheQuantumBrain.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/TheQuantumBrain.md),
+[`DAICE_QLF_Framing.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/DAICE_QLF_Framing.md)),
 agent support
-([`Developer_Guide.md`](https://github.com/rchain-community/quantum-os/blob/main/Developer_Guide.md),
-[`MyRoom.md`](https://github.com/rchain-community/quantum-os/blob/main/MyRoom.md)), and
+([`Developer_Guide.md`](https://github.com/rhovision-org/quantum-os/blob/main/Developer_Guide.md),
+[`MyRoom.md`](https://github.com/rhovision-org/quantum-os/blob/main/MyRoom.md)), and
 decision support
-([`Governance.md`](https://github.com/rchain-community/quantum-os/blob/main/Governance.md),
-[`Group_Decisions.md`](https://github.com/rchain-community/quantum-os/blob/main/Group_Decisions.md),
-[`Consensus.md`](https://github.com/rchain-community/quantum-os/blob/main/Consensus.md)).
+([`Governance.md`](https://github.com/rhovision-org/quantum-os/blob/main/Governance.md),
+[`Group_Decisions.md`](https://github.com/rhovision-org/quantum-os/blob/main/Group_Decisions.md),
+[`Consensus.md`](https://github.com/rhovision-org/quantum-os/blob/main/Consensus.md)).
 
 ## Documentation map
 
 | Document | Contents |
 |---|---|
-| [`quantum-to-rho.md`](quantum-to-rho.md) | The justification for quantum operators on RChain, and the precise translation of each quantum operator into the ρ-calculus and rholang. |
+| [`quantum-to-rho.md`](quantum-to-rho.md) | The justification for quantum operators on rholo, and the precise translation of each quantum operator into the ρ-calculus and rholang. |
 | [`multi-stakeholder-governance.md`](multi-stakeholder-governance.md) | The rationale for on-chain multi-stakeholder governance, and how the `rho:gov:*` layer realizes it (adapted from a Google Doc). |
 | [`architecture.md`](architecture.md) | The technical architecture: crate layout, ZFA predicate, dialectical synthesis, governance core, system processes, determinism guarantees. |
 | [`extensions.md`](extensions.md) | How to call the eight system processes: signatures, argument shapes, return values, and worked examples. Start here to use QuCalc from a deploy. |

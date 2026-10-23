@@ -1,4 +1,4 @@
-# RChain in Rust: a language with a theorem, not just a test suite
+# rholo: a language with a theorem, not just a test suite
 
 Rholang's <!-- counts:laws -->79 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
@@ -15,15 +15,16 @@ pause — so a validator runs on a commodity laptop with an NVMe.
 
 This repository was developed through commit `14b8b77` on
 [`PatrickMockridge/rchain-rust`](https://github.com/PatrickMockridge/rchain-rust) — a fork of
-[`rchain/rchain`](https://github.com/rchain/rchain). As of that commit, the repository lives at
-[`rchain-community/rchain-rust`](https://github.com/rchain-community/rchain-rust). A snapshot of the
+[`rchain/rchain`](https://github.com/rchain/rchain). As of that commit, the repository moved to
+`rchain-community/rchain-rust`, renamed on 23 October 2026 to
+[`rhovision-org/rholo`](https://github.com/rhovision-org/rholo). A snapshot of the
 code at that state is timestamped on Arweave — transaction
 [`MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw`](https://arweave.net/MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw),
 22 August 2026 7:15pm.
 
 The node is a Cargo workspace at the top level (one crate per original sbt module); the upstream Scala
 fork is preserved for reference at
-[`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — see
+[`1b7583649`](https://github.com/rhovision-org/rholo/tree/1b7583649/legacy) — see
 [Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
 
 ## Documentation
@@ -309,8 +310,8 @@ see because it walks only the Rust lockfile.
 
 | | |
 |---|---|
-| Last commit carrying `legacy/` | [`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) |
-| Read a file | `https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/<path>` |
+| Last commit carrying `legacy/` | [`1b7583649`](https://github.com/rhovision-org/rholo/tree/1b7583649/legacy) |
+| Read a file | `https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/<path>` |
 | Restore it locally | `git checkout 1b7583649 -- legacy` |
 
 That is the point of recording the revision rather than just deleting the tree: this repository cites
@@ -323,5 +324,5 @@ here and not just in the commit that removed it.
 
 The Rust rewrite is licensed under the [GNU Affero General Public License, version 3](LICENSE)
 (AGPL-3.0). The upstream Scala fork — archived out of the working tree on 2026-09-28 and readable at
-[`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — retains its
-original [Apache License 2.0](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/LICENSE.TXT).
+[`1b7583649`](https://github.com/rhovision-org/rholo/tree/1b7583649/legacy) — retains its
+original [Apache License 2.0](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/LICENSE.TXT).

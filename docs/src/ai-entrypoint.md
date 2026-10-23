@@ -40,7 +40,7 @@ bounded-work, namespace, wire, session and distributed-system rows that follow),
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **<!-- counts:laws -->79 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)),
+rholo's behavior is pinned by **<!-- counts:laws -->79 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)),
 and [The laws](formal/laws.md) is the full set, grouped by layer. They divide into: the calculus rows
 (below), the surface a client writes and a matcher reads (30–43), the native Proof-of-Stake epoch
 (44–47), the fee consequence of a denied deploy (48 — a rule neither tree implements, recorded as an open

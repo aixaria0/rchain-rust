@@ -76,7 +76,7 @@ impl std::str::FromStr for EffectScheduler {
 #[command(
     name = "rnode",
     version = crate::web::version_info::cli_version(),
-    about = "RChain node | gRPC client",
+    about = "rholo node | gRPC client",
     disable_help_flag = true
 )]
 pub struct Options {

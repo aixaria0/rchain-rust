@@ -1,5 +1,5 @@
 [book]
-title = "RChain"
-authors = ["RChain-Rust contributors"]
+title = "rholo"
+authors = ["rholo contributors"]
 language = "en"
 src = "src"

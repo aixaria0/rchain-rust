@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# devnet — a single Docker script for a local RChain network.
+# devnet — a single Docker script for a local rholo network.
 #
 # Two modes, one script:
 #   • devnet  (default) — bonded validators that produce blocks + a funded deployer wallet, for

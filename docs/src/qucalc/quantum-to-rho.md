@@ -1,13 +1,13 @@
 # Quantum operators → the ρ-calculus & rholang
 
 This page answers two questions that come up together: **why** put quantum
-operators into RChain at all, and **how** the quantum objects translate into the
+operators into rholo at all, and **how** the quantum objects translate into the
 ρ-calculus and, concretely, into rholang. It is the bridge document between the
 [overview](README.md) and the [architecture](architecture.md) deep-dive.
 
 ## 1. The justification
 
-RChain's substrate is the **ρ-calculus** — a higher-order process calculus in
+rholo's substrate is the **ρ-calculus** — a higher-order process calculus in
 which *names are quoted processes* and the only primitive interaction is
 communication on unforgeable channels. QuCalc is not a physics demo bolted onto
 the node; it is the ρ-calculus wearing quantum clothes, for three reasons:
@@ -48,7 +48,7 @@ deterministic, and bound to the unforgeable `*deployerId`. There is no external
 AI oracle and no trusted third party — the proof primitive and the governance
 arithmetic run *inside* the node.
 
-Together these give RChain **native AI** (a capability-based proof primitive) and
+Together these give rholo **native AI** (a capability-based proof primitive) and
 **group support** (liquid democracy + liquid trust), on a substrate that is a
 pluggable basis for other AI systems (see the [overview](README.md)).
 

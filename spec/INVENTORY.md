@@ -1,4 +1,4 @@
-# RChain invariant inventory
+# rholo invariant inventory
 
 The catalog of mathematical invariants the Rust rewrite must preserve. Each row links a law to its
 source-of-truth location, its Lean formalization, and its Rust type realization; a human-facing
