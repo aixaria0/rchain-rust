@@ -116,3 +116,24 @@ Input is one JSON object with `pair: {ancestor, descendant}` (full 64-character 
 Output distinguishes invalid/missing reads from empty key sets; compares B/C at the same anchored state; evaluates whether the named key is present/absent; and labels ancestry as `VERIFIED`, `INCOMPLETE_HEADERS` or `NOT_IN_SUPPLIED_CLOSURE`. The output is SHA-256 bound to input. It **does not** claim finalized write loss or OOM causation. Use actual merge-rejection/acceptance provenance and finalized pre-/post-states for attribution.
 
 A same-state B/C agreement can still coexist with a **unanimous regression**; the distinct earlier [#280 witness](https://github.com/rhovision-org/rholo/blob/71c6a513d9785e45c3fbb919125c3314c2d8bf6e/spec/audit/evidence/n280-merge-loses-a-write-results.md) demonstrates why. The other suggested features (capacity preflight, load shedding, peer-degraded signaling, multi-bootstrap failover, structured fringe refusal) require separately scoped changes and isolated acceptance. Do not substitute an unrelated root for an unavailable anchored fringe, do not conflate existing rate-limiting with memory backpressure, and do not use the unreproduced historical 0.25 MiB/block estimate to size the deployed binary.
+
+
+## Disposition of every #420 proposal
+
+| Proposal / concern | Present status | Required gate before claiming it is fixed |
+| --- | --- | --- |
+| Kernel memory exhaustion | **Confirmed on B/C host** by four matched kernel kill records; A/D unknown | Preserve host A/D window, kernel/cgroup records, PIDs/restarts and binary identity; explain any time offset |
+| API timeout and load shedding | API degradation **reported**; causal attribution not isolated | Measure latency, in-flight memory/work, queue limits, accurate 429/503 behavior and recovery under bounded isolated load |
+| Startup memory preflight | **Not implemented** by this diagnostic PR | Specify enforceable minima per topology and workload; default/override behavior and startup refusal tests; do not reuse historical replay-per-block estimate |
+| Term size / deploy budget | Existing API deploy rate limit is **not** a memory budget | Establish measured resource accounting, bounded in-flight capacity and deterministic safe failure; size-only caps cannot substitute for state/merge costs |
+| Peer degraded state / failover | **Design open** | Define authenticated readiness metrics, degraded semantics and compatibility; ensure a host-level failure does not masquerade as four independent failures |
+| Fringe responder silence | Observer no-reply **reported**; source permits no reply for unavailable anchor or missing state | Correlate request ID, peer, requested anchor, block-store outcome and response logs on both ends; never substitute an unrelated root |
+| Multi-bootstrap list | **Design open** | Specify deterministic candidate selection and retry/failover, negative response interoperability, no stale-state substitution, and isolated first-peer-silent test |
+| Finality / tip spread alert | Tip heights differed; **no finalized-fork witness** | Capture timestamped per-node finalized (height, hash, state) progress; distinguish stale snapshots, stalled finality and conflicting finalized states |
+| Append-only Root key loss | 835→845 key discontinuity **reported** on B/C; no authenticated raw JSON in this PR | Independently verify pinned reads, installed contract revision, full 835→845 justification chain, merged accepted/rejected deploy effects and finalized post-state membership |
+| Register-then-read under burst | **Unclassified** | Disposable source-pinned replay of controlled sequential/parallel registers; two independent reads at a matched finalized state; record rejected deploys |
+| 1 GB vs adequate-memory comparison | **Not run** | Isolated two-arm replay of a fixed workload with separate sources of measurement; no live testnet stress |
+| Topology / 50% co-location risk | **Confirmed**: A+D share one host, B+C another, equal 250 stakes | Document 2 × 250 bonded stake in each failure domain; ensure operator sizing/failure-domain acceptance before public workload |
+| Release / testnet changes | **Out of scope** | Separate maintainer authorization for restart, resize, genesis migration, protocol upgrade, or merging this Draft |
+
+This table intentionally separates **observed failure**, **diagnosed mechanism**, **candidate guardrail**, and **tested fix**. The present PR provides evidence tooling, not the proposed runtime changes. Approval of this diagnostics PR would not close #420, authorize a new genesis or warrant a mainnet-readiness claim.
