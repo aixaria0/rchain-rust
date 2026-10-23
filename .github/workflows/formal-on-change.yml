@@ -106,3 +106,24 @@ jobs:
 
       - name: Formal gate
         run: tools/check-lean-conformance.sh
+
+      - name: Diagnose the formal step
+        # The step is intermittently SIGTERM'd before it can print its own failure
+        # (issue #417). The sampler and build log are on the runner; print them
+        # where the next reader can see them.
+        if: failure()
+        run: |
+          echo '--- memory ---'; free -m || true
+          echo '--- top processes ---'; ps -eo pid,rss,pcpu,comm --sort=-rss | head -12 || true
+          echo '--- lean build tail ---'; tail -n 120 /tmp/lean-build.log || true
+          echo '--- memory sampler tail ---'; tail -n 200 /tmp/lean-memory.log || true
+
+      - name: Record the formal gate memory
+        # A passing run also needs the peak and the available memory: #417's
+        # residual is the 14.2 GB isolated peak against the runner's 16 GB.
+        if: always()
+        run: |
+          echo '--- memory after the gate ---'; free -m || true
+          echo '--- peak RSS sample ---'
+          grep -E '^[[:space:]]*[0-9]+[[:space:]]+[0-9]+' /tmp/lean-memory.log 2>/dev/null | sort -k2 -nr | head -3 || true
+          echo '--- sampler tail ---'; tail -n 40 /tmp/lean-memory.log || true
