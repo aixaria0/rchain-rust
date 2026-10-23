@@ -45,6 +45,39 @@ journalctl -k --since '2026-10-23 18:45:00 UTC' --until '2026-10-23 19:45:00 UTC
 
 Repeat the systemctl show query for the actual unit names of the other co-located validators (e.g., rnode-d / rnode-c). Collect per-PID RSS and cgroup memory.current / memory.events if supported, with UTC timestamps; protect validator keys and private deploy credentials. Preserve original logs **before** any reset, host resize, or binary replacement. A restart count or low free RAM is not itself proof of an OOM kill.
 
+## 24 October follow-up: kernel OOM evidence from the B/C host
+
+An authorized read-only inspection of the original Linux kernel journal on the shared B/C physical host found four paired OOM-kill and killed-process records involving rnode:
+
+| UTC on 2026-10-23 | task_memcg service | Victim |
+| --- | --- | --- |
+| 18:37:41 | rnode.service | rnode |
+| 18:46:21 | rnode-c.service | rnode |
+| 18:52:02 | rnode.service | rnode |
+| 22:15:49 | rnode-c.service | rnode |
+
+**Established:** kernel OOM termination occurred on the B/C host, including before the 18:55–19:10 UTC reported API/fringe degradation. This corrects the earlier unverified OOM status for this host only.
+
+**Not established:** whether those terminations were the exclusive cause of API/fringe stalls or any consensus-finality defect; the causal mechanism behind the Root-key observation; kernel OOM on the separate A/D host. Different event windows must not be conflated.
+
+An operator-provided, bounded kernel-journal excerpt (1,644 bytes) was captured privately and pinned to SHA-256 dcc20c578a7e96dff65de68cd22934766dd0732ff0d1db27058ff24bac135e8f. Only sanitized UTC/service/process outcomes appear here; raw lines, process IDs, host credentials and private configuration are **not committed**. This digest identifies bytes but is not independent host attestation.
+
+A later read-only inspection found approximately 18 MB available on B/C at 22:48 UTC with both services running. Current service cgroup memory.events counts were zero; counters observed after restarting services do not negate earlier kernel OOM evidence.
+
+To classify authorized operator-held raw kernel text offline, run:
+
+~~~sh
+sha256sum incident420-hostB-kernel.log
+python3 tools/incident-oom-evidence.py \
+  --journal incident420-hostB-kernel.log \
+  --host-label HostBC \
+  --expect-sha256 REVIEWED_64_CHARACTER_SHA256 \
+  --output incident420-hostB-oom-summary.json
+python3 -m unittest discover -s tests -p 'test_incident_oom_evidence.py'
+~~~
+
+The parser never contacts validators, submits a deploy or embeds raw kernel log lines in the result. It fails closed on malformed and oversized inputs. No matching event in an incomplete supplied log means **not observed**, not no-OOM proof. Host A/D evidence, independently authenticated raw Root reads and a disposable source-pinned replay remain outstanding.
+
 ## Discriminating acceptance gates
 
 1. **Host pressure:** replay the same signed, bounded ~40-deploy workload on an isolated, disposable copy of the exact deployed binary and data/genesis class. Compare measured memory, process exits, API readiness and time to service under low versus sufficient memory. Do not run load against the fragile public testnet.
