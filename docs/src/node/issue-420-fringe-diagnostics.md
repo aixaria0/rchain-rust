@@ -12,10 +12,36 @@ This change **does not modify protocol messages, fork choice, Casper CBC, root s
 - When no reply is sent, the responder logs the peer/anchor refusal. On success, the existing reply path is unchanged.
 - An unknown anchor never silently falls back to an unrelated state root.
 
+## Bounded diagnostic cost
+
+The responder-side fringe log now uses five independent, process-wide monotonic quotas:
+**request receipt, missing anchors/genesis, unreadable fringe metadata, response/send attempts,
+and ancestry diagnostics**. Each class emits at most **eight records per 60-second
+interval**; on the first record in a later interval, a separate aggregate warning reports
+the previous suppressed-record count. At most five such aggregate warnings can accompany
+a new interval. Records are not accumulated in a per-peer map or unbounded queue.
+The quotas are shared by concurrent requests and cover the previously existing
+successful-send and ancestry-walk messages, as well as the new #420 records.
+
+These are diagnostic-output limits, not network admission controls. They do **not** change
+BlockStore/DAG lookups, fail-closed root selection, response construction, wire formats or
+transport behavior. The node does not keep individual peer identifiers for suppressed
+records. A missing individual receipt during a flood is **not proof the request was
+never received**; a positive receive log remains a witness of handler entry.
+An outgoing send log is a **transport-send attempt**, not confirmation that the
+requester received and accepted the response. Summary counts are best-effort process-local
+telemetry, not a complete incident ledger.
+
+Tests cover fixed-window rollover, suppressed-line accounting, concurrent quota sharing
+and independent categories without sleeping. The existing anchored-missing-block regression
+still checks that no unrelated root is served.
+
 ## Acceptance
 
 ~~~sh
 cargo fmt --all -- --check
+cargo test -p rchain-casper --lib fringe_diagnostic_budget
+cargo test -p rchain-casper --lib fringe_diagnostic_categories
 cargo test -p rchain-casper --lib an_anchored_fringe_request_is_answered_with_that_block_and_its_ancestry
 ~~~
 
