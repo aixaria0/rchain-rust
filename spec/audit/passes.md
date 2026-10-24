@@ -284,6 +284,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | Deviation | Oracle location | Reason |
 |---|---|---|
+| **A merge diffs each affected channel once, not once per produce/consume event.** | Archived `legacy/rspace/src/main/scala/coop/rchain/rspace/merger/StateChange.scala:apply` at `1b7583649` maps `producesAffected(...).map(_.channelsHash)` and `consumesAffected(...).map(_.channelsHashes)` to sequences and appends `curVal.added ++ change.added`, so a consume-and-replace is diffed twice and the merged state holds two copies. | Issue #420: the Rust port inherited this; the fix dedupes by channel (`BTreeSet<Blake2b256Hash>`) and channel set (`BTreeSet<Vec<Blake2b256Hash>>`). **Consensus change:** merged state hashes move for any scope containing a consume-and-replace or two continuations on one channel set; `rejectedDeploys` does not move. Pre-launch category A, like #280/C248; every validator must run the fix from the fork point, and the deployed testnet chain is already bagged and cannot be repaired. The live 840->841 replay is owned by #421/#429. AUDIT **C336**, section 140 |
 | LFS bootstrap admission compares the authenticated **node id**, not the mutable endpoint | Archived `legacy/casper/src/main/scala/coop/rchain/casper/engine/NodeSyncing.scala:onFinalizedFringeMessage` at `1b7583649` uses whole-`PeerNode` equality | Issue #386: a configured hostname and the same key announced with an IP or changed port must not prevent sync from starting. The transport already binds the claimed sender id to its client certificate (C115); a different key, or no configured bootstrap, is still refused before the retry target or one-shot latch changes. Refusal is a warning naming both identities. This is bootstrap admission, not a change to block/deploy encodings or replay rules. AUDIT **C334** |
 | An instance-less or unknown-only `Expr` is **refused** with `Malformed("expr_instance")` rather than decoded as `false` | The prior Scala comparison is recorded in section 17; this change does not establish the Scala runtime refusal behavior | Issue #380 requires an unsupported expression to fail rather than become a different value. **Acceptance change from earlier Rust releases:** malformed bytes accepted before are refused now; coordinate validator upgrades and review any historical malformed terms before replay. Recognized variants, explicit false and Nil keep their encodings. Unknown fields accompanying a recognized variant are outside this fix. AUDIT **C333**, section 138 |
 | `New.injections` sorted by key (determinism) | `models/.../rholang/*` | `HashMap` order is non-deterministic in Rust |
@@ -11596,3 +11597,47 @@ startup coverage: the gate's condition and its sentence moved to
 `dev_tax::refuse_a_production_genesis_without_an_address`, which a unit test drives for production
 missing/present and dev-mode omission, leaving the *restart* case to the `dag_set.is_empty()` guard that
 already excludes it and to the node tests that start and restart standalone nodes.
+
+
+## 140. A merge diffs each affected channel once (C336, #420)
+
+The merge's state diff is per **channel** (one trie leaf), but `StateChange::apply` in
+`rspace/src/merger/state_change.rs` collected the affected produces into a `Vec` and appended the
+channel's pre->post diff once per produce event. A consume-and-replace logs two produces on one
+channel — the consumed datum (the `Comm`'s `produces_consumed`) and the produced datum (the `Produce`
+in `produces_linear`) — with different event hashes, so the diff was applied twice and the produced
+datum appeared twice. Minimal falsifier: a block committing `for (@x <- @"s") { @"s"!("b") }` over a
+base holding `"a"` has one value in its own post; before the fix merging it onto that base produced
+`["b","b"]` and equalled neither parent (`base values=1 block post values=1 merged values=2`). The
+consume loop had the same shape: `consumes_affected` is keyed by consume hash, and two different
+continuations sharing one channel set were each diffed.
+
+**The oracle shares the defect.** Archived
+`legacy/rspace/src/main/scala/coop/rchain/rspace/merger/StateChange.scala:apply` at `1b7583649` maps
+`producesAffected(...).map(_.channelsHash)` and `consumesAffected(...).map(_.channelsHashes)` to
+sequences and appends `curVal.added ++ change.added` (lines 59-95). The fix is a deliberate deviation
+from the Scala, not a port correction (section 6).
+
+**Fix.** Both collectors are `BTreeSet`s of the diff key — `BTreeSet<Blake2b256Hash>` for produce
+channels and `BTreeSet<Vec<Blake2b256Hash>>` for channel sets. `Vec::dedup` is insufficient: entries
+arrive in event-hash order, not grouped by channel. The joins map is keyed by the channel set and is
+idempotent.
+
+**Evidence.** Unit: `a_consume_and_replace_diffs_its_channel_once` and
+`two_continuations_on_one_channel_set_are_diffed_once` (`rspace/src/merger/state_change.rs`).
+Integration: `merging_a_tuple_space_rmw_block_duplicates_its_produce` (red on `71c6a513d`, green now),
+`accepted_effects_preserved_across_a_sequential_hot_cell_merge`,
+`accepted_effects_preserved_across_parallel_register_rmws_merge`, and
+`the_live_pre_state_boundary_merge_replays` with the five on-chain terms (SHA-256 pinned). Post-fix the
+820 boundary merge is `equals_parent=Some(0)` with one Root value equal to the deploy block's post; the
+kernel over that pre-state lands all three keys. The `MergeReport` assertions cover kept+rejected =
+conflict chains, `final_scope_rejected_chains == 0` for this conflict-scope fixture,
+`rejections_without_a_conflict` and `unapplied_kept_writes` empty — the block-level `rejectedDeploys`
+field is not used.
+
+**Hard fork.** Merged state hashes move for any scope containing a consume-and-replace or two
+continuations on one channel set; `rejected_deploys` does not move, so the divergence appears as a
+pre-state-hash disagreement. Every validator must run the fix from the fork point; the deployed
+testnet chain is already bagged and cannot be repaired. **Non-claims:** the live 840->841 four-parent
+replay cannot be recomputed from the node API (tuple-space state is not exported) and remains with
+#421/#429 (M5); the devnet/fork-point arm is owed; CI green is not certification, and #420 stays open.

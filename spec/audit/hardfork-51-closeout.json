@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "tracker": "https://github.com/rhovision-org/rholo/issues/51",
-  "source_dev_sha": "93d16d7d865ddade5a47b19dbffa86b954407f05",
+  "source_dev_sha": "d8dd1163168b3c357fc4bccbd1853b820abbcecb",
   "observed_date": "2026-10-24",
   "closure_requested": false,
   "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be landed on dev or deferred with a named decision owner and a one-line reason. Release execution evidence remains separately accountable; a green test run alone is not closure.",

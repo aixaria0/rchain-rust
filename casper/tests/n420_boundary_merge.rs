@@ -52,6 +52,12 @@ const VALIDATORS: [[u8; 65]; 4] = [[3u8; 65], [4u8; 65], [5u8; 65], [6u8; 65]];
 /// The boundary round. `epoch_length = 10`, so 840 is the live boundary and 10 is the fixture's.
 const BOUNDARY: i64 = 10;
 
+/// Drain every value on `@"s"` — the count a contract peek cannot give.
+const DRAIN: &str = r#"new drain in {
+    contract drain(@unit) = { for (@x <- @"s") { @"out"!(x) | drain!(Nil) } }
+    | drain!(Nil)
+}"#;
+
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[0u8; 32])
 }
@@ -165,6 +171,35 @@ fn reply_has(reply: &rchain_casper::runtime_manager::CapturedReply, token: &str)
     format!("{:?}", reply.data).contains(token)
 }
 
+/// Merge one block onto its pre-state — the single-block scope the round-trip property is about.
+async fn merge_single_block(
+    rm: &RuntimeManager,
+    base: Blake2b256Hash,
+    block: &Played,
+) -> rchain_casper::merging::MergeOutcome {
+    let indexes: BTreeMap<BlockHash, std::sync::Arc<BlockIndex>> =
+        BTreeMap::from([(block.hash, std::sync::Arc::new(block.index.clone()))]);
+    let lookup = move |h: BlockHash| {
+        let found = indexes.get(&h).cloned();
+        async move { found.ok_or_else(|| format!("no index for {h:?}")) }
+    };
+    let scope = MergeScope {
+        final_scope: BTreeSet::new(),
+        conflict_scope: BTreeSet::from([block.hash]),
+        ancestry: BTreeMap::new(),
+    };
+    MergeScope::merge(
+        &scope,
+        base,
+        &RejectionsMap::new(),
+        rm.get_history_repo(),
+        &lookup,
+        |_| 0,
+    )
+    .await
+    .expect("the single-block merge")
+}
+
 /// **The falsifier.** A pre-boundary block writes `@"c"!("kept")`; the boundary round has four
 /// blocks on that same pre-state, three empty and one carrying `@"d"!("new")`, all running
 /// `CloseBlock`; the merge of the four is the child's pre-state. The child must contain `@"c"`.
@@ -253,36 +288,54 @@ async fn a_boundary_round_merge_keeps_the_base_states_user_write() {
         "the boundary merge lost a user write that was in the base state every parent executed on"
     );
 
-    // **The ledger property**: if the deploy-carrying block's own write is not in the merged state,
-    // the merge must name the deploy it dropped. A silent loss is the #280/C248 signature.
-    let deploy_sig = vec![0xAAu8; 65];
+    // **The merge accounting, not the block-level `rejectedDeploys` field** — the distinction
+    // Aria drew: the field is the conflict-scope set, not the final-scope ledger. The conflict scope
+    // is four blocks; the deploy block contributes a user chain and a system chain, so the chain
+    // count is at least four.
     let kept_new = reply_has(&merged_new, "new");
+    let r = &outcome.report;
     println!(
-        "merge: equals_parent={:?} deploy_write_present={kept_new} rejected_is_user={} \
+        "merge: equals_parent={:?} deploy_write_present={kept_new} \
          conflict/kept/rejected={}/{}/{} final_scope_rejected={} rejections_without_conflict={} \
          unapplied_kept_writes={} dropped_native_slots={}",
         blocks.iter().position(|b| b.post == outcome.state),
-        outcome.rejected_deploys.contains(&deploy_sig),
-        outcome.report.conflict_chains,
-        outcome.report.kept_chains,
-        outcome.report.rejected_chains,
-        outcome.report.final_scope_rejected_chains,
-        outcome.report.rejections_without_a_conflict.len(),
-        outcome.report.unapplied_kept_writes.len(),
-        outcome.report.dropped_native_slots.len(),
+        r.conflict_chains,
+        r.kept_chains,
+        r.rejected_chains,
+        r.final_scope_rejected_chains,
+        r.rejections_without_a_conflict.len(),
+        r.unapplied_kept_writes.len(),
+        r.dropped_native_slots.len(),
+    );
+    assert_eq!(
+        r.kept_chains + r.rejected_chains,
+        r.conflict_chains,
+        "every conflict-scope chain is either kept or rejected"
+    );
+    assert!(
+        r.conflict_chains >= 4,
+        "four blocks contribute at least one chain each"
+    );
+    assert_eq!(
+        r.final_scope_rejected_chains, 0,
+        "the fixture puts all four blocks in the conflict scope; the final-scope ledger is the control"
+    );
+    assert!(
+        r.rejections_without_a_conflict.is_empty(),
+        "{:?}",
+        r.rejections_without_a_conflict
+    );
+    assert!(
+        r.unapplied_kept_writes.is_empty(),
+        "{:?}",
+        r.unapplied_kept_writes
     );
     if !kept_new {
         assert!(
-            outcome.rejected_deploys.contains(&deploy_sig),
-            "the boundary merge dropped the deploy block's user write and did not name its deploy"
+            r.rejected_chains > 0,
+            "the deploy block's write is absent and the report names no rejection"
         );
     }
-
-    // The report is the ledger #280 promised: the boundary chains contend and the merge says so.
-    assert!(
-        outcome.report.rejected_chains > 0 || outcome.report.final_scope_rejected_chains > 0,
-        "a boundary round with four CloseBlock chains merged with an empty rejection ledger"
-    );
 }
 
 /// **Does a deploy's three parallel register-shaped RMWs serialize under the deployed scheduler?**
@@ -349,22 +402,19 @@ async fn parallel_register_shaped_rmws_leave_a_countable_channel() {
     }
 }
 
-/// **The minimal root cause.** A block whose deploy does a linear consume-and-replace on a channel
-/// (`for (@x <- @"s") { @"s"!("b") }`) commits **one** value on `@"s"`. Merging that block onto its
-/// pre-state — a single-block merge, no boundary, no siblings — duplicates the produced value: the
-/// merged state has **two** copies of `"b"` and equals neither parent. That is the mechanism behind
-/// #420's Root key sets: the Root contract is exactly this shape, so after any merge its state cell
-/// is a two-value bag, and `keys`/`get` (persistent peeks) bind one of the two.
+/// **The minimal root cause, now the regression.** A block whose deploy does a linear
+/// consume-and-replace on a channel (`for (@x <- @"s") { @"s"!("b") }`) commits **one** value on
+/// `@"s"`. Before the fix, merging that block onto its pre-state — a single-block merge, no boundary,
+/// no siblings — duplicated the produced value: the merged state had **two** copies of `"b"` and
+/// equalled neither parent. That is the mechanism behind #420's Root key sets: the Root contract is
+/// exactly this shape, so after any merge its state cell was a two-value bag, and `keys`/`get`
+/// (persistent peeks) bound one of the two. The fix diffs each affected channel once; this test was
+/// red on `71c6a513d` and is the regression now.
 ///
 /// The existing round-trip guard (`a_merged_block_reproduces_its_own_post_state`) uses a **native**
 /// write (`trust`), so it cannot see this. This is the tuple-space counterpart.
-#[ignore = "falsifier: red on 71c6a513d — the merge duplicates a tuple-space produce; enable with the fix"]
 #[tokio::test]
 async fn merging_a_tuple_space_rmw_block_duplicates_its_produce() {
-    const DRAIN: &str = r#"new drain in {
-        contract drain(@unit) = { for (@x <- @"s") { @"out"!(x) | drain!(Nil) } }
-        | drain!(Nil)
-    }"#;
     let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
     let start = seed(&rm).await;
     let base = play(&rm, 0x71, VALIDATORS[0], start, Some(r#"@"s"!("a")"#), &[]).await;
@@ -451,4 +501,136 @@ async fn merging_a_tuple_space_rmw_block_duplicates_its_produce() {
         "the merge duplicated the block's produced value: the block committed one value on `@\"s\"` \
          and the merge produced {merged_count}"
     );
+}
+
+/// **M5 `accepted_effects_preserved`, sequential arm.** One consume-and-replace block, merged onto
+/// its pre-state, must reproduce the block's own post-state: one value carrying the replaced map.
+#[tokio::test]
+async fn accepted_effects_preserved_across_a_sequential_hot_cell_merge() {
+    let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+    let start = seed(&rm).await;
+    let base = play(
+        &rm,
+        0x81,
+        VALIDATORS[0],
+        start,
+        Some(r#"@"s"!({"a": 1})"#),
+        &[],
+    )
+    .await;
+    let rw = play(
+        &rm,
+        0x82,
+        VALIDATORS[1],
+        base.post,
+        Some(r#"for (@m <- @"s") { @"s"!(m.set("b", 2)) }"#),
+        &[],
+    )
+    .await;
+
+    let block_reply = rm
+        .play_exploratory_deploy(DRAIN, &StateHash::new(*rw.post.as_bytes()))
+        .await
+        .expect("drain the block");
+    assert_eq!(
+        block_reply.data.len(),
+        1,
+        "control: the block's own post carries one value"
+    );
+
+    let outcome = merge_single_block(&rm, base.post, &rw).await;
+    let merged_reply = rm
+        .play_exploratory_deploy(DRAIN, &StateHash::new(*outcome.state.as_bytes()))
+        .await
+        .expect("drain the merged state");
+    println!(
+        "sequential hot cell: equals_block_post={} merged_values={}",
+        outcome.state == rw.post,
+        merged_reply.data.len()
+    );
+    assert_eq!(
+        outcome.state, rw.post,
+        "the merge did not reproduce the block's own post-state"
+    );
+    assert_eq!(
+        merged_reply.data, block_reply.data,
+        "the merged hot cell lost or duplicated the accepted effect"
+    );
+    let debug = format!("{:?}", merged_reply.data);
+    assert!(
+        debug.contains("\"a\"") && debug.contains("\"b\""),
+        "the replaced map must carry both keys: {debug}"
+    );
+}
+
+/// **M5 `accepted_effects_preserved`, parallel arm.** Three register-shaped RMWs in one block
+/// serialize to one map; merging that block must preserve that same single value. The existing
+/// control probes both scheduler modes; the deployed default (`dfs`) is the one used here.
+#[tokio::test]
+async fn accepted_effects_preserved_across_parallel_register_rmws_merge() {
+    let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+    let start = seed(&rm).await;
+    let base = play(
+        &rm,
+        0x83,
+        VALIDATORS[2],
+        start,
+        Some(r#"@"s"!({"a": 1})"#),
+        &[],
+    )
+    .await;
+    let rw = play(
+        &rm,
+        0x84,
+        VALIDATORS[3],
+        base.post,
+        Some(
+            r#"for (@m <- @"s") { @"s"!(m.set("b", 2)) } |
+               for (@m <- @"s") { @"s"!(m.set("c", 3)) } |
+               for (@m <- @"s") { @"s"!(m.set("d", 4)) }"#,
+        ),
+        &[],
+    )
+    .await;
+
+    let block_reply = rm
+        .play_exploratory_deploy(DRAIN, &StateHash::new(*rw.post.as_bytes()))
+        .await
+        .expect("drain the block");
+    assert_eq!(
+        block_reply.data.len(),
+        1,
+        "control: the three registers serialize to one value in the block"
+    );
+
+    let outcome = merge_single_block(&rm, base.post, &rw).await;
+    let merged_reply = rm
+        .play_exploratory_deploy(DRAIN, &StateHash::new(*outcome.state.as_bytes()))
+        .await
+        .expect("drain the merged state");
+    println!(
+        "parallel hot cell: equals_block_post={} merged_values={}",
+        outcome.state == rw.post,
+        merged_reply.data.len()
+    );
+    assert_eq!(
+        outcome.state, rw.post,
+        "the merge did not reproduce the block's own post-state"
+    );
+    assert_eq!(
+        merged_reply.data.len(),
+        1,
+        "the merge duplicated or dropped the accepted value"
+    );
+    assert_eq!(
+        merged_reply.data, block_reply.data,
+        "the merged hot cell differs from the block's own"
+    );
+    let debug = format!("{:?}", merged_reply.data);
+    for key in ["a", "b", "c", "d"] {
+        assert!(
+            debug.contains(&format!("\"{key}\"")),
+            "the accepted map must carry `{key}`: {debug}"
+        );
+    }
 }

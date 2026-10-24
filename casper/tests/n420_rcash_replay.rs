@@ -470,9 +470,37 @@ fn the_live_pre_state_boundary_merge_replays() {
             outcome.report.final_scope_rejected_chains,
             outcome.report.dropped_native_slots.len(),
         );
-        // Control: merge the deploy-carrying block alone (no empty siblings). If this also
-        // duplicates the Root value, the defect is the merge of any tuple-space RMW chain; if it
-        // stays single-valued, the boundary siblings are required.
+        // **The merge accounting, not the block-level `rejectedDeploys` field.** The conflict scope
+        // is four blocks; the deploy block contributes a user chain and a system chain.
+        let r = &outcome.report;
+        assert_eq!(
+            r.kept_chains + r.rejected_chains,
+            r.conflict_chains,
+            "every conflict-scope chain is either kept or rejected"
+        );
+        assert!(
+            r.conflict_chains >= 4,
+            "four blocks contribute at least one chain each"
+        );
+        assert_eq!(
+            r.final_scope_rejected_chains, 0,
+            "all four blocks are in the conflict scope here; the final-scope path is the control"
+        );
+        assert!(
+            r.rejections_without_a_conflict.is_empty(),
+            "I1: {:?}",
+            r.rejections_without_a_conflict
+        );
+        assert!(
+            r.unapplied_kept_writes.is_empty(),
+            "I2: {:?}",
+            r.unapplied_kept_writes
+        );
+
+        // Control: merge the deploy-carrying block alone (no empty siblings). Before the fix this
+        // duplicated the Root value too; after it, the single-block merge must reproduce the
+        // block's own post-state.
+
         let one_indexes: BTreeMap<BlockHash, Arc<BlockIndex>> =
             BTreeMap::from([(blocks[0].hash, Arc::new(blocks[0].index.clone()))]);
         let one_lookup = move |h: BlockHash| {
@@ -500,6 +528,11 @@ fn the_live_pre_state_boundary_merge_replays() {
             one_outcome.state == blocks[0].post,
             one_values.len()
         );
+        assert_eq!(
+            one_values.len(),
+            1,
+            "control: the deploy block's own post carries one Root value"
+        );
 
         let pre_keys = keys(&reply(&rm, outcome.state, &keys_term(&uri)).await);
         let pre_values = values_at(&rm, outcome.state, &root_state).await;
@@ -508,7 +541,7 @@ fn the_live_pre_state_boundary_merge_replays() {
             "admin block post rootState values={} | merged pre rootState values={} | values_equal={}",
             admin_post_values.len(),
             pre_values.len(),
-            pre_values.len() == 2 && pre_values[0] == pre_values[1]
+            pre_values == admin_post_values
         );
         println!("merged pre keys: {pre_keys:?}");
         for (i, v) in pre_values.iter().enumerate() {
@@ -559,15 +592,22 @@ fn the_live_pre_state_boundary_merge_replays() {
             bounds_values.len()
         );
 
-        // **The invariant is the bag, not a fixed key set.** The boundary merge leaves more than one
-        // value on the Root state channel while the visible key set looks ordinary. The kernel's
-        // outcome then depends on which values its registers consume: the run without the extra
-        // name-capture send landed only `verifier` (the live set); this run lands all three. Both are
-        // the same defect — a multi-valued cell whose `register`/`keys`/`get` all assume one value.
-        assert!(
-            pre_values.len() >= 2,
-            "the boundary merge produced a single Root value; the live non-monotonicity needs another \
-             explanation. values = {pre_values:?}"
+        // **The invariant is the accepted value, not a bag.** Before the fix the 820 boundary merge
+        // left two identical Root values; the merged pre-state must now carry exactly the value the
+        // deploy-carrying block committed, and the kernel on it must still produce state.
+        assert_eq!(
+            admin_post_values.len(),
+            1,
+            "control: the admin_guard block's own post carries one Root value"
+        );
+        assert_eq!(
+            pre_values, admin_post_values,
+            "the 820 boundary merge did not preserve the accepted chain's Root value: \
+             block post {admin_post_values:?}, merged {pre_values:?}"
+        );
+        assert_eq!(
+            one_values, admin_post_values,
+            "the single-block merge did not preserve the accepted Root value"
         );
         assert!(
             !kernel_values.is_empty(),
