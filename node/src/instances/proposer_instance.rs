@@ -83,7 +83,11 @@ pub const NOT_DUE_RETRY: Duration = Duration::from_millis(
 
 /// Whether a propose outcome is "not due yet", which the node retries on its own.
 fn not_due(result: &(ProposeResult, Option<BlockMessage>)) -> bool {
-    result.1.is_none() && result.0.propose_status == ProposeStatus::NotEnoughNewBlocks
+    result.1.is_none()
+        && matches!(
+            result.0.propose_status,
+            ProposeStatus::NotEnoughNewBlocks | ProposeStatus::AwaitingFinality
+        )
 }
 
 /// Create the proposer stream (port of `ProposerInstance.create`).
@@ -304,6 +308,21 @@ mod tests {
             asks <= 9,
             "the retry stormed: {asks} asks in 300 ms at a 40 ms retry"
         );
+    }
+
+    /// A paced finality obligation must wake even when no remote block, deploy,
+    /// or autopropose timer can trigger the next attempt. The idle control below
+    /// distinguishes this obligation from an empty finalized chain.
+    #[tokio::test]
+    async fn pending_finality_is_retried_without_external_traffic() {
+        let asks = asks_after_one_request(
+            BlockCreatorResult::AwaitingFinality,
+            Duration::from_millis(40),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(asks >= 2, "pending finality lost its wakeup: {asks}");
+        assert!(asks <= 9, "pending finality retry stormed: {asks}");
     }
 
     /// Only "not due" is retried. A proposer with nothing to do stays quiet.

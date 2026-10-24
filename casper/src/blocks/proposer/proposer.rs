@@ -251,6 +251,12 @@ impl Proposer {
         }
 
         match (self.create_block)(&self.validator, source).await? {
+            BlockCreatorResult::AwaitingFinality => Ok((
+                ProposeResult {
+                    propose_status: ProposeStatus::AwaitingFinality,
+                },
+                None,
+            )),
             BlockCreatorResult::NoNewDeploys => Ok((
                 ProposeResult {
                     propose_status: ProposeStatus::NoNewDeploys,
@@ -1291,6 +1297,20 @@ where
             let id = crate::multi_parent_casper::add_deploy(dag, &signed_deploy).await?;
             deploys.push(id);
         }
+    }
+
+    // A suppressed attestation with outstanding work is not an idle proposer.
+    // Without this distinction the stream receives NoNewDeploys and never wakes
+    // the monotonic quiet-finality timer on a no-autopropose network.
+    if deploys.is_empty()
+        && to_slash.is_empty()
+        && !change_epoch
+        && suppress_attestation
+        && !nothing_to_finalize
+        && quorum_reachable
+        && paced
+    {
+        return Ok(BlockCreatorResult::AwaitingFinality);
     }
 
     BlockCreator {
