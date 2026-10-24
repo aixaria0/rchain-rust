@@ -1,5 +1,4 @@
 """Offline falsifiers for the quiet-chain release verdict; no HTTP is allowed."""
-import copy
 import importlib.util
 from pathlib import Path
 import unittest

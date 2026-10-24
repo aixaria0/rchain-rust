@@ -173,8 +173,9 @@ fn create_with_retry(
                 if trigger.swap(false, Ordering::SeqCst) {
                     let (d_tx, d_rx) = oneshot::channel();
                     chan::send(&tx, (ProposeSource::Automatic, d_tx)).await;
-                    // Keep the receiver alive until the re-queued propose completes it.
-                    std::mem::forget(d_rx);
+                    // Automatic proposals have no caller; dropping the receiver
+                    // releases the channel allocation instead of leaking per retry.
+                    drop(d_rx);
                 }
 
                 // A "not due" outcome on a quiet net has nobody left to ask again — see `NOT_DUE_RETRY`.
@@ -186,7 +187,7 @@ fn create_with_retry(
                         retry_pending.store(false, Ordering::SeqCst);
                         let (d_tx, d_rx) = oneshot::channel();
                         chan::send(&tx, (ProposeSource::Automatic, d_tx)).await;
-                        std::mem::forget(d_rx);
+                        drop(d_rx);
                     });
                 }
                 Some(r)
