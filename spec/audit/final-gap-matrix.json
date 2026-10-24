@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "source_dev_sha": "93d16d7d865ddade5a47b19dbffa86b954407f05",
-  "observed_date": "2026-10-21",
+  "source_dev_sha": "d8dd1163168b3c357fc4bccbd1853b820abbcecb",
+  "observed_date": "2026-10-24",
   "tracker": "#51",
   "boundary": "42 overlapping tracker obligations, not 42 defects. Maintainer deferrals are recorded with source links; this matrix grants no release authorization.",
   "items": [
