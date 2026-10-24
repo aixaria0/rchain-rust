@@ -712,6 +712,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5becc2a7cc97cb6fde21807f8effe55c9f8c4c49
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler gdb
@@ -736,7 +738,8 @@ jobs:
               echo "undebugged attempt=$attempt FAIL" | tee -a target/lfs-crash/verdicts.txt
               for core in target/lfs-crash/core.*; do
                 [ -f "$core" ] || continue
-                gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
+                # Rust ignores SIGPIPE; preserve that behavior under gdb while fatal signals still stop.
+              gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
               done
               tail -100 "$log"
               exit 1
@@ -752,7 +755,8 @@ jobs:
           for threads in 1 4; do
             for attempt in 1 2 3; do
               log="target/lfs-crash/threads-$threads-run-$attempt.log"
-              gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$binary" --nocapture --test-threads="$threads" > "$log" 2>&1 || true
+              # Rust ignores SIGPIPE; preserve that behavior under gdb while fatal signals still stop.
+              gdb --batch -ex 'set pagination off' -ex 'handle SIGPIPE nostop noprint pass' -ex run -ex 'thread apply all bt' --args "$binary" --nocapture --test-threads="$threads" > "$log" 2>&1 || true
               if grep -q 'test result: ok. 9 passed; 0 failed' "$log" && ! grep -Eq 'received signal SIG|exited with code' "$log"; then
                 echo "threads=$threads attempt=$attempt PASS" | tee -a target/lfs-crash/verdicts.txt
               else
@@ -788,6 +792,8 @@ jobs:
       RUST_BACKTRACE: full
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5becc2a7cc97cb6fde21807f8effe55c9f8c4c49
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler clang
       - name: Instrument Rust and native restore dependencies
