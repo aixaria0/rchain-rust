@@ -4012,31 +4012,36 @@ def laws : List Law := [
   { number := 72, layer := "Casper",
     statement := "**A completion record brackets every durable effect.** The reset's marker may be \
       written only once *every* effect it brackets has been applied — the DAG rewind, the body purge, \
-      and the runtime's durable root. No reachable state has the record written with an effect missing, \
-      and the boot repair re-applies the whole set from any half-applied state",
+      the runtime's durable root, **and the cleanup of the derived deploy and deployer indexes**. No \
+      reachable state has the record written with an effect missing, and the boot repair re-applies the \
+      whole set from any half-applied state",
     status := .provedModel,
-    declarations := [`Rchain.ResetState, `Rchain.resetStep, `Rchain.resetSystem,
-      `Rchain.a_rewound_record_implies_every_effect_applied],
+    declarations := [`Rchain.ResetState, `Rchain.resetStep, `Rchain.skippedIndexStep,
+      `Rchain.resetSystem, `Rchain.a_rewound_record_implies_every_effect_applied],
     axioms := [],
-    rust := ["casper/src/engine/reset.rs", "rspace/src/history/history_repository.rs"],
+    rust := ["casper/src/engine/reset.rs", "casper/src/dag.rs",
+      "rspace/src/history/history_repository.rs"],
     rustWitness := ["casper/tests/reset.rs:a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker",
       "casper/tests/reset.rs:the_guard_refuses_a_rewinding_whose_anchor_body_is_absent"],
     witness := [`Rchain.an_early_commit_reaches_a_record_that_lies,
+      `Rchain.a_skipped_index_cleanup_reaches_a_record_that_lies,
       `Rchain.a_reset_can_complete],
-    falsifiable := "The port's own order, recording the completion after the rewind and the purge but \
-      before the runtime root. `an_early_commit_reaches_a_record_that_lies` exhibits the state that \
-      order admits — a `rewound` record with the root unmoved — so the law is red on the code as it \
-      stands and `a_reset_can_complete` keeps it from being vacuous.",
-    note := "**Why the record must bracket all three effects.** `rewind_and_purge` writes the marker when \
-      the first two have returned (`casper/src/engine/reset.rs:81`), and the runtime root is written \
-      *afterwards* (`:261-266`), through `HistoryRepository::reset` → `validate_and_set_current_root` \
-      (`rspace/src/history/history_repository.rs:337`), itself a durable write. A crash between the two \
-      leaves the record claiming the stores agree while a third does not, and the boot guard reading \
+    falsifiable := "Two of the port's own orders. `earlyCommitStep` records the completion after the \
+      rewind and the purge but before the runtime root; `skippedIndexStep` records it with the \
+      derived-index effect optional — the early return in `drop_above` when the metadata drop is empty. \
+      Each exhibits a reachable `rewound` record with an effect missing, so the law was red on the code \
+      as it stood, and `a_reset_can_complete` keeps it from being vacuous.",
+    note := "**Why the record must bracket all four effects.** `rewind_and_purge` writes the marker when \
+      the first two have returned (`casper/src/engine/reset.rs:81`), the runtime root is written \
+      *afterwards* through `HistoryRepository::reset` → `validate_and_set_current_root` \
+      (`rspace/src/history/history_repository.rs:337`), and the derived indexes are cleaned by \
+      `BlockDagKeyValueStorage::drop_above` (`casper/src/dag.rs:410`). A crash before any of them \
+      leaves the record claiming the stores agree while one does not, and the boot guard reading \
       `rewound` re-applies nothing (`reset.rs:140-151`). `reset_volatile`'s doc \
-      (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01 and \
-      F-U13-02 (docs/src/spec/failure-hazop.md). The fix is in the tree: the two marker writes moved to \
-      the callers, around all three effects, and the guard's `Rewinding` branch re-establishes the \
-      runtime root — witnessed by the two reset tests named above." },
+      (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01/02 and \
+      **F-U17-11** (docs/src/spec/failure-hazop.md): the root half landed earlier; the index half is \
+      B39, and its rule is that stale rows are derived from the **surviving** block set, not from the \
+      list the current call happened to drop." },
 
   { number := 73, layer := "Casper",
     statement := "**A raised request is not spent until the act commits.** The self-reset's request cell \
