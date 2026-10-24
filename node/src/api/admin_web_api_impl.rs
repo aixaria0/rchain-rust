@@ -8,15 +8,21 @@ use rchain_casper::api::block_api::BlockApi;
 
 use super::admin_web_api::AdminWebApi;
 use super::dto::{BlockApiException, OperatorStatus};
+use crate::resources::ResourceGuard;
 
 /// The admin web API implementation (port of `AdminWebApi.AdminWebApiImpl`).
 pub struct AdminWebApiImpl {
     block_api: Arc<dyn BlockApi>,
+    /// The sampled host-resource snapshot, shared with the public surface (A1).
+    resources: Arc<ResourceGuard>,
 }
 
 impl AdminWebApiImpl {
-    pub fn new(block_api: Arc<dyn BlockApi>) -> Self {
-        AdminWebApiImpl { block_api }
+    pub fn new(block_api: Arc<dyn BlockApi>, resources: Arc<ResourceGuard>) -> Self {
+        AdminWebApiImpl {
+            block_api,
+            resources,
+        }
     }
 }
 
@@ -72,7 +78,7 @@ impl AdminWebApi for AdminWebApiImpl {
         // **Every member shard's health** (W-N10-04), which is what makes a non-primary shard's halt
         // visible: the flat fields above are the primary's, and only this map reaches the others.
         let shards = self.block_api.health_by_shard().await;
-        let core = super::conversion::to_public_status(&status, &caps);
+        let core = super::conversion::to_public_status(&status, &caps, &self.resources.snapshot());
         Ok(super::conversion::to_operator_status(
             core,
             &caps,
@@ -104,6 +110,7 @@ impl AdminWebApi for AdminWebApiImpl {
             // swallowed, and nothing published the count.
             rchain_shared::chan::undelivered_sends(),
             Some(shards),
+            &self.resources.snapshot(),
         ))
     }
 }
@@ -238,7 +245,10 @@ mod tests {
 
     #[tokio::test]
     async fn propose_and_result_delegate_to_block_api() {
-        let api = AdminWebApiImpl::new(Arc::new(StubBlockApi));
+        let api = AdminWebApiImpl::new(
+            Arc::new(StubBlockApi),
+            ResourceGuard::inert(Default::default()),
+        );
         assert_eq!(api.propose().await.unwrap(), "Success! Block created.");
         assert_eq!(
             api.propose_result().await.unwrap(),

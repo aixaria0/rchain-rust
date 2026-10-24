@@ -35,6 +35,7 @@ use super::dto::{
 use super::faucet;
 use super::rho_expr::{rho_expr_to_par, unforg_to_par};
 use super::web_api::WebApi;
+use crate::resources::ResourceGuard;
 use crate::web::transaction::{TransactionApi, TransactionResponse};
 
 /// The web API implementation (port of `WebApi.WebApiImpl`).
@@ -48,6 +49,8 @@ pub struct WebApiImpl {
     faucet_ledger: Arc<Mutex<FaucetLedger>>,
     faucet_ledger_path: Option<PathBuf>,
     recovering_faucet_drips: Mutex<HashSet<String>>,
+    /// The sampled host-resource snapshot, shared with the admin surface (A1).
+    resources: Arc<ResourceGuard>,
 }
 
 impl WebApiImpl {
@@ -56,6 +59,7 @@ impl WebApiImpl {
         transaction_api: Arc<dyn TransactionApi>,
         deployer_key: Option<PrivateKey>,
         shard_id: String,
+        resources: Arc<ResourceGuard>,
     ) -> Self {
         WebApiImpl {
             block_api,
@@ -65,6 +69,7 @@ impl WebApiImpl {
             faucet_ledger: Arc::new(Mutex::new(FaucetLedger::default())),
             faucet_ledger_path: None,
             recovering_faucet_drips: Mutex::new(HashSet::new()),
+            resources,
         }
     }
 
@@ -500,6 +505,7 @@ mod tests {
             Arc::new(StubTransactionApi),
             deployer_key,
             "root".to_string(),
+            ResourceGuard::inert(Default::default()),
         )
     }
 
@@ -1079,7 +1085,7 @@ impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<crate::api::dto::PublicStatus, BlockApiException> {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
-        Ok(to_public_status(&status, &caps))
+        Ok(to_public_status(&status, &caps, &self.resources.snapshot()))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {

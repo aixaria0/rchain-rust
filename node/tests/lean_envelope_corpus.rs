@@ -264,6 +264,8 @@ fn dto_by_name(name: &str) -> Value {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         }),
         // The operator envelope, which is the public one flattened plus its own keys (W-N3-01). Both
         // rows are in the catalog because both are served, and a row that was not would be the
@@ -285,6 +287,8 @@ fn dto_by_name(name: &str) -> Value {
                 propose_on_deploy: false,
                 manual_propose: false,
                 dev_mode: false,
+                degraded: "normal".to_string(),
+                accepts_deploys: true,
             },
             admin_http: false,
             consecutive_self_validation_failures: 0,
@@ -314,6 +318,7 @@ fn dto_by_name(name: &str) -> Value {
             undelivered_sends: 0,
             undelivered_sends_scope: "SinceProcessStart".to_string(),
             shards: None,
+            resources: Default::default(),
         }),
         "NodeCapabilities" => to_json(&NodeCapabilities {
             autopropose: false,

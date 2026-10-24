@@ -17,10 +17,11 @@ use rchain_shared::base16;
 use super::dto::{
     DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
     ExploratoryDeployResponse, FinalityHealthDto, HaltStatusDto, NodeCapabilities, OperatorStatus,
-    PooledDeploy, ProposerHealthDto, PublicStatus, RhoDataResponse, RhoExprWithBlock,
-    ShardHealthDto, SignatureException, SyncStatus, VersionInfo,
+    PooledDeploy, ProposerHealthDto, PublicStatus, ResourceStatusDto, RhoDataResponse,
+    RhoExprWithBlock, ShardHealthDto, SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
+use crate::resources::ResourceSnapshot;
 
 /// **The scope of a counter that is the process's own running total** (W-N10-02). A string on the wire
 /// rather than a boolean, because it names *what* the number counts — a reader comparing it with the
@@ -61,7 +62,11 @@ fn to_shard_health_dto(entry: &ShardHealthEntry) -> ShardHealthDto {
 /// There is no `health`, `finality`, `reset_marker` or reporter argument here. A field added to one of
 /// those cannot appear on the public port because this function could not read it: the leak that a
 /// single struct with two serializers invites is a *compile error* rather than a review miss.
-pub fn to_public_status(status: &Status, caps: &Capabilities) -> PublicStatus {
+pub fn to_public_status(
+    status: &Status,
+    caps: &Capabilities,
+    resource: &ResourceSnapshot,
+) -> PublicStatus {
     PublicStatus {
         version: VersionInfo {
             api: status.version.api.clone(),
@@ -78,6 +83,9 @@ pub fn to_public_status(status: &Status, caps: &Capabilities) -> PublicStatus {
         propose_on_deploy: caps.propose_on_deploy,
         manual_propose: caps.manual_propose,
         dev_mode: caps.dev_mode,
+        degraded: resource.state.to_string(),
+        // Admission is not wired yet (unit B); the field is the contract a pressure state will flip.
+        accepts_deploys: true,
     }
 }
 
@@ -99,6 +107,7 @@ pub fn to_operator_status(
     // **Every member shard's health** (W-N10-04), gathered by the caller from `health_by_shard`. Threaded
     // like `sync` rather than fetched here, so a caller that has no members maps a status deterministically.
     shards: Option<std::collections::BTreeMap<String, ShardHealthEntry>>,
+    resource: &ResourceSnapshot,
 ) -> OperatorStatus {
     OperatorStatus {
         core,
@@ -144,7 +153,29 @@ pub fn to_operator_status(
                 .map(|(k, v)| (k.clone(), to_shard_health_dto(v)))
                 .collect()
         }),
+        resources: ResourceStatusDto {
+            state: resource.state.to_string(),
+            mem_available_mb: resource.mem_available_mb,
+            mem_total_mb: resource.mem_total_mb,
+            cgroup_version: resource.cgroup_version.to_string(),
+            cgroup_limit_mb: resource.cgroup_limit_mb,
+            cgroup_current_mb: resource.cgroup_current_mb,
+            cgroup_oom_kills: resource.cgroup_oom_kills,
+            cpu_quota: resource.cpu_quota,
+            data_dir_free_mb: resource.data_dir_free_mb,
+            rnode_processes: u64::try_from(resource.rnode_processes).unwrap_or(u64::MAX),
+            sampled_at_ms: resource.sampled_at_ms,
+            sample_age_ms: now_ms().saturating_sub(resource.sampled_at_ms),
+            source: resource.source.clone(),
+        },
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// Map a casper `Capabilities` + the faucet availability flag to the app-facing `NodeCapabilities`.
@@ -345,7 +376,7 @@ mod tests {
         // **Two constructors, and which one a field lives on is the subject of the split** (W-N3-01):
         // `to_public_status` cannot see the health, the finality counters or the reporter counts, so a
         // field moved into the operator half by mistake is a compile error rather than a leak.
-        let core = to_public_status(&status, &caps);
+        let core = to_public_status(&status, &caps, &ResourceSnapshot::default());
         let api = to_operator_status(
             core.clone(),
             &caps,
@@ -358,6 +389,7 @@ mod tests {
             40,
             7,
             None,
+            &ResourceSnapshot::default(),
         );
         assert_eq!(core.version.api, "1.0");
         assert_eq!(core.address, "addr");
@@ -463,6 +495,8 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: true,
             dev_mode: false,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         };
         let sync = SyncHealth {
             attempts: 4,
@@ -486,6 +520,7 @@ mod tests {
             0,
             0,
             None,
+            &ResourceSnapshot::default(),
         );
         let s = api.sync.expect("the reading travels");
         assert_eq!(s.attempts, 4);
@@ -526,6 +561,8 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         };
         // The shard's history as a restarted node reads it back: non-zero, and the store answered.
         let finality = FinalityHealth {
@@ -553,6 +590,7 @@ mod tests {
             0,
             0,
             None,
+            &ResourceSnapshot::default(),
         );
         let json = serde_json::to_value(&api).expect("the operator status serializes");
         for (key, want) in [
@@ -598,6 +636,8 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         };
         let caps = Capabilities {
             autopropose: true,
@@ -647,6 +687,7 @@ mod tests {
             0,
             0,
             Some(shards),
+            &ResourceSnapshot::default(),
         );
         // The flat field is the **primary's**, and the primary is healthy.
         assert!(
@@ -696,7 +737,12 @@ mod tests {
             admin_http: true,
             dev_mode: false,
         };
-        let json = serde_json::to_value(to_public_status(&status, &caps)).expect("serializes");
+        let json = serde_json::to_value(to_public_status(
+            &status,
+            &caps,
+            &ResourceSnapshot::default(),
+        ))
+        .expect("serializes");
         let keys: Vec<&str> = json
             .as_object()
             .expect("an object")

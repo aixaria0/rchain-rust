@@ -107,6 +107,7 @@ use crate::configuration::model::NodeConf;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
+use crate::resources::ResourceGuard;
 use crate::runtime::shutdown::{stop_requested, SHUTDOWN_DRAIN_TIMEOUT};
 use crate::web::http::{
     acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
@@ -1238,6 +1239,15 @@ pub async fn setup_node_program(
     // gauges) and by the HTTP server (whose `/metrics` publishes a snapshot of it).
     let metrics = Arc::new(MetricsRegistry::new());
 
+    // The host-resource watchdog (A1). A dedicated thread, started before any store is opened, so the
+    // signal is available to the status surface from the first request and is not carried by the tokio
+    // executor it is meant to protect. It only reads; admission and fallback states arrive later.
+    let resources = ResourceGuard::start(
+        conf.storage.data_dir.clone(),
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|e| format!("resource watchdog: {e}"))?;
+
     // Node-level resources, built once: the validator identity, and the REPL eval runtime (an
     // isolated `eval-*` store set, deliberately chain-independent — port of Scala's `evalStores`).
     let validator_opt: Option<ValidatorIdentity> = conf
@@ -1404,6 +1414,7 @@ pub async fn setup_node_program(
             primary_parts.transaction_api.clone(),
             faucet_deployer_key,
             primary_id.to_string(),
+            resources.clone(),
         )
         .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?,
     );
@@ -1413,7 +1424,8 @@ pub async fn setup_node_program(
         primary_parts.runtime_manager.clone(),
         web_api.clone(),
     ));
-    let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(routing.clone()));
+    let admin_web_api: Arc<dyn AdminWebApi> =
+        Arc::new(AdminWebApiImpl::new(routing.clone(), resources.clone()));
     let grpc_services = GrpcServices::build(
         routing.clone(),
         primary_parts.block_report_api.clone(),
