@@ -764,6 +764,7 @@ async fn api_v1_deploy_status(
 pub const OPENAPI_JSON: &str = r##"{
   "openapi": "3.0.0",
   "info": { "title": "RNode API", "version": "1.0" },
+  "servers": [ { "url": "/api/v1" } ],
   "paths": {
     "/status": {
       "get": {
@@ -857,11 +858,12 @@ pub const OPENAPI_JSON: &str = r##"{
     "/deploy": {
       "post": {
         "summary": "Deploy a signed rholang term",
+        "servers": [ { "url": "/api" }, { "url": "/api/v1" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeployRequest" } } } },
         "responses": {
           "200": { "description": "Deploy accepted", "content": { "application/json": { "schema": { "type": "string" } } } },
           "400": { "description": "Invalid deploy" },
-          "503": { "description": "Opt-in concurrent HTTP admission budget exhausted; Retry-After: 1" }
+          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
@@ -878,20 +880,24 @@ pub const OPENAPI_JSON: &str = r##"{
     "/explore-deploy": {
       "post": {
         "summary": "Run an exploratory deploy",
+        "servers": [ { "url": "/api" }, { "url": "/api/v1" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "string" } } } },
         "responses": {
           "200": { "description": "Result expression", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploratoryDeployResponse" } } } },
-          "400": { "description": "Deploy failed" }
+          "400": { "description": "Deploy failed" },
+          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
     "/explore-deploy-by-block-hash": {
       "post": {
         "summary": "Exploratory deploy at a block hash",
+        "servers": [ { "url": "/api" }, { "url": "/api/v1" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploreDeployRequest" } } } },
         "responses": {
           "200": { "description": "Result expression", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploratoryDeployResponse" } } } },
-          "400": { "description": "Deploy failed" }
+          "400": { "description": "Deploy failed" },
+          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
@@ -953,6 +959,21 @@ pub const OPENAPI_JSON: &str = r##"{
     }
   },
   "components": {
+    "responses": {
+      "HttpAdmissionExhausted": {
+        "description": "Opt-in HTTP concurrent admission budget exhausted before request body decoding",
+        "headers": {
+          "Retry-After": {
+            "description": "Delay in seconds before retry; currently 1",
+            "schema": { "type": "integer", "minimum": 1, "example": 1 }
+          }
+        },
+        "content": { "application/json": {
+          "schema": { "type": "string" },
+          "example": "HTTP in-flight capacity exhausted"
+        } }
+      }
+    },
     "schemas": {
       "VersionInfo": {
         "type": "object",
@@ -2679,6 +2700,112 @@ mod tests {
         assert_eq!(doc["openapi"], "3.0.0");
         assert!(doc["paths"].is_object());
         assert!(doc["components"]["schemas"].is_object());
+    }
+
+    /// The served schema must describe the same refusal on every legacy/v1
+    /// deploy/explore alias that the middleware actually enforces.
+    #[tokio::test]
+    async fn openapi_http_admission_refusal_matches_all_six_live_aliases() {
+        use tower::ServiceExt;
+
+        let doc: serde_json::Value =
+            serde_json::from_str(OPENAPI_JSON).expect("served OpenAPI parses");
+        assert_eq!(doc["servers"], json!([{ "url": "/api/v1" }]));
+        assert!(doc["paths"]["/admission"]["get"]["servers"].is_null());
+
+        let documented = &doc["components"]["responses"]["HttpAdmissionExhausted"];
+        assert!(documented.is_object(), "shared 503 response missing");
+        assert_eq!(
+            documented["headers"]["Retry-After"]["schema"]["type"],
+            "integer"
+        );
+        assert_eq!(documented["headers"]["Retry-After"]["schema"]["example"], 1);
+        assert_eq!(
+            documented["content"]["application/json"]["schema"]["type"],
+            "string"
+        );
+        assert_eq!(
+            documented["content"]["application/json"]["example"],
+            "HTTP in-flight capacity exhausted"
+        );
+
+        let mut s = state();
+        s.deploy_admission = Some(InFlightAdmission::new(1));
+        s.explore_admission = Some(InFlightAdmission::new(1));
+        let _held_deploy = s
+            .deploy_admission
+            .as_ref()
+            .unwrap()
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let _held_explore = s
+            .explore_admission
+            .as_ref()
+            .unwrap()
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        for (logical_path, route) in [
+            ("/deploy", "/api/deploy"),
+            ("/deploy", "/api/v1/deploy"),
+            ("/explore-deploy", "/api/explore-deploy"),
+            ("/explore-deploy", "/api/v1/explore-deploy"),
+            (
+                "/explore-deploy-by-block-hash",
+                "/api/explore-deploy-by-block-hash",
+            ),
+            (
+                "/explore-deploy-by-block-hash",
+                "/api/v1/explore-deploy-by-block-hash",
+            ),
+        ] {
+            let operation = &doc["paths"][logical_path]["post"];
+            assert_eq!(
+                operation["responses"]["503"]["$ref"],
+                "#/components/responses/HttpAdmissionExhausted",
+                "{route} has no documented 503"
+            );
+            let servers = operation["servers"]
+                .as_array()
+                .expect("legacy/v1 aliases must be explicit in operation servers");
+            assert_eq!(
+                servers,
+                &vec![json!({"url": "/api"}), json!({"url": "/api/v1"})]
+            );
+            assert!(
+                servers.iter().any(|server| {
+                    let prefix = server["url"].as_str().unwrap();
+                    format!("{prefix}{logical_path}") == route
+                }),
+                "missing OpenAPI mapping for {route}"
+            );
+
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(route)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{ invalid JSON"))
+                .unwrap();
+            let reply = router(s.clone()).oneshot(request).await.unwrap();
+            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE, "{route}");
+            assert_eq!(
+                reply
+                    .headers()
+                    .get(axum::http::header::RETRY_AFTER)
+                    .unwrap(),
+                "1",
+                "{route}"
+            );
+            let body = to_bytes(reply.into_body(), usize::MAX).await.unwrap();
+            let error_text: String = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error_text, "HTTP in-flight capacity exhausted", "{route}");
+        }
     }
 
     fn status_provider() -> StatusProvider {

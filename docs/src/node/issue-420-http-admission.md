@@ -13,6 +13,8 @@ Both settings are **unset/disabled by default**:
 
 An explicitly malformed, zero or oversized setting fails public HTTP listener startup. No limit is guessed without measured host capacity; an operator must configure and validate it in an isolated environment. Both budgets are separate. Saturation returns HTTP **503**, JSON `"HTTP in-flight capacity exhausted"` and `Retry-After: 1` before body decoding, without queuing. Existing per-peer ingress rate limits still return **429** independently. A permit remains held through the downstream handler future and is released on completion or cancellation.
 
+The served `GET /api/v1/openapi.json` contract explicitly covers **all six** POST deploy/explore legacy and v1 aliases, including the opt-in HTTP `503` response, its JSON error string and the `Retry-After` header. The document uses a `/api/v1` default server; the three admission-controlled operations additionally declare the `/api` legacy server. The `openapi_http_admission_refusal_matches_all_six_live_aliases` regression checks each declared alias against the actual saturated in-process router. This does **not** extend admission control to gRPC.
+
 **Example only on a disposable test node (not production sizing):**
 
 ~~~sh
