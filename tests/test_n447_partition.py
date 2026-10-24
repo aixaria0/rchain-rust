@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "n447-partition.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "n447_partition.py"
 SPEC = importlib.util.spec_from_file_location("n447_partition", SCRIPT)
 partition = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(partition)

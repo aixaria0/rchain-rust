@@ -29,6 +29,8 @@ Usage: tools/n420-fork-point.py [--out DIR] [--timeout 600]
 """
 
 import argparse
+
+from n447_partition import DockerBackend, SplitNetwork
 import base64
 import json
 import os
@@ -173,10 +175,26 @@ def main():
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
 
-    record = {"boundary": "finite devnet witness; no universal safety theorem", "steps": []}
+    record = {
+        "boundary": "finite devnet witness; no universal safety theorem",
+        "result": "INCOMPLETE",
+        "steps": [],
+    }
+
+    def persist():
+        # A failed/disconnected test must leave its actual observations behind.
+        # Write atomically so a terminated run cannot leave malformed JSON.
+        os.makedirs(args.out, exist_ok=True)
+        destination = os.path.join(args.out, "fork-point.json")
+        temporary = destination + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump(record, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, destination)
 
     def step(name, value):
         record["steps"].append({"step": name, "value": value})
+        persist()
         print(f"== {name}: {value}", flush=True)
 
     missing = [c for c in CONTAINERS if docker("inspect", c, check=False).returncode != 0]
@@ -197,51 +215,55 @@ def main():
     height = base["blockNumber"]
     step("base", {"blockNumber": height, "hash": base["blockHash"]})
 
-    # The partition: bootstrap + validator-1 on the network; validator-2 isolated. Each side has its
-    # own DAG and can propose; the deployer is funded on both.
-    for isolated in (CONTAINERS[2], CONTAINERS[3]):
-        docker("network", "disconnect", NETWORK, isolated)
-    step("partition", {"group_a": CONTAINERS[:2], "group_b": CONTAINERS[2:4]})
-
-    # **Distinct channels on purpose.** Two linear produces on one channel are a conflict the merge
-    # resolves by keeping one; the property this arm checks is that two *accepted, non-conflicting*
-    # writers both survive a multi-parent merge.
-    deploy(CONTAINERS[0], r'@"forkA"!("A")', height)
-    deploy(CONTAINERS[2], r'@"forkB"!("B")', height)
-    propose(CONTAINERS[0])
-    propose(CONTAINERS[2])
-
-    deadline = time.time() + args.timeout
-    tip_a = tip_b = None
-    while time.time() < deadline:
-        tip_a = tip(CONTAINERS[0])
-        tip_b = tip(CONTAINERS[2])
-        advanced = (
-            tip_a is not None
-            and tip_b is not None
-            and tip_a["blockNumber"] > height
-            and tip_b["blockNumber"] > height
-            and tip_a["blockNumber"] == tip_b["blockNumber"]
-        )
-        if advanced:
-            break
+    # A 2+2 split requires TWO live internal bridges. Merely disconnecting
+    # validators 2 and 3 from the only bridge also disconnects them from each other.
+    # SplitNetwork audits actual Docker membership and always restores it.
+    with SplitNetwork(DockerBackend(), prefix=PREFIX, main=NETWORK) as topology:
+        step("partition", {
+            "group_a": topology.left,
+            "group_b": topology.right,
+            "networks": topology.require_partition(),
+        })
+        # **Distinct channels on purpose.** Two linear produces on one channel are a conflict the merge
+        # resolves by keeping one; the property this arm checks is that two *accepted, non-conflicting*
+        # writers both survive a multi-parent merge.
+        deploy(CONTAINERS[0], r'@"forkA"!("A")', height)
+        deploy(CONTAINERS[2], r'@"forkB"!("B")', height)
         propose(CONTAINERS[0])
         propose(CONTAINERS[2])
-        time.sleep(2)
-    if tip_a is None or tip_b is None or tip_a["blockNumber"] <= height:
-        raise SystemExit("the partition did not produce a tip on each side; no fork to merge")
-    if tip_a["blockHash"] == tip_b["blockHash"]:
-        raise SystemExit("both sides produced the same block: no fork")
 
-    tips = [tip_a["blockHash"], tip_b["blockHash"]]
-    step(
-        "tips",
-        {"height": tip_a["blockNumber"], "a": tip_a["blockHash"], "b": tip_b["blockHash"]},
-    )
+        deadline = time.time() + args.timeout
+        tip_a = tip_b = None
+        while time.time() < deadline:
+            tip_a = tip(CONTAINERS[0])
+            tip_b = tip(CONTAINERS[2])
+            advanced = (
+                tip_a is not None
+                and tip_b is not None
+                and tip_a["blockNumber"] > height
+                and tip_b["blockNumber"] > height
+                and tip_a["blockNumber"] == tip_b["blockNumber"]
+            )
+            if advanced:
+                break
+            propose(CONTAINERS[0])
+            propose(CONTAINERS[2])
+            time.sleep(2)
+        if (tip_a is None or tip_b is None or tip_a["blockNumber"] <= height
+                or tip_b["blockNumber"] <= height):
+            raise SystemExit("the partition did not produce a tip on each side; no fork to merge")
+        if tip_a["blockHash"] == tip_b["blockHash"]:
+            raise SystemExit("both sides produced the same block: no fork")
+        if tip_a["blockNumber"] != tip_b["blockNumber"]:
+            raise SystemExit("the partition produced unequal tip heights; same-height merge arm unproven")
 
-    for isolated in (CONTAINERS[2], CONTAINERS[3]):
-        docker("network", "connect", NETWORK, isolated)
-    step("healed", True)
+        tips = [tip_a["blockHash"], tip_b["blockHash"]]
+        step(
+            "tips",
+            {"height": tip_a["blockNumber"], "a": tip_a["blockHash"], "b": tip_b["blockHash"]},
+        )
+
+    step("healed", {node: sorted(topology.backend.members(node)) for node in CONTAINERS})
 
     deadline = time.time() + args.timeout
     merge = None
@@ -249,7 +271,20 @@ def main():
         propose(CONTAINERS[0])
         merge = find_merge(CONTAINERS[0], tip_a["blockNumber"], tips, time.time() + 20)
     if merge is None:
-        raise SystemExit("no multi-parent merge appeared; the round/attestation gate may have withheld it")
+        observations = {}
+        for node in CONTAINERS:
+            try:
+                observations[node] = status(node)
+            except Exception as error:
+                observations[node] = {"read_error": f"{type(error).__name__}: {error}"}
+        step("merge_not_observed", {
+            "expected_tips": tips,
+            "per_node_status": observations,
+            "timeout_seconds": args.timeout,
+        })
+        raise SystemExit(
+            "no multi-parent merge appeared; inspect merge_not_observed in fork-point.json"
+        )
     merge_hash = merge["blockHash"]
     step("merge", merge_hash)
 
@@ -298,9 +333,8 @@ def main():
     assert '"A"' in re_expr and '"B"' in re_expr, f"the restarted validator reads differently: {re_expr}"
     step("restart", {"postStateHash": again.get("postStateHash"), "reads": re_expr})
 
-    os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, "fork-point.json"), "w") as handle:
-        json.dump(record, handle, indent=2)
+    record["result"] = "PASS"
+    persist()
     print(f"ok: evidence at {args.out}/fork-point.json")
 
 

@@ -19,6 +19,18 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  partition-topology:
+    name: Two-sided Docker partition topology (offline regressions)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assert isolation, rollback, and negative controls
+        run: python3 -m unittest discover -s tests -p 'test_n447_partition.py' -v
+      - name: Parse the full fork-point harness
+        run: python3 -m py_compile tools/n420-fork-point.py tools/n447_partition.py
+
   quality:
     name: Formatting and lints
     runs-on: ubuntu-24.04

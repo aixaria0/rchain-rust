@@ -127,7 +127,8 @@ def main(argv=None, backend=None):
         "kind": "bounded-two-by-two-topology",
         "boundary": "Docker network membership; not a consensus or finality verdict",
         "validators": scope.nodes,
-        "command": command,
+        "workload_executable": Path(command[0]).name,
+        "workload_argv_count": len(command),
         "started_unix": time.time(),
     }
     result_code = 1
@@ -142,7 +143,12 @@ def main(argv=None, backend=None):
         report["topology_recovered"] = report["restored"] == scope.before
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
-        report["topology_recovered"] = False
+        try:
+            report["restored"] = scope.snapshot()
+            report["topology_recovered"] = bool(scope.before) and report["restored"] == scope.before
+        except Exception as inspect_error:
+            report["restoration_error"] = str(inspect_error)
+            report["topology_recovered"] = False
     finally:
         report["finished_unix"] = time.time()
         dest = Path(args.out)
