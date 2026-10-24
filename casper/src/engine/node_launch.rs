@@ -477,6 +477,32 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         }
     }
 
+    // **The derived-index audit, at every boot** (B39, HAZOP F-U17-11). It is independent of the reset
+    // marker: a store can carry stale rows from a crash on an older build, or from a rewind whose empty
+    // metadata drop skipped the cleanup. The repair is idempotent and derives the stale rows from the
+    // surviving block set. A failure is logged and the node runs — the rows make the proposer skip a
+    // pooled deploy (its replay guard reads the index), which is a defect to repair on the next boot,
+    // not a reason to refuse to serve a chain.
+    let audit_started = std::time::Instant::now();
+    match dag.repair_derived_indexes().await {
+        Ok((0, 0)) => {}
+        Ok((deploy_rows, deployer_rows)) => log.warn(
+            source,
+            &format!(
+                "boot index audit repaired {deploy_rows} deploy-index and {deployer_rows} \
+                 deployer-index row(s) that named a block this DAG does not hold (B39, F-U17-11; {} ms)",
+                audit_started.elapsed().as_millis()
+            ),
+        ),
+        Err(e) => log.warn(
+            source,
+            &format!(
+                "boot index audit could not run: {e}; stale derived-index rows may make the proposer \
+                 skip a pooled deploy until it succeeds"
+            ),
+        ),
+    }
+
     // The synced root is content-addressed, but its params must also be readable by this binary
     // and agree with this node's admission/proposal configuration before it enters Running.
     // Do this on reconnect and local genesis too, so a restart cannot bypass the restore guard.
