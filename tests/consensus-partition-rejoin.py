@@ -18,6 +18,14 @@ class WorkloadDrill(a.Drill):
         # This arm explicitly supplies work; it cannot establish quiet-chain liveness.
         return super().wait(description,condition,drive=True)
 
+    def wait_for_healing(self, description, condition):
+        # Online-partition progress is demonstrated while signed work is being
+        # supplied. Once the victim rejoins, adding Nil deploys on every retry
+        # changes the target faster than it can catch up. Certify retained
+        # finalized identity against a finite, quiescent workload instead.
+        # Preserve the original 150s bound and the strict all-node hash check.
+        return super().wait(description, condition, drive=False)
+
     def finalized_marker_agreement(self, min_height):
         # A stale finalized height and a permanent divergence are different
         # failure classes. Record the gate's own health before every read, and
@@ -153,8 +161,8 @@ def main():
                 record["phase"]="healing"
                 cmd("docker","network","connect","acceptance",victim)
                 target=max(x["height"] for x in identities)
-                recovered=d.wait("all validators agree on finalized height/hash and retain marker after partition healing",
-                                 lambda:d.finalized_marker_agreement(target))
+                recovered=d.wait_for_healing("all validators agree on finalized height/hash and retain marker after partition healing",
+                                            lambda:d.finalized_marker_agreement(target))
                 record["rejoined"]=recovered
                 record["phase"]="retention"
                 d.fixed_snapshots(original["initial_finalized"])

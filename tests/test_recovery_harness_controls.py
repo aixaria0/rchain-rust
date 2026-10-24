@@ -36,6 +36,15 @@ class RejoinAgreementTests(unittest.TestCase):
     def heads(self):
         return [{"node":i,"height":70,"hash":"ab"*32} for i in range(8)]
 
+    def test_healing_wait_does_not_inject_helper_work(self):
+        from unittest.mock import patch
+        run = self.drill(self.heads())
+        with patch.object(m.a.Drill, "wait", return_value="aligned") as wait:
+            self.assertEqual(run.wait_for_healing("rejoin", lambda: True), "aligned")
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.kwargs, {"drive": False})
+        run.drive.assert_not_called()
+
     def test_marker_retention_at_different_heights_is_not_agreement(self):
         heads = self.heads()
         heads[-1]["height"] = 60
@@ -150,7 +159,7 @@ class PartitionFailureEvidenceTests(unittest.TestCase):
             out=Path(directory)
             (out/"result.json").write_text(json.dumps({"initial_finalized":[]}))
             run=Mock(out=out,marker="marker",value=42)
-            run.wait.side_effect=RuntimeError("healing timed out")
+            run.wait_for_healing.side_effect=RuntimeError("healing timed out")
             captures=[]
             def capture(*args):
                 captures.append(run.out.name)
