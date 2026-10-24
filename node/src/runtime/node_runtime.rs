@@ -1713,6 +1713,7 @@ async fn setup_shard_runtime(
         metrics.clone(),
         propose_health.clone(),
         shard_health.clone(),
+        log.as_ref(),
     )
     .await?;
     // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
@@ -2182,6 +2183,7 @@ pub async fn setup_shard(
     metrics: Arc<MetricsRegistry>,
     propose_health: ProposeHealth,
     shard_health: ShardHealth,
+    log: &dyn Log,
 ) -> Result<ShardParts, String> {
     let data_dir = shard_data_dir(&conf.storage.data_dir, index, &spec.shard_id);
     let store_manager = rnode_key_value_store_manager(&data_dir);
@@ -2198,6 +2200,13 @@ pub async fn setup_shard(
         )
         .await?,
     );
+    // **Before the expensive metadata rebuild** (A2): the store's record count is cheap, and the
+    // start-up resource floor is decided here rather than after a replay that a small host cannot
+    // finish. A refusal returns a setup error; an observer's warnings are logged.
+    let chain_blocks = u64::try_from(block_metadata_kv.count().await.map_err(|e| e.to_string())?)
+        .map_err(|_| "the persisted block count does not fit u64".to_string())?;
+    let startup_facts = crate::resources::preflight::gather(&data_dir);
+    crate::resources::preflight::enforce(conf, &startup_facts, chain_blocks, log)?;
     let block_metadata_store = Arc::new(
         BlockMetadataStore::create(block_metadata_kv)
             .await
@@ -2771,6 +2780,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         .expect("setup_shard should assemble");
@@ -2823,6 +2833,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         .expect("primary shard");
@@ -2837,6 +2848,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         .expect("child shard");
@@ -2879,6 +2891,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         {
@@ -3056,6 +3069,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         .expect("first assembly");
@@ -3101,6 +3115,7 @@ mod tests {
             metrics_for_test(),
             ProposeHealth::new(),
             ShardHealth::new(),
+            &rchain_shared::log::NopLog,
         )
         .await
         {

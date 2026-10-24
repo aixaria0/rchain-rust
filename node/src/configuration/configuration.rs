@@ -9,6 +9,7 @@ use super::commandline::config_mapper;
 use super::commandline::options::{Commands, Options};
 use super::hocon::{check_shard_config_exclusivity, node_conf_from_hocon};
 use super::model::NodeConf;
+use crate::resources::policy::StartupEnforcement;
 
 /// A named set of defaults (port of `Configuration.Profile`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +135,7 @@ impl Configuration {
         // with the other operator-facing configuration errors, against the defaults' own `NodeConf`
         // taken above.
         check_inert_config(&node_conf, &defaults_conf)?;
+        check_resource_guard(&node_conf)?;
 
         // AUDIT §6: the Kamon reporter switches. Checked here, where the operator-facing
         // configuration errors already live (`check_shard_config_exclusivity`, the shard quorum
@@ -330,6 +332,28 @@ pub fn check_inert_config(node_conf: &NodeConf, defaults: &NodeConf) -> Result<(
     Ok(())
 }
 
+/// The resource-guard block's own refusals (A2): an unknown enforcement word, a negative floor or a
+/// non-positive data-dir floor is an operator error, not a setting to guess around.
+fn check_resource_guard(node_conf: &NodeConf) -> Result<(), String> {
+    let guard = &node_conf.resource_guard;
+    if StartupEnforcement::parse(&guard.enforce_startup).is_none() {
+        return Err(format!(
+            "resource-guard.enforce-startup must be auto, enforce or warn (got {:?})",
+            guard.enforce_startup
+        ));
+    }
+    if guard.min_available_mb < 0 {
+        return Err(
+            "resource-guard.min-available-mb must be >= 0 (0 = the chain-length policy table)"
+                .to_string(),
+        );
+    }
+    if guard.min_data_dir_free_mb <= 0 {
+        return Err("resource-guard.min-data-dir-free-mb must be greater than 0".to_string());
+    }
+    Ok(())
+}
+
 /// If not in dev mode, strip the deployer private key (port of `Configuration.checkDevMode`).
 /// **The divergence injection refuses to arm outside dev-mode**, and says why.
 ///
@@ -520,7 +544,8 @@ pub fn merge(high: Hocon, low: Hocon) -> Hocon {
 mod tests {
     use super::*;
     use crate::configuration::model::{
-        ApiServer, DevConf, Metrics, PeersDiscovery, ProtocolClient, ProtocolServer, Storage,
+        ApiServer, DevConf, Metrics, PeersDiscovery, ProtocolClient, ProtocolServer,
+        ResourceGuardConf, Storage,
     };
     use rchain_casper::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
     use rchain_comm::peer_node::PeerNode;
@@ -710,6 +735,7 @@ mod tests {
             attest_on_new_blocks: true,
             no_attest_on_new_blocks: false,
             dev_mode: false,
+            resource_guard: ResourceGuardConf::default(),
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),
                 host: None,
@@ -1304,6 +1330,7 @@ mod tests {
             attest_on_new_blocks: true,
             no_attest_on_new_blocks: true,
             dev_mode: true,
+            resource_guard: ResourceGuardConf::default(),
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),
                 host: Some("localhost".to_string()),
@@ -1645,6 +1672,44 @@ mod tests {
             change(&mut changed);
             let err = check_inert_config(&changed, &defaults)
                 .expect_err(&format!("{name} must be refused, not accepted and ignored"));
+            assert!(err.contains(name), "{name} is not named in: {err}");
+        }
+    }
+
+    /// **The resource-guard thresholds are refused at build, not guessed around** (A2). A typo in the
+    /// enforcement word or a nonsensical floor would otherwise reach the preflight and be read as
+    /// "auto" or as a zero floor — the failure this test exists to forbid. The control is the shipped
+    /// default: it must pass, or the three refusals would be green over a broken comparison.
+    #[test]
+    fn resource_guard_thresholds_are_checked_at_build() {
+        let defaults = node_conf_from_hocon(&parse_defaults("/var/lib/rnode").expect("defaults"))
+            .expect("defaults parse");
+        check_resource_guard(&defaults).expect("the shipped resource-guard block is not refused");
+
+        for (name, change) in [
+            (
+                "resource-guard.enforce-startup",
+                Box::new(|c: &mut NodeConf| {
+                    c.resource_guard.enforce_startup = "sometimes".to_string();
+                }) as Box<dyn Fn(&mut NodeConf)>,
+            ),
+            (
+                "resource-guard.min-available-mb",
+                Box::new(|c: &mut NodeConf| {
+                    c.resource_guard.min_available_mb = -1;
+                }),
+            ),
+            (
+                "resource-guard.min-data-dir-free-mb",
+                Box::new(|c: &mut NodeConf| {
+                    c.resource_guard.min_data_dir_free_mb = 0;
+                }),
+            ),
+        ] {
+            let mut changed = defaults.clone();
+            change(&mut changed);
+            let err = check_resource_guard(&changed)
+                .expect_err(&format!("{name} must be refused, not guessed around"));
             assert!(err.contains(name), "{name} is not named in: {err}");
         }
     }

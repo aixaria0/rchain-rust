@@ -33,7 +33,33 @@ pub struct NodeConf {
     pub metrics: Metrics,
     pub dev_mode: bool,
     pub dev: DevConf,
+    /// The start-up resource preflight and its explicit override (resource-safety unit A2).
+    pub resource_guard: ResourceGuardConf,
     pub default_data_dir: String,
+}
+
+/// The start-up resource policy an operator can adjust. The chain-length floor itself is a policy
+/// table in `node/src/resources/policy.rs`, not a config value; `min-available-mb = 0` selects it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceGuardConf {
+    /// `auto` = validators enforce, observers warn; `enforce` / `warn` override by role.
+    pub enforce_startup: String,
+    /// Start below the policy floor; explicit and logged.
+    pub allow_under_minimum: bool,
+    /// 0 = use the chain-length policy table.
+    pub min_available_mb: i64,
+    pub min_data_dir_free_mb: i64,
+}
+
+impl Default for ResourceGuardConf {
+    fn default() -> Self {
+        ResourceGuardConf {
+            enforce_startup: "auto".to_string(),
+            allow_under_minimum: false,
+            min_available_mb: 0,
+            min_data_dir_free_mb: 1024,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

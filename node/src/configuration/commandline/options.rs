@@ -300,6 +300,11 @@ pub struct Run {
     #[arg(long = "no-attest-on-new-blocks")]
     pub no_attest_on_new_blocks: bool,
 
+    /// Start below the resource-guard floor. Explicit and logged; the chain-length floor is a policy
+    /// table, and this flag is the operator's acceptance of starting under it.
+    #[arg(long = "allow-under-minimum")]
+    pub allow_under_minimum: bool,
+
     /// Disable UPnP.
     #[arg(long = "no-upnp")]
     pub no_upnp: bool,
