@@ -736,7 +736,8 @@ jobs:
               echo "undebugged attempt=$attempt FAIL" | tee -a target/lfs-crash/verdicts.txt
               for core in target/lfs-crash/core.*; do
                 [ -f "$core" ] || continue
-                gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
+                # Rust ignores SIGPIPE; preserve that behavior under gdb while fatal signals still stop.
+              gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
               done
               tail -100 "$log"
               exit 1
@@ -752,7 +753,8 @@ jobs:
           for threads in 1 4; do
             for attempt in 1 2 3; do
               log="target/lfs-crash/threads-$threads-run-$attempt.log"
-              gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$binary" --nocapture --test-threads="$threads" > "$log" 2>&1 || true
+              # Rust ignores SIGPIPE; preserve that behavior under gdb while fatal signals still stop.
+              gdb --batch -ex 'set pagination off' -ex 'handle SIGPIPE nostop noprint pass' -ex run -ex 'thread apply all bt' --args "$binary" --nocapture --test-threads="$threads" > "$log" 2>&1 || true
               if grep -q 'test result: ok. 9 passed; 0 failed' "$log" && ! grep -Eq 'received signal SIG|exited with code' "$log"; then
                 echo "threads=$threads attempt=$attempt PASS" | tee -a target/lfs-crash/verdicts.txt
               else
