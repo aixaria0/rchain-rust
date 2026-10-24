@@ -180,11 +180,13 @@ async fn get_block_unsafe(
 ///
 /// A final-scope block whose metadata names no fringe contributes no entry, and `merge` reads that as
 /// "not rejected" (its `_ => false`), which is what the store's absent record meant too.
-async fn final_scope_rejections(
+#[doc(hidden)]
+pub async fn final_scope_rejections(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
     child_map: &BTreeMap<BlockHash, BTreeSet<BlockHash>>,
     final_scope: &BTreeSet<BlockHash>,
+    causal_past: &BTreeSet<BlockHash>,
 ) -> Result<RejectionsMap, String> {
     if final_scope.is_empty() {
         return Ok(RejectionsMap::new());
@@ -207,6 +209,11 @@ async fn final_scope_rejections(
     let mut finalisers_of: BTreeMap<Blake2b256Hash, Vec<BTreeSet<Vec<u8>>>> = BTreeMap::new();
     for m in final_scope {
         for child in child_map.get(m).into_iter().flatten() {
+            // A later or concurrent finaliser is not an input to these parents.
+            // Reading it changes a historical block's rejection set on replay.
+            if !causal_past.contains(child) {
+                continue;
+            }
             // As above: an unreadable store is an error rather than an absent child.
             let Some(meta) = dag.lookup(child).await? else {
                 continue;
@@ -274,6 +281,13 @@ where
                 .ok_or_else(|| format!("parent not in message map: {}", h.to_hex()))
         })
         .collect::<Result<_, String>>()?;
+
+    // The closed causal view of these parents. Global child_map may already
+    // contain later blocks when a node replays this exact parent set.
+    let causal_past: BTreeSet<BlockHash> = parents
+        .iter()
+        .flat_map(|m| m.seen.iter().copied().chain(std::iter::once(m.id)))
+        .collect();
 
     // Currently finalized fringe.
     let prev_fringe = message_map::latest_fringe(msg_map, &parents);
@@ -450,9 +464,14 @@ where
                 ),
                 None => prev_fringe_state,
             };
-            let rejections =
-                final_scope_rejections(dag, block_store, &dag_repr.child_map, &m_scope.final_scope)
-                    .await?;
+            let rejections = final_scope_rejections(
+                dag,
+                block_store,
+                &dag_repr.child_map,
+                &m_scope.final_scope,
+                &causal_past,
+            )
+            .await?;
             let result = MergeScope::merge(
                 &m_scope,
                 base_state,
@@ -511,9 +530,14 @@ where
             ),
             None => fringe_state,
         };
-        let rejections =
-            final_scope_rejections(dag, block_store, &dag_repr.child_map, &m_scope.final_scope)
-                .await?;
+        let rejections = final_scope_rejections(
+            dag,
+            block_store,
+            &dag_repr.child_map,
+            &m_scope.final_scope,
+            &causal_past,
+        )
+        .await?;
         MergeScope::merge(
             &m_scope,
             base_state,

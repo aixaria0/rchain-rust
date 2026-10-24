@@ -320,11 +320,46 @@ jobs:
           required_test -p rchain-casper --lib round_escape
           required_test -p rchain-casper --lib quiet_chain_tests
           required_test -p rchain-casper --lib attestation_suppression_tests
+          required_test -p rchain-casper --test merge_determinism
           required_test -p rchain-casper --test committed_bounds
           required_test -p rchain-rholang --lib params_
           required_test -p rchain-rholang --lib an_unknown_params_format_is_refused
           required_test -p rchain-rholang --lib funding_the_pot
           required_test -p rchain-rholang --lib pot_funding_overflow
+      - name: Reintroduced quiet-wakeup and rejection-view faults must fail
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap
+          cp node/src/instances/proposer_instance.rs /tmp/proposer-instance-original.rs
+          cp casper/src/multi_parent_casper.rs /tmp/parent-merge-original.rs
+          trap 'cp /tmp/proposer-instance-original.rs node/src/instances/proposer_instance.rs; cp /tmp/parent-merge-original.rs casper/src/multi_parent_casper.rs' EXIT
+          python3 - <<'PYCONTROL'
+          from pathlib import Path
+          p=Path("node/src/instances/proposer_instance.rs")
+          s=p.read_text(); old="ProposeStatus::NotEnoughNewBlocks | ProposeStatus::AwaitingFinality"
+          assert s.count(old)==1
+          p.write_text(s.replace(old,"ProposeStatus::NotEnoughNewBlocks"))
+          PYCONTROL
+          if cargo test --locked -p rchain-node --lib pending_finality_is_retried_without_external_traffic > target/final-gap/quiet-wakeup-negative.log 2>&1; then
+            echo "Missing wakeup was not detected"
+            exit 1
+          fi
+          grep -q 'pending finality lost its wakeup' target/final-gap/quiet-wakeup-negative.log
+          cp /tmp/proposer-instance-original.rs node/src/instances/proposer_instance.rs
+          python3 - <<'PYCONTROL'
+          from pathlib import Path
+          p=Path("casper/src/multi_parent_casper.rs")
+          s=p.read_text(); old="if !causal_past.contains(child)"
+          assert s.count(old)==1
+          p.write_text(s.replace(old,"if false && !causal_past.contains(child)"))
+          PYCONTROL
+          if cargo test --locked -p rchain-casper --test merge_determinism later_finalisers_cannot_change_a_parents_rejection_input > target/final-gap/rejection-view-negative.log 2>&1; then
+            echo "Out-of-view rejection input was not detected"
+            exit 1
+          fi
+          grep -q "an out-of-view finaliser changed the parents' rejection set" target/final-gap/rejection-view-negative.log
+          echo "REINTRODUCED_QUIET_AND_REJECTION_VIEW_FAULTS_DETECTED"
       - name: Reintroduced send-only fault must fail the reply regression
         shell: bash
         run: |
