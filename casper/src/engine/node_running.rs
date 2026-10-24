@@ -1473,7 +1473,11 @@ mod tests {
             }));
         }
         barrier.wait();
-        let granted = handles.into_iter().filter(|h| h.join().unwrap()).count();
+        let granted = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("fringe budget worker panicked"))
+            .filter(|admitted| *admitted)
+            .count();
         assert_eq!(granted as u64, FRINGE_LOGS_PER_MINUTE);
         assert_eq!(budget.admit_at(2), Some(24 - FRINGE_LOGS_PER_MINUTE));
     }
