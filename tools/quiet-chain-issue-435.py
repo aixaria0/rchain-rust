@@ -258,6 +258,18 @@ def complete_finalized_observation(observations, operators, survivors):
     return len(identities) == 1
 
 
+def capture_causal_evidence(args):
+    """Capture admitted block preimages after measurement; never alter its verdict."""
+    from types import SimpleNamespace
+    trace_spec = importlib.util.spec_from_file_location("quiet_causal_trace", ROOT / "tools/consensus-causal-trace.py")
+    trace = importlib.util.module_from_spec(trace_spec)
+    trace_spec.loader.exec_module(trace)
+    def get(i, path, body=None, admin=False):
+        return call((40405 if admin else 40403) + 1000*i, path, body)
+    os.environ["ACCEPTANCE_ARTIFACTS"] = "1"
+    trace.capture(SimpleNamespace(out=Path(args.out), args=args), get, node)
+
+
 def versions_shard(args):
     return os.environ.get("DEVNET_SHARD_ID", "/root")
 
@@ -292,6 +304,12 @@ def main():
                 "window": args.window,
             }, indent=2, sort_keys=True) + "\n")
         raise
+    finally:
+        try:
+            capture_causal_evidence(args)
+        except Exception as error:
+            record(out / "observations.jsonl", phase="causal_capture_error", error=repr(error))
+            print("CAUSAL_CAPTURE_ERROR " + repr(error), flush=True)
 
 if __name__ == "__main__":
     main()
