@@ -45,6 +45,89 @@ class KernelOomTests(unittest.TestCase):
         data = oom.summarize(raw, "HostBC")
         self.assertEqual(len(data["kernel_oom_kill_events"]), 1)
 
+    def test_a_d_host_secondary_rnode_d_unit(self):
+        example = (
+            b"2026-10-23T19:09:10+0000 host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode.service,task=rnode,pid=101\n"
+            b"2026-10-23T19:09:10+0000 host kernel: "
+            b"Out of memory: Killed process 101 (rnode) total-vm:20\n"
+            b"2026-10-23T22:54:26+0000 host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode,pid=202\n"
+            b"2026-10-23T22:54:26+0000 host kernel: "
+            b"Out of memory: Killed process 202 (rnode) total-vm:20\n"
+        )
+        result = oom.summarize(example, "HostAD")
+        self.assertEqual(
+            [x["service"] for x in result["kernel_oom_kill_events"]],
+            ["rnode.service", "rnode-d.service"],
+        )
+        self.assertTrue(all(x["match_basis"] == "PID_AND_TIMESTAMP"
+                            for x in result["kernel_oom_kill_events"]))
+        self.assertNotIn("\"pid\"", json.dumps(result))
+        self.assertFalse(result["host_source_authenticated"])
+
+    def test_pid_mismatch_is_not_correlated_by_nearby_timestamp(self):
+        raw = (
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode,pid=200\n"
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"Out of memory: Killed process 201 (rnode) total-vm:20\n"
+        )
+        self.assertEqual(oom.summarize(raw, "HostAD")["kernel_oom_kill_events"], [])
+
+    def test_single_kill_cannot_be_claimed_by_two_validator_units(self):
+        raw = (
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode.service,task=rnode\n"
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode\n"
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"Out of memory: Killed process 201 (rnode) total-vm:20\n"
+        )
+        packet = oom.summarize(raw, "HostAD")
+        self.assertEqual(packet["kernel_oom_kill_events"], [])
+        self.assertEqual(packet["status"], "AMBIGUOUS_OOM_PAIRING_IN_SUPPLIED_WINDOW")
+        self.assertEqual(packet["ambiguous_pairing_signals"], 2)
+
+    def test_two_nearby_victims_without_pid_in_signal_are_ambiguous(self):
+        raw = (
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode\n"
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"Out of memory: Killed process 201 (rnode) total-vm:20\n"
+            b"2026-10-23T18:00:01Z host kernel: "
+            b"Out of memory: Killed process 202 (rnode) total-vm:20\n"
+        )
+        packet = oom.summarize(raw, "HostAD")
+        self.assertEqual(packet["kernel_oom_kill_events"], [])
+        self.assertEqual(packet["status"], "AMBIGUOUS_OOM_PAIRING_IN_SUPPLIED_WINDOW")
+        self.assertEqual(packet["ambiguous_pairing_signals"], 1)
+
+    def test_pid_disambiguates_two_nearby_victims(self):
+        raw = (
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode,pid=202\n"
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"Out of memory: Killed process 201 (rnode) total-vm:20\n"
+            b"2026-10-23T18:00:01Z host kernel: "
+            b"Out of memory: Killed process 202 (rnode) total-vm:20\n"
+        )
+        events = oom.summarize(raw, "HostAD")["kernel_oom_kill_events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["service"], "rnode-d.service")
+        self.assertEqual(events[0]["match_basis"], "PID_AND_TIMESTAMP")
+
+    def test_unambiguous_timestamp_pair_when_kernel_omits_task_pid(self):
+        raw = (
+            b"2026-10-23T18:00:00Z host kernel: "
+            b"oom-kill:task_memcg=/system.slice/rnode-d.service,task=rnode\n"
+            b"2026-10-23T18:00:01Z host kernel: "
+            b"Out of memory: Killed process 201 (rnode) total-vm:20\n"
+        )
+        events = oom.summarize(raw, "HostAD")["kernel_oom_kill_events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["match_basis"], "UNAMBIGUOUS_TIMESTAMP")
+
     def test_source_digest_exact_byte_binding(self):
         digest = hashlib.sha256(EXAMPLE).hexdigest()
         data = oom.summarize(EXAMPLE, "HostBC", digest)
@@ -60,6 +143,10 @@ class KernelOomTests(unittest.TestCase):
     def test_utf8_requirement(self):
         with self.assertRaises(oom.EvidenceError):
             oom.summarize(b"\xff", "HostBC")
+
+    def test_direct_summary_refuses_oversized_payload(self):
+        with self.assertRaises(oom.EvidenceError):
+            oom.summarize(b"x" * (oom.MAX_BYTES + 1), "HostAD")
 
     def test_bounded_source_read(self):
         with tempfile.TemporaryDirectory() as folder:

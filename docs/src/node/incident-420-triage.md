@@ -76,7 +76,7 @@ python3 tools/incident-oom-evidence.py \
 python3 -m unittest discover -s tests -p 'test_incident_oom_evidence.py'
 ~~~
 
-The parser never contacts validators, submits a deploy or embeds raw kernel log lines in the result. It fails closed on malformed and oversized inputs. No matching event in an incomplete supplied log means **not observed**, not no-OOM proof. Host A/D evidence, independently authenticated raw Root reads and a disposable source-pinned replay remain outstanding.
+The parser never contacts validators, submits a deploy or embeds raw kernel log lines in the result. It fails closed on malformed and oversized inputs. No matching event in an incomplete supplied log means **not observed**, not no-OOM proof. Host A/D **kernel** evidence, independently authenticated raw Root reads and a disposable source-pinned replay remain outstanding. The [A/D private-artifact custody index](incident-420-host-ad-evidence.md) pins the available application and Nginx files without disclosing raw logs. Neither file substitutes for the missing A/D kernel journal. The offline classifier now recognizes \`rnode-d.service\` and refuses ambiguous same-window kernel kill attribution.
 
 ## Discriminating acceptance gates
 
