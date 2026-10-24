@@ -62,7 +62,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
 
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
@@ -128,7 +128,7 @@ jobs:
       - name: Install formatter for repository-pinned Rust 1.95
         run: rustup component add --toolchain 1.95.0 rustfmt
       - name: Reuse Rust build cache
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31
       - name: Install protobuf compiler
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
       - name: Verify Decimal release-preflight controls
@@ -281,7 +281,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: rustfmt
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
       - name: Release and harness controls present on this source
         run: |
