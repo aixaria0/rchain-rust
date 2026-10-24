@@ -503,6 +503,10 @@ pub struct NodeProgram {
     ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
+    /// The host-resource watchdog's sampled snapshot (A1). The status surfaces read it, and the
+    /// ingress gates (B34) evaluate their admission floor against it — one signal, so the answer a
+    /// client is refused with and the state an operator sees cannot come from two readings.
+    resources: Arc<ResourceGuard>,
     /// The primary shard's runtime manager. Exposed so an integration test can read the native
     /// state the running node actually installed (the developer-allocation leaf, the PoS params)
     /// without a second reader against the node's LMDB directory while it holds it.
@@ -549,6 +553,7 @@ impl NodeProgram {
             protocol_server,
             status_provider,
             gateway,
+            resources,
             primary_runtime: _,
         } = self;
 
@@ -574,6 +579,10 @@ impl NodeProgram {
             deploy,
             grpc_external_addr,
             grpc_max_recv_message_size,
+            crate::resources::PressureGate::new(
+                resources.clone(),
+                crate::resources::AdmissionPolicy::default(),
+            ),
             stop.clone(),
         ));
         let mut grpc_internal = tokio::spawn(serve_internal(
@@ -604,6 +613,7 @@ impl NodeProgram {
                     shards,
                     status_provider,
                     pos_read.clone(),
+                    resources.clone(),
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
@@ -1268,6 +1278,7 @@ pub async fn setup_node_program(
             id,
             &comm_state,
             &validator_opt,
+            resources.clone(),
             &log,
             metrics.clone(),
         )
@@ -1493,6 +1504,7 @@ pub async fn setup_node_program(
             discovery: comm_state.discovery.clone(),
         }),
         gateway,
+        resources,
         primary_runtime: primary_parts.runtime_manager.clone(),
     })
 }
@@ -1690,6 +1702,7 @@ async fn setup_shard_runtime(
     id: &NodeIdentifier,
     comm_state: &CommState,
     validator_opt: &Option<ValidatorIdentity>,
+    resources: Arc<ResourceGuard>,
     log: &Arc<dyn Log>,
     metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardRuntime, String> {
@@ -2124,6 +2137,7 @@ async fn setup_shard_runtime(
             proposer_parts.queue_tx,
             proposer,
             proposer_parts.state,
+            resources.clone(),
             log.clone(),
         );
         tokio::spawn(async move {
@@ -2467,6 +2481,27 @@ pub async fn setup_shard(
     // Claim this shard's data directory before anything else touches it: a directory that belonged
     // to a different shard must fail startup, not read as an empty chain.
     check_shard_data_dir(&data_dir, spec, block_dag_storage.as_ref(), &block_store).await?;
+
+    // **Repair the derived indexes before the backfill declares the deployer index complete** (B39,
+    // HAZOP F-U17-11). The audit is independent of the reset marker: an upgraded store may carry rows
+    // from a crash on an older build, or from a rewind whose empty metadata drop skipped the cleanup.
+    // A failure is logged and the shard runs: the rows make the proposer's replay guard skip a pooled
+    // deploy, which the next boot retries, rather than a reason to refuse to serve the shard.
+    match dag_kv.repair_derived_indexes().await {
+        Ok((0, 0)) => {}
+        Ok((deploy_rows, deployer_rows)) => log.warn(
+            LogSource::new("coop.rchain.node.runtime.DeployerIndex"),
+            &format!(
+                "{}: derived-index audit repaired {deploy_rows} deploy-index and {deployer_rows} \
+                 deployer-index row(s) naming a block this DAG does not hold",
+                spec.shard_id
+            ),
+        ),
+        Err(e) => log.warn(
+            LogSource::new("coop.rchain.node.runtime.DeployerIndex"),
+            &format!("{}: derived-index audit failed: {e}", spec.shard_id),
+        ),
+    }
 
     // A node upgraded onto an existing chain indexes the blocks it already holds, once, in the
     // background; until it finishes, `GET /api/v1/deployer` reports the height it has reached.
