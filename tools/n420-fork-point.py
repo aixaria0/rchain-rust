@@ -169,10 +169,40 @@ def find_merge(container, height, tips, deadline):
     return None
 
 
+def probe_transport(source, target):
+    """An actual HTTP/TCP connection, not merely common Docker membership."""
+    result = run([
+        "docker", "exec", source, "curl", "-fsS",
+        "--connect-timeout", "2", "--max-time", "4",
+        f"http://{target}:40403/api/status",
+    ], check=False)
+    return result.returncode == 0
+
+
+def observe_cross_tip_gossip(containers, tips):
+    """Report whether both independently proposed blocks reached every node."""
+    observed = {}
+    for node in containers:
+        found = {}
+        for block_hash in tips:
+            try:
+                info = block_info(node, block_hash)
+                found[block_hash] = (info.get("blockHash") == block_hash)
+            except Exception:
+                found[block_hash] = False
+        observed[node] = found
+    return observed
+
+
+def all_tips_visible(observed):
+    return all(all(visibilities.values()) for visibilities in observed.values())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="target/issue420-evidence/fork-point")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--gossip-timeout", type=int, default=120)
     args = parser.parse_args()
 
     record = {
@@ -224,6 +254,24 @@ def main():
             "group_b": topology.right,
             "networks": topology.require_partition(),
         })
+        # A shared bridge is not proof that the peers can communicate. Require
+        # actual HTTP reachability within each pair and no route between pairs.
+        checks = {
+            "left_0_to_1": probe_transport(CONTAINERS[0], CONTAINERS[1]),
+            "left_1_to_0": probe_transport(CONTAINERS[1], CONTAINERS[0]),
+            "right_2_to_3": probe_transport(CONTAINERS[2], CONTAINERS[3]),
+            "right_3_to_2": probe_transport(CONTAINERS[3], CONTAINERS[2]),
+            "cross_0_to_2": probe_transport(CONTAINERS[0], CONTAINERS[2]),
+            "cross_2_to_0": probe_transport(CONTAINERS[2], CONTAINERS[0]),
+        }
+        step("partition_transport", checks)
+        if not all(checks[k] for k in (
+            "left_0_to_1", "left_1_to_0", "right_2_to_3", "right_3_to_2"
+        )):
+            raise SystemExit("invalid 2+2 partition: intra-group HTTP connectivity failed")
+        if checks["cross_0_to_2"] or checks["cross_2_to_0"]:
+            raise SystemExit("invalid 2+2 partition: cross-group route is still reachable")
+
         # **Distinct channels on purpose.** Two linear produces on one channel are a conflict the merge
         # resolves by keeping one; the property this arm checks is that two *accepted, non-conflicting*
         # writers both survive a multi-parent merge.
@@ -264,6 +312,20 @@ def main():
         )
 
     step("healed", {node: sorted(topology.backend.members(node)) for node in CONTAINERS})
+
+    # A missing merge is not a merge-state failure when the validators have
+    # not even received both fork tips. Diagnose gossip before proposal gates.
+    gossip_deadline = time.time() + args.gossip_timeout
+    visibility = observe_cross_tip_gossip(CONTAINERS, tips)
+    while not all_tips_visible(visibility) and time.time() < gossip_deadline:
+        time.sleep(2)
+        visibility = observe_cross_tip_gossip(CONTAINERS, tips)
+    step("healed_tip_gossip", visibility)
+    if not all_tips_visible(visibility):
+        raise SystemExit(
+            "healed network did not exchange both fork tips; "
+            "gossip recovery failed before multi-parent merge validation"
+        )
 
     deadline = time.time() + args.timeout
     merge = None

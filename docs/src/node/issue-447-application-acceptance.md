@@ -19,7 +19,7 @@ The prior fork-point script disconnected validators 2 and 3 from the only Docker
 
 tools/n447_partition.py attaches validators 2 and 3 to a second temporary bridge **before** removing their original network membership. Validators 0 and 1 remain on the main bridge. The helper verifies the complete memberships, rejects cross-side links, and restores the original topology even if the workload fails. Failure to restore is a failed test, not a pass.
 
-tools/n420-fork-point.py now uses that helper directly and incrementally saves topology, fork hashes and merged-state readbacks to fork-point.json. An incomplete result is never a pass. Its timeout includes per-node status evidence to help distinguish missing gossip from a rejected merge.
+tools/n420-fork-point.py now uses that helper directly and incrementally saves topology, fork hashes and merged-state readbacks to fork-point.json. An incomplete result is never a pass. It also probes actual peer HTTP reachability within and across both pairs. After rejoining, it checks that every node has both tip hashes before attempting the multi-parent merge. A gossip failure is recorded separately from a proposal/merge timeout with per-node status evidence. The offline tests cannot substitute for this live observation.
 
 For a disposable Docker host with sufficient RAM:
 
