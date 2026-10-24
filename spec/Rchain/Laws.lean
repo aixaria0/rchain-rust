@@ -4254,6 +4254,40 @@ def laws : List Law := [
       right one. **And the granularity is the epoch, not the block** — native state is written at \
       boundaries — which is stated because a reader comparing the schedule to a balance needs to know \
       which clock the balance follows." },
+
+  { number := 80, layer := "Casper",
+    statement := "**`CURRENT_ROOT` names only an accepted block.** A checkpoint may record a candidate \
+      post-state as a *known* root, but the store's current-root pointer moves only when a block whose \
+      post-state is that root is accepted into the DAG — so no reachable state has the pointer naming a \
+      state no accepted block references, and a boot republishes only an accepted root",
+    status := .provedModel,
+    declarations := [`Rchain.PubState, `Rchain.pubStep, `Rchain.pubSystem,
+      `Rchain.a_current_root_is_an_accepted_state, `Rchain.a_boot_republishes_only_an_accepted_root],
+    axioms := [],
+    rust := ["rspace/src/history/roots_store.rs", "rspace/src/history/history_repository.rs",
+      "casper/src/runtime_replay.rs", "casper/src/blocks/block_processor.rs"],
+    rustWitness := [],
+    witness := [`Rchain.an_early_publish_reaches_an_orphan_root, `Rchain.publication_can_advance],
+    falsifiable := "The port's order before the deferred publish: the replay checkpoint records the \
+      candidate root and moves `CURRENT_ROOT` before `dag.insert` decides. \
+      `an_early_publish_reaches_an_orphan_root` exhibits the reachable state that order admits — a \
+      current root no accepted block references — so the law was red on the code as it stood, and \
+      `publication_can_advance` keeps it from being vacuous.",
+    note := "**Why recording a root is not publishing it.** Validation replays the block's deploys, \
+      writes a checkpoint and the root tag, and only then calls `dag.insert` \
+      (`casper/src/blocks/block_processor.rs:118`); the replay checkpoint reaches \
+      `RootsStore::record_root` (`casper/src/runtime_replay.rs:302-306` → \
+      `rspace/src/history/history_repository.rs:317`), which writes the root tag and `CURRENT_ROOT` in \
+      one LMDB transaction. A block refused for a bad pre-state hash or dropped by a rewind therefore \
+      leaves the pointer naming a post-state no accepted block carries — a durable pointer that is not \
+      a function of the chain the node runs. The fix (B40, HAZOP F-U17-10) splits the write: candidate \
+      checkpoints record the **known** root only, and the publish runs after acceptance at the insert \
+      sites, with a non-decreasing-height guard and a boot reconciliation that republishes the latest \
+      accepted root when it is known. `reset`'s `validate_and_set_current_root` keeps publishing: its \
+      root is an accepted ancestor's. **What it does not claim**: the cross-store window between the \
+      insert and the publish is narrowed, not closed — there is no WAL — and a crash there is repaired \
+      at boot, best-effort if the root is unknown. `rustWitness` is owed until the deferred-publish \
+      tests land." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
