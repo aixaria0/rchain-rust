@@ -43,6 +43,8 @@ use crate::api::grpc::{DEFAULT_API_RATE_LIMIT_PER_SEC, MAX_TRACKED_PEERS};
 use crate::api::web_api::WebApi;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
+use crate::resources::admission::PressureGate;
+use crate::resources::ResourceGuard;
 use crate::runtime::shutdown::stop_requested;
 use crate::web::pos_read::PosReadApi;
 use crate::web::reporting::transform_result;
@@ -195,6 +197,13 @@ pub struct HttpState {
     /// estimate or claim to prevent OOM; the operator must set each separately.
     pub deploy_admission: Option<InFlightAdmission>,
     pub explore_admission: Option<InFlightAdmission>,
+    /// **The memory gate** (unit B34): evaluated before a deploy or explore body is decoded.
+    ///
+    /// It reads the watchdog's newest sample and refuses when headroom is below the admission floor,
+    /// when the sample is stale, or when the facts could not be read. The optional semaphores above
+    /// are a *concurrency* bound; this is a *memory* bound — they answer different questions, and
+    /// neither substitutes for the other.
+    pub pressure: PressureGate,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<KeyedRateLimiter>,
     /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
@@ -961,7 +970,7 @@ pub const OPENAPI_JSON: &str = r##"{
   "components": {
     "responses": {
       "HttpAdmissionExhausted": {
-        "description": "Opt-in HTTP concurrent admission budget exhausted before request body decoding",
+        "description": "Work refused before the request body is decoded: memory headroom below the node's admission floor, the resource sample stale or unreadable, or the operator's HTTP in-flight budget exhausted",
         "headers": {
           "Retry-After": {
             "description": "Delay in seconds before retry; currently 1",
@@ -970,7 +979,7 @@ pub const OPENAPI_JSON: &str = r##"{
         },
         "content": { "application/json": {
           "schema": { "type": "string" },
-          "example": "HTTP in-flight capacity exhausted"
+          "example": "memory headroom below the admission floor: available memory is 10 MiB (cgroup-aware), below the 819 MiB admission floor"
         } }
       }
     },
@@ -1462,30 +1471,36 @@ async fn peer_rate_limit(
     next.run(request).await
 }
 
-/// Capacity bound independent of per-peer requests/second. The permit lives
-/// through the *whole* handler future, including exploratory Rholang execution.
-/// A busy route fails quickly without parsing the JSON body or queuing unbounded
-/// work. Other routes (status, finality, admin) do not borrow these permits.
+/// The one `503` shape both gates answer with: a reason and a `Retry-After`, before any body work.
+fn admission_refused(message: &str) -> Response {
+    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(message.to_string())).into_response();
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    response
+}
+
+/// **The two gates on the deploy/explore path** (B34 memory, B35 concurrency).
+///
+/// The memory gate is always present and is checked first: it reads the watchdog's newest sample and
+/// refuses when headroom is below the floor, the sample is stale, or the facts could not be read. A
+/// permit is a *concurrency* bound and cannot substitute for it. The permit is optional (the operator's
+/// configured in-flight budget) and lives through the whole handler future, including exploratory
+/// Rholang execution, so a busy route fails quickly without decoding a body or queuing unbounded work.
+/// Other routes (status, finality, admin) borrow neither gate.
 async fn in_flight_admission(
-    State(budget): State<Option<InFlightAdmission>>,
+    State((budget, pressure)): State<(Option<InFlightAdmission>, PressureGate)>,
     request: Request,
     next: Next,
 ) -> Response {
+    if let Some((reason, detail)) = pressure.evaluate_now().refusal() {
+        return admission_refused(&format!("{reason}: {detail}"));
+    }
     let _permit: Option<OwnedSemaphorePermit> = match budget {
         Some(budget) => match budget.semaphore.try_acquire_owned() {
             Ok(permit) => Some(permit),
-            Err(_) => {
-                let mut response = (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json("HTTP in-flight capacity exhausted".to_string()),
-                )
-                    .into_response();
-                response.headers_mut().insert(
-                    axum::http::header::RETRY_AFTER,
-                    axum::http::HeaderValue::from_static("1"),
-                );
-                return response;
-            }
+            Err(_) => return admission_refused("HTTP in-flight capacity exhausted"),
         },
         None => None,
     };
@@ -1531,7 +1546,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/deploy", post(api_deploy))
         .route("/api/v1/deploy", post(api_deploy))
         .route_layer(middleware::from_fn_with_state(
-            state.deploy_admission.clone(),
+            (state.deploy_admission.clone(), state.pressure.clone()),
             in_flight_admission,
         ))
         .route_layer(middleware::from_fn_with_state(
@@ -1553,7 +1568,7 @@ pub fn router(state: HttpState) -> Router {
             post(api_explore_deploy_by_block_hash),
         )
         .route_layer(middleware::from_fn_with_state(
-            state.explore_admission.clone(),
+            (state.explore_admission.clone(), state.pressure.clone()),
             in_flight_admission,
         ))
         .route_layer(middleware::from_fn_with_state(
@@ -1828,6 +1843,7 @@ pub async fn acquire_http_server(
     shards: Arc<ShardRegistry>,
     status_provider: Option<StatusProvider>,
     pos: Arc<dyn PosReadApi>,
+    resources: Arc<ResourceGuard>,
     max_connection_idle: Duration,
     enable_reporting: bool,
     // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
@@ -1846,6 +1862,10 @@ pub async fn acquire_http_server(
     // listener instead of silently disabling admission control.
     let deploy_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_DEPLOY")?;
     let explore_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_EXPLORE")?;
+    // The memory gate is not opt-in: a node that cannot read its own headroom is exactly the node
+    // this programme exists for. The policy is a documented floor (resources/admission.rs), not a
+    // guessed concurrency number.
+    let pressure = PressureGate::new(resources, crate::resources::AdmissionPolicy::default());
     let app = router(HttpState {
         reporter,
         metrics,
@@ -1865,6 +1885,7 @@ pub async fn acquire_http_server(
         )),
         deploy_admission,
         explore_admission,
+        pressure,
         faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
             FAUCET_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
@@ -1963,6 +1984,7 @@ mod tests {
         RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
+    use crate::resources::{AdmissionPolicy, ResourceSnapshot};
     use crate::web::transaction::TransactionResponse;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -2177,6 +2199,26 @@ mod tests {
         }
     }
 
+    /// A snapshot sampled now with headroom: the default for the router tests, so an unrelated route
+    /// test is not refused by the memory gate. A pressured or stale arm replaces it.
+    fn healthy_snapshot() -> ResourceSnapshot {
+        ResourceSnapshot {
+            state: "normal",
+            mem_available_mb: 4_096,
+            mem_total_mb: 8_192,
+            sampled_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0),
+            source: "test".to_string(),
+            ..ResourceSnapshot::default()
+        }
+    }
+
+    fn gate_over(snapshot: ResourceSnapshot) -> PressureGate {
+        PressureGate::new(ResourceGuard::inert(snapshot), AdmissionPolicy::default())
+    }
+
     fn state() -> HttpState {
         HttpState {
             reporter: Arc::new(NewPrometheusReporter::new(Configuration::default())),
@@ -2212,6 +2254,7 @@ mod tests {
             )),
             deploy_admission: None,
             explore_admission: None,
+            pressure: gate_over(healthy_snapshot()),
             // On by default in the tests, because the router tests drive the faucet route; the
             // off case is pinned by its own test below.
             faucet_enabled: true,
@@ -2385,7 +2428,7 @@ mod tests {
                 }),
             )
             .route_layer(middleware::from_fn_with_state(
-                Some(budget.clone()),
+                (Some(budget.clone()), gate_over(healthy_snapshot())),
                 in_flight_admission,
             ));
 
@@ -2466,6 +2509,113 @@ mod tests {
         assert_eq!(json["deploy"]["configured"], false);
         assert_eq!(json["explore"]["configured"], false);
         assert!(json.get("degraded").is_none());
+    }
+
+    /// **A node below its admission floor refuses the work before it decodes the body** (unit B34,
+    /// B34/H-RS-02).
+    ///
+    /// The body is deliberately invalid JSON: a `503` proves the gate answered before axum's `Json`
+    /// extractor ran, and the `Retry-After` proves a caller is told how to come back rather than
+    /// being left to guess. Every deploy and explore alias is covered, because a gate on one alias is
+    /// a gate an attacker walks around; `/api/status` stays reachable, because shedding work must not
+    /// blind the operator.
+    ///
+    /// Falsifier: with a healthy snapshot the same requests reach the extractor and the replies are
+    /// `400`s (the control assertion below).
+    #[tokio::test]
+    async fn a_deploy_is_refused_503_before_the_body_is_decoded() {
+        use tower::ServiceExt;
+        let mut pressured = healthy_snapshot();
+        pressured.mem_available_mb = 10;
+
+        let mut shed = state();
+        shed.pressure = gate_over(pressured);
+
+        for uri in [
+            "/api/deploy",
+            "/api/v1/deploy",
+            "/api/explore-deploy",
+            "/api/v1/explore-deploy",
+            "/api/explore-deploy-by-block-hash",
+            "/api/v1/explore-deploy-by-block-hash",
+        ] {
+            let reply = router(shed.clone())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from("{ not json"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                reply.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{uri}: a pressured node must refuse before decode, not answer a parse error"
+            );
+            assert_eq!(
+                reply
+                    .headers()
+                    .get(axum::http::header::RETRY_AFTER)
+                    .expect("Retry-After"),
+                "1"
+            );
+        }
+
+        // The operator can still see the node while admission is shed.
+        let status = router(shed)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/status")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+
+        // The control: on a healthy sample the same body reaches the extractor and is a `400`.
+        let healthy = router(state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{ not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            healthy.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a healthy node must not refuse the request"
+        );
+    }
+
+    /// **A stale sample is a refusal, not a pass** (B33/B34): a stopped watchdog must not leave
+    /// admission open on a reading nobody refreshed.
+    #[tokio::test]
+    async fn a_stale_resource_sample_refuses_deploys() {
+        use tower::ServiceExt;
+        let mut stale = healthy_snapshot();
+        stale.sampled_at_ms = 1;
+        let mut s = state();
+        s.pressure = gate_over(stale);
+        let reply = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// **AUDIT C148**: the PoS read has a route, and the route renders what it was handed. The
@@ -2751,9 +2901,12 @@ mod tests {
             documented["content"]["application/json"]["schema"]["type"],
             "string"
         );
-        assert_eq!(
-            documented["content"]["application/json"]["example"],
-            "HTTP in-flight capacity exhausted"
+        let example = documented["content"]["application/json"]["example"]
+            .as_str()
+            .expect("the 503 example is a string");
+        assert!(
+            example.contains("admission floor"),
+            "the served example must describe the memory gate's refusal, got {example}"
         );
 
         let mut s = state();

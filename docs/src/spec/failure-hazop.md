@@ -462,7 +462,7 @@ acknowledging work it has not durably accepted.
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
 | **F-U17-01** | NO | **No start-up preflight**: a host below the chain's replay floor starts, replays into OOM and never opens its API | nothing reads `/proc/meminfo`, cgroups or disk free; the expensive `BlockMetadataStore::create` rebuild runs before any check; the documented replay model is unenforced | silent until the kernel OOM-kills `rnode`; the service still reports `active` | Terminal | R2 | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
-| **F-U17-02** | MORE | **More in-flight work than memory allows**: no memory-aware admission; HTTP can decode 2 MiB per request, gRPC 16 MiB, explores fork runtimes, and the pool is count-based | admission is rate/count only (`dag.rs:35,47,66`); #426 is unmerged and disclaims memory semantics and gRPC | accepts the work, then the host OOMs | Terminal | R2 | owed: unit B — `node/src/web/http.rs::a_deploy_is_refused_503_before_the_body_is_decoded` |
+| **F-U17-02** | MORE | **More in-flight work than memory allows**: no memory-aware admission; HTTP can decode 2 MiB per request, gRPC 16 MiB, explores fork runtimes, and the pool is count-based | admission is rate/count only (`dag.rs:35,47,66`); #426 is unmerged and disclaims memory semantics and gRPC | accepts the work, then the host OOMs | Terminal | R2 | node/src/web/http.rs::a_deploy_is_refused_503_before_the_body_is_decoded |
 | **F-U17-03** | LESS | **Less headroom than the floor and no ringfence**: no cgroup limit/CPU-quota read, two validators per 1 GB host, `available_parallelism` ignores `cpu.max` | no cgroup awareness; no co-location detection | silent; the operator sees only the external monitor | Drift | R2 | node/src/resources/cgroup.rs::parses_v2_memory_cpu_and_events |
 | **F-U17-04** | AS WELL AS | **Alongside the pressure the node keeps accepting and advertising healthy**: no `degraded`/`acceptsDeploys`, `is_node_read_only` is config-only | no pressure state machine or status field; the autopropose halt stops production only | 200s and a healthy-looking status while starved | Drift | R2 | owed: unit C — `node/src/resources/state.rs::critical_stops_propose_and_attest` |
 | **F-U17-05** | PART OF | **Only part of the path is bounded**: per-peer rate and pool count yes; bytes, duplicates and gRPC no | term bound applied after body decode (`multi_parent_casper.rs:99,120`); no byte pool; full pool is 400; duplicate reparse admitted | unauthenticated amplification | Drift | R2 | owed: unit B — `casper/src/dag.rs::a_pool_at_its_byte_cap_refuses_before_the_store` |
@@ -646,7 +646,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 29 · node-words owed: 44
+**Debt.** falsifiers owed: 28 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.

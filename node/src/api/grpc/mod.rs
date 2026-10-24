@@ -131,11 +131,27 @@ impl tokio::io::AsyncWrite for PeerAddressIo {
     }
 }
 
+/// The memory gate's answer on the gRPC surface: `resource_exhausted` with the gate's reason.
+///
+/// Named rather than inline so the surface's refusal is testable without a listener: the verdict
+/// itself is `resources::admission::evaluate`'s, and this is the one line that maps it to a gRPC
+/// status. Tonic's interceptor runs after the request frame is decoded; the pre-decode bound here is
+/// `max_decoding_message_size`, and this is the memory bound that follows it and precedes the handler.
+fn refuse_under_pressure(pressure: &crate::resources::PressureGate) -> Result<(), ::tonic::Status> {
+    match pressure.evaluate_now().refusal() {
+        Some((reason, detail)) => Err(::tonic::Status::resource_exhausted(format!(
+            "{reason}: {detail}"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Serve the external gRPC service (deploy) on `addr` (port of the external `GrpcServer`).
 pub async fn serve_deploy(
     deploy: DeployGrpcServiceV1,
     addr: std::net::SocketAddr,
     max_message_size: usize,
+    pressure: crate::resources::PressureGate,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     use ::tonic::service::interceptor::InterceptedService;
@@ -151,6 +167,9 @@ pub async fn serve_deploy(
     ));
     let server = DeployServiceServer::new(deploy).max_decoding_message_size(max_message_size);
     let service = InterceptedService::new(server, move |req: ::tonic::Request<()>| {
+        // **The memory gate** (B34). It runs before the handler, so a pressured node refuses the
+        // deploy before it is parsed or pooled. A stale or unreadable sample refuses, like HTTP.
+        refuse_under_pressure(&pressure)?;
         let key = ingress_key(req.extensions().get::<PeerAddress>().and_then(|p| p.0));
         if limiter.allow(&key) {
             Ok(req)
@@ -234,5 +253,45 @@ mod tests {
         let unattributed = ingress_key(None);
         assert!(limiter.allow(&unattributed));
         assert!(!limiter.allow(&unattributed));
+    }
+
+    /// **A node below its admission floor refuses gRPC deploys with `resource_exhausted`** (B34).
+    ///
+    /// The HTTP half is pinned in `web/http.rs`; this is the same verdict mapped to the gRPC status a
+    /// client library will surface, and the control shows the same gate admitting on a healthy sample
+    /// — a gate that refused everything would look like this test passing while the node was broken.
+    #[test]
+    fn a_pressured_node_refuses_grpc_deploys_with_resource_exhausted() {
+        use crate::resources::admission::AdmissionPolicy;
+        use crate::resources::{PressureGate, ResourceGuard, ResourceSnapshot};
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let snapshot = |available_mb: u64| ResourceSnapshot {
+            state: "normal",
+            mem_available_mb: available_mb,
+            mem_total_mb: 8_192,
+            sampled_at_ms: now_ms,
+            source: "test".to_string(),
+            ..ResourceSnapshot::default()
+        };
+        let gate = |available_mb: u64| {
+            PressureGate::new(
+                ResourceGuard::inert(snapshot(available_mb)),
+                AdmissionPolicy::default(),
+            )
+        };
+
+        let status = refuse_under_pressure(&gate(10))
+            .expect_err("10 MiB is below the 819 MiB floor on an 8 GiB host");
+        assert_eq!(status.code(), ::tonic::Code::ResourceExhausted);
+        assert!(
+            status.message().contains("admission floor"),
+            "the status must name the gate: {}",
+            status.message()
+        );
+        assert!(refuse_under_pressure(&gate(4_096)).is_ok());
     }
 }
