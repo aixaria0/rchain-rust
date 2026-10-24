@@ -61,6 +61,13 @@ def get(port, path):
         return json.loads(response.read().decode())
 
 
+def get_on(container, port, path):
+    out = run(
+        ["docker", "exec", container, "curl", "-sS", f"http://127.0.0.1:{port}{path}"]
+    ).stdout
+    return json.loads(out)
+
+
 def finalized_number(port):
     return get(port, "/api/last-finalized-block")["blockInfo"]["blockNumber"]
 
@@ -81,7 +88,19 @@ def container_facts(container):
     return facts
 
 
-def deploy(container, height):
+def deploy(container):
+    # `rnode deploy` takes a **file**, not a term: a literal "Nil" is read as a filename and every
+    # attempt fails. Write the term inside the container once, then deploy the file.
+    run(
+        [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            "printf 'Nil' > /tmp/n420-soak.rho",
+        ]
+    )
     return run(
         [
             "docker",
@@ -97,9 +116,7 @@ def deploy(container, height):
             DEPLOYER_KEY,
             "--shard-id",
             SHARD,
-            "--valid-after-block-number",
-            str(height),
-            "Nil",
+            "/tmp/n420-soak.rho",
         ],
         check=False,
     )
@@ -127,6 +144,7 @@ def main():
     first_status = {c: get(ports[c], "/api/status") for c in CONTAINERS}
     height = min(s["latestBlockNumber"] for s in first_status.values())
 
+    finality_start = {c: finalized_number(ports[c]) for c in CONTAINERS}
     samples = []
     refusals = 0
     deadline = time.time() + args.seconds
@@ -134,7 +152,7 @@ def main():
     index = 0
     while time.time() < deadline:
         if time.time() >= next_deploy:
-            result = deploy(CONTAINERS[index % len(CONTAINERS)], height)
+            result = deploy(CONTAINERS[index % len(CONTAINERS)])
             if result.returncode != 0:
                 refusals += 1
             index += 1
@@ -143,7 +161,9 @@ def main():
         for container in CONTAINERS:
             try:
                 status = get(ports[container], "/api/status")
-                operator = get(ports[container], "/api/status/operator")
+                # The operator half is on the **admin** listener (40405, loopback inside the
+                # container); the public port does not serve it.
+                operator = get_on(container, 40405, "/api/v1/status/operator")
                 resources = operator.get("resources", {})
                 sample["nodes"][container] = {
                     "degraded": status.get("degraded"),
@@ -175,7 +195,6 @@ def main():
             if node.get("fallback_state")
         }
     )
-    finality_start = {c: finalized_number(ports[c]) for c in CONTAINERS}
     finality_end = {}
     for container in CONTAINERS:
         try:

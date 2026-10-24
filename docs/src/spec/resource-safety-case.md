@@ -69,7 +69,7 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | H-RS-07 | T-RS-7 co-located validators: one host loss defeats quorum | none | B32, B38 (advisory) | C-RS-5 | host topology is the operator's; containers may hide siblings | node/src/resources/colocation.rs::counts_only_processes_named_rnode |
 | H-RS-08 | T-RS-8 CPU-quota starvation; replay/finality lag | `available_parallelism` (workers) | B31, B33 | C-RS-3 | worker capping is deferred; the quota is only reported | node/src/resources/cgroup.rs::parses_v1_memory_and_cpu_limits |
 | H-RS-09 | T-RS-9 a degraded node still accepts work or advertises healthy | `is_node_read_only` (config) | B34, B37, B38 | C-RS-1, C-RS-5 | one status snapshot is not an independent read | node/src/resources/fallback.rs::normal_to_throttled_needs_hysteresis |
-| H-RS-10 | T-RS-10 a restart replays into the same OOM | supervisor restart | B31, B32 | C-RS-6 | the supervisor can always restart anyway; the preflight must refuse first | owed: unit E — `tools/resource-restart-arm.sh` |
+| H-RS-10 | T-RS-10 a restart replays into the same OOM | supervisor restart | B31, B32 | C-RS-6 | the supervisor can always restart anyway; the preflight must refuse first | spec/audit/evidence/n420-restart-20261024/restart.json |
 | H-RS-11 | T-RS-11 ambiguous acceptance, an orphan root or a stale derived index | root-pair write, reset bracket | B39, B40 | C-RS-1 | no cross-store WAL; D1/D2 reduce and repair the known windows | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
 | H-RS-12 | T-RS-12 peers cannot route around a degraded validator | none | none — out of node-local scope | C-RS-4 | needs #427/M3 protocol work and peer failover | owed: #427/#428 M3 |
 
