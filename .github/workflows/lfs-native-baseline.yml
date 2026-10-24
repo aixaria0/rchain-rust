@@ -1,0 +1,107 @@
+name: Original LFS crash source baseline
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lfs-restore-crash-regressions:
+    name: LFS restore repeated lifecycle and crash backtrace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5becc2a7cc97cb6fde21807f8effe55c9f8c4c49
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler gdb
+      - name: Compile exact restore test and preserve provenance
+        run: |
+          mkdir -p target/lfs-crash
+          git rev-parse HEAD > target/lfs-crash/source.txt
+          cargo test --locked -p rchain-node --test lfs_restore_dev_tax --no-run --message-format=json > target/lfs-crash/build.jsonl
+      - name: Stress undebugged restores and capture a native core on failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(python3 -c 'import json; rows=[json.loads(l) for l in open("target/lfs-crash/build.jsonl")]; print(next(r["executable"] for r in rows if r.get("target",{}).get("name")=="lfs_restore_dev_tax" and r.get("executable")))')
+          ulimit -c unlimited
+          echo "$PWD/target/lfs-crash/core.%p" | sudo tee /proc/sys/kernel/core_pattern
+          for attempt in $(seq 1 12); do
+            log="target/lfs-crash/undebugged-$attempt.log"
+            if timeout 240s "$binary" --nocapture --test-threads=4 > "$log" 2>&1; then
+              grep -q 'test result: ok. 9 passed; 0 failed' "$log"
+              echo "undebugged attempt=$attempt PASS" | tee -a target/lfs-crash/verdicts.txt
+            else
+              echo "undebugged attempt=$attempt FAIL" | tee -a target/lfs-crash/verdicts.txt
+              for core in target/lfs-crash/core.*; do
+                [ -f "$core" ] || continue
+                gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
+              done
+              tail -100 "$log"
+              exit 1
+            fi
+          done
+      - name: Repeat serial and parallel restores under debugger
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(python3 -c 'import json; rows=[json.loads(l) for l in open("target/lfs-crash/build.jsonl")]; print(next(r["executable"] for r in rows if r.get("target",{}).get("name")=="lfs_restore_dev_tax" and r.get("executable")))')
+          sha256sum "$binary" > target/lfs-crash/SHA256SUMS
+          failed=0
+          for threads in 1 4; do
+            for attempt in 1 2 3; do
+              log="target/lfs-crash/threads-$threads-run-$attempt.log"
+              gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$binary" --nocapture --test-threads="$threads" > "$log" 2>&1 || true
+              if grep -q 'test result: ok. 9 passed; 0 failed' "$log" && ! grep -Eq 'received signal SIG|exited with code' "$log"; then
+                echo "threads=$threads attempt=$attempt PASS" | tee -a target/lfs-crash/verdicts.txt
+              else
+                echo "threads=$threads attempt=$attempt FAIL" | tee -a target/lfs-crash/verdicts.txt
+                tail -100 "$log"
+                failed=1
+                break 2
+              fi
+            done
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: lfs-restore-crash-${{ github.run_id }}
+          path: target/lfs-crash/
+          if-no-files-found: error
+
+  lfs-native-address-sanitizer:
+    name: LFS restore native address sanitizer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTC_BOOTSTRAP: "1"
+      RUSTFLAGS: "-Zsanitizer=address -Cforce-frame-pointers=yes"
+      CC: clang
+      CXX: clang++
+      CFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
+      CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
+      LDFLAGS: "-fsanitize=address"
+      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1"
+      RUST_BACKTRACE: full
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5becc2a7cc97cb6fde21807f8effe55c9f8c4c49
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler clang
+      - name: Instrument Rust and native restore dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/lfs-asan
+          git rev-parse HEAD > target/lfs-asan/source.txt
+          cargo test --locked --target x86_64-unknown-linux-gnu -p rchain-node --test lfs_restore_dev_tax -- --nocapture --test-threads=4 2>&1 | tee target/lfs-asan/restore.log
+          grep -q 'test result: ok. 9 passed; 0 failed' target/lfs-asan/restore.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: lfs-native-asan-${{ github.run_id }}
+          path: target/lfs-asan/
+          if-no-files-found: error
