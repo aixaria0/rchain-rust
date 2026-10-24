@@ -18,7 +18,7 @@ hocon = { version = "0.9", default-features = false }
 linked-hash-map = "0.5"
 prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustyline = { version = "18", features = ["derive"] }
+rustyline = { version = "19", features = ["derive"] }
 rchain-block-storage = { path = "../block-storage" }
 rchain-casper = { path = "../casper" }
 rchain-comm = { path = "../comm" }
