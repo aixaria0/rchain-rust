@@ -43,6 +43,7 @@
 - [OCapN interoperability](node/ocapn.md)
 - [ERTP: brands, issuers, purses and payments](node/ertp.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
+- [Ringfencing a node](node/resource-ringfence.md)
 - [Validator economics](node/validator-economics.md)
 - [Scaling and performance limits](node/scaling.md)
 - [Local devnet (Docker)](node/devnet.md)
@@ -83,6 +84,7 @@
 - [Testnet acceptance specification](spec/testnet-acceptance.md)
 - [The bounded adversary](spec/adversary.md)
 - [Failure-mode HAZOP and disposition](spec/failure-hazop.md)
+- [Resource safety case](spec/resource-safety-case.md)
 
 # Part VIII — Methodology (draft papers)
 
