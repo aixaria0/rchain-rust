@@ -223,7 +223,26 @@ def main():
         ap.error("disposable GitHub Actions runner required")
     if not 30 <= args.window <= 600:
         ap.error("invalid window")
-    run(args)
+    out = Path(args.out)
+    try:
+        run(args)
+    except Exception as error:
+        # A topology/seed failure is not evidence that quiet finality failed.
+        # Preserve a machine-readable refusal even if the test stopped before
+        # the marker reached its measured window.
+        out.mkdir(parents=True, exist_ok=True)
+        result = out / "result.json"
+        if not result.exists():
+            kind = ("SETUP_FAIL" if str(error).startswith("SETUP_")
+                    else "HARNESS_OR_SUBMISSION_FAIL")
+            result.write_text(json.dumps({
+                "result": kind,
+                "reason": str(error),
+                "validators": args.validators,
+                "initialization": args.initialization,
+                "window": args.window,
+            }, indent=2, sort_keys=True) + "\n")
+        raise
 
 if __name__ == "__main__":
     main()
