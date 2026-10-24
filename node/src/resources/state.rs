@@ -106,7 +106,7 @@ pub struct ResourceGuard {
 }
 
 impl ResourceGuard {
-    pub fn start(data_dir: PathBuf, interval: Duration) -> Arc<Self> {
+    pub fn start(data_dir: PathBuf, interval: Duration) -> Result<Arc<Self>, String> {
         let inner = Arc::new(Inner {
             snapshot: RwLock::new(gather(&data_dir)),
             data_dir,
@@ -125,8 +125,8 @@ impl ResourceGuard {
                 drop(inner);
                 std::thread::sleep(interval);
             })
-            .expect("spawn the resource watchdog");
-        Arc::new(ResourceGuard { inner })
+            .map_err(|e| format!("spawn the resource watchdog: {e}"))?;
+        Ok(Arc::new(ResourceGuard { inner }))
     }
 
     /// A fixed snapshot for tests and callers that have no host to sample.

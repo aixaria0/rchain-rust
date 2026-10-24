@@ -1245,7 +1245,8 @@ pub async fn setup_node_program(
     let resources = ResourceGuard::start(
         conf.storage.data_dir.clone(),
         std::time::Duration::from_secs(5),
-    );
+    )
+    .map_err(|e| format!("resource watchdog: {e}"))?;
 
     // Node-level resources, built once: the validator identity, and the REPL eval runtime (an
     // isolated `eval-*` store set, deliberately chain-independent — port of Scala's `evalStores`).
