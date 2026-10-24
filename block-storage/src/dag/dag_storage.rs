@@ -3,7 +3,7 @@
 //! Mirrors `block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagStorage.scala`. The
 //! concrete `BlockDagKeyValueStorage` is casper-owned in Scala, so only the trait is ported here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -427,6 +427,20 @@ pub trait BlockDagStorage: Send + Sync {
         Ok(DeployPermit::default())
     }
 
+    /// **Hold `deploy_id` for this admission, before its term is parsed** (B36, W-N2-05's other half).
+    ///
+    /// `admit_deploy` bounds the *submitter*; this bounds the *work*. A byte-identical resubmission is
+    /// one deploy the pool stores once, but without a reservation the second caller parses the term
+    /// again — and two concurrent submissions of the same deploy can both do so, because a store read
+    /// before the parse cannot reserve anything. The returned permit removes the id when it drops; the
+    /// deploy's own row is the durable record from then on.
+    ///
+    /// The default reserves nothing, which is honest for a backend that keeps no pool: there is
+    /// nothing for a fixture without a deploy store to duplicate.
+    async fn reserve_deploy_id(&self, _deploy_id: &DeployId) -> Result<DeployIdPermit, String> {
+        Ok(DeployIdPermit::default())
+    }
+
     /// Store a deploy that was admitted, handing over the place [`Self::admit_deploy`] reserved.
     ///
     /// The default is the whole of `add_deploy`, which is the pre-split behaviour: a storage that does
@@ -493,6 +507,36 @@ impl Drop for DeployPermit {
         }
         if let Some((share, deployer)) = &self.share {
             release_deployer_share(share, deployer);
+        }
+    }
+}
+
+/// A claim on one deploy id from admission until the deploy is stored — or until it is dropped, which
+/// releases the id so a failed parse or a failed commit does not lock it out.
+///
+/// Opaque like [`DeployPermit`], and for the same reason: the caller that parses the term has no use
+/// for the set it holds, only for the guarantee that nobody else is parsing the same deploy.
+#[derive(Default)]
+pub struct DeployIdPermit {
+    reservation: Option<(Arc<std::sync::Mutex<HashSet<DeployId>>>, DeployId)>,
+}
+
+impl DeployIdPermit {
+    /// A permit that holds `deploy_id` in the storage's in-flight set.
+    pub fn holding(
+        reservations: Arc<std::sync::Mutex<HashSet<DeployId>>>,
+        deploy_id: DeployId,
+    ) -> Self {
+        DeployIdPermit {
+            reservation: Some((reservations, deploy_id)),
+        }
+    }
+}
+
+impl Drop for DeployIdPermit {
+    fn drop(&mut self) {
+        if let Some((reservations, deploy_id)) = &self.reservation {
+            reservations.lock().unpoison().remove(deploy_id);
         }
     }
 }
