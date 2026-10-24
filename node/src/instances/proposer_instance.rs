@@ -65,7 +65,7 @@ fn log_propose_result(log: &Arc<dyn Log>, result: &(ProposeResult, Option<BlockM
     }
 }
 
-/// How long after a "not due" outcome the node asks itself to propose again.
+/// How long after pending work or publication the node asks itself to propose again.
 ///
 /// `NotEnoughNewBlocks` is what the proposer returns when the round gate refuses (this validator already
 /// spoke this round) and when its own block lost a stale-snapshot race (§48). Both say "the next attempt
@@ -81,13 +81,18 @@ pub const NOT_DUE_RETRY: Duration = Duration::from_millis(
     rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as u64 + 1_000,
 );
 
-/// Whether a propose outcome is "not due yet", which the node retries on its own.
-fn not_due(result: &(ProposeResult, Option<BlockMessage>)) -> bool {
-    result.1.is_none()
-        && matches!(
-            result.0.propose_status,
-            ProposeStatus::NotEnoughNewBlocks | ProposeStatus::AwaitingFinality
-        )
+/// A publication needs one paced follow-up to discover whether finality work
+/// remains. A locally produced block does not pass through the remote-block tap;
+/// relying on another validator to prompt it can strand every successful proposer.
+/// The follow-up reuses the normal quorum, round and attestation guards, so an
+/// idle chain returns NoNewDeploys and stops without creating an extra block.
+fn needs_retry(source: ProposeSource, result: &(ProposeResult, Option<BlockMessage>)) -> bool {
+    (source == ProposeSource::Automatic && result.1.is_some())
+        || (result.1.is_none()
+            && matches!(
+                result.0.propose_status,
+                ProposeStatus::NotEnoughNewBlocks | ProposeStatus::AwaitingFinality
+            ))
 }
 
 /// Create the proposer stream (port of `ProposerInstance.create`).
@@ -178,8 +183,8 @@ fn create_with_retry(
                     drop(d_rx);
                 }
 
-                // A "not due" outcome on a quiet net has nobody left to ask again — see `NOT_DUE_RETRY`.
-                if not_due(&r) && !retry_pending.swap(true, Ordering::SeqCst) {
+                // Pending work and successful publication both need a paced wakeup on a quiet net.
+                if needs_retry(source, &r) && !retry_pending.swap(true, Ordering::SeqCst) {
                     let tx = tx.clone();
                     let retry_pending = retry_pending.clone();
                     tokio::spawn(async move {
@@ -225,7 +230,8 @@ mod tests {
         ))
     }
 
-    /// A proposer whose block creator always answers `outcome`, counting how often it is asked.
+    /// A counted creator: publish once for Created, then report an idle finalized chain;
+    /// other outcomes remain constant to exercise the bounded pending retries.
     fn proposer(outcome: BlockCreatorResult, calls: Arc<AtomicUsize>) -> Proposer {
         let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
             Arc::new(|_v| Box::pin(async { 0i64 }));
@@ -240,8 +246,12 @@ mod tests {
                 + Send
                 + Sync,
         > = Arc::new(move |_v, _source| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            let outcome = outcome.clone();
+            let previous = calls.fetch_add(1, Ordering::SeqCst);
+            let outcome = if previous > 0 && matches!(outcome, BlockCreatorResult::Created(_)) {
+                BlockCreatorResult::NoNewDeploys
+            } else {
+                outcome.clone()
+            };
             Box::pin(async move { Ok(outcome) })
         });
         let validate: Arc<
@@ -326,7 +336,44 @@ mod tests {
         assert!(asks <= 9, "pending finality retry stormed: {asks}");
     }
 
-    /// Only "not due" is retried. A proposer with nothing to do stays quiet.
+    /// Publishing a block does not discharge its finality obligation. If the
+    /// last remote notification arrived during that publication, success must
+    /// leave one paced wakeup to re-read the DAG without helper traffic.
+    #[tokio::test]
+    async fn successful_automatic_publication_keeps_a_bounded_wakeup() {
+        use rchain_models::block::state_hash::StateHash;
+        let block = BlockMessage {
+            version: 1,
+            shard_id: "root".into(),
+            block_hash: rchain_models::block_hash::BlockHash::new([1; 32]),
+            block_number: 0.try_into().unwrap(),
+            sender: Validator::new([0; 65]),
+            seq_num: 0.try_into().unwrap(),
+            pre_state_hash: StateHash::new([0; 32]),
+            post_state_hash: StateHash::new([0; 32]),
+            justifications: vec![],
+            bonds: Default::default(),
+            rejected_deploys: Default::default(),
+            rejected_blocks: Default::default(),
+            rejected_senders: Default::default(),
+            state: Default::default(),
+            sig_algorithm: "secp256k1".into(),
+            sig: vec![],
+            timestamp: 0,
+        };
+        let asks = asks_after_one_request(
+            BlockCreatorResult::Created(block),
+            Duration::from_millis(40),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(
+            asks, 2,
+            "publication must recheck once, then stop when idle"
+        );
+    }
+
+    /// A proposer with nothing to do discharges its wakeup and stays quiet.
     #[tokio::test]
     async fn nothing_to_do_is_not_retried() {
         let asks = asks_after_one_request(
