@@ -46,6 +46,16 @@ That is the counterpart of `MergeabilityRules.scala`; the RSpace-level rules tha
 implementation was missing (see the issue thread) are here, which is why the merge can be applied
 without replay.
 
+## The diff unit is the channel, not the event
+
+`StateChange::apply` computes **one** pre→post diff per affected channel (produces) or channel set
+(consumes), because that is the trie leaf the merge writes. A consume-and-replace deploy records the
+consumed datum (the `Comm`, in `produces_consumed`) and the produced datum (the `Produce`, in
+`produces_linear`) on the **same** channel with different event hashes; a per-event pass diffs that
+channel twice and appends the produced datum twice (issue #420, AUDIT **C336**). Both collectors are
+`BTreeSet`s for this reason — `Vec::dedup` would not do, because entries arrive in event-hash order, not
+grouped by channel. The joins map is keyed by the channel set and is idempotent.
+
 ## Conflict resolution is a function, not a choice
 
 `sdk/src/dag/merging.rs` computes the resolution:
@@ -97,6 +107,14 @@ was honest. Both are required, and both are deterministic.
   acceptance of a chain that wrote no contended slot is the same in every scope it can appear in.
   Its law is **17c** (`spec/INVENTORY.md`); the `tests/` half is
   `casper/src/merging.rs::boundary_merge_tests`;
+- `StateChange::apply` diffs each affected channel once. This is a **deliberate deviation from the
+  pinned Scala oracle**: `StateChange.scala::apply` at `1b7583649` maps the affected produces/consumes
+  to sequences and appends `curVal.added ++ change.added`, so a consume-and-replace is diffed twice and
+  the merged state holds two copies. **Hard fork:** a merge containing a consume-and-replace (or two
+  continuations on one channel set) now produces a different merged state hash; every validator must
+  run the fix from the fork point, and the deployed testnet chain is already bagged and cannot be
+  repaired. `rejectedDeploys` does not move; the divergence appears as a pre-state-hash disagreement
+  (`spec/audit/passes.md` §6, AUDIT **C336**);
 - `StateChange::combine` is a **monoid** and the mergeable-channel sum is commutative (**Law 9**), so
   independent logs merge in any order;
 - the trie update is content-addressed (**Law 10**), so the merged state hash is a function of the

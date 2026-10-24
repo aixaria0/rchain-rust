@@ -3,7 +3,7 @@
 //! Mirrors `rspace/src/main/scala/coop/rchain/rspace/merger/StateChange.scala` (the data type and
 //! its `empty`/`combine`; the effectful `apply` is in the engine phase).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::serialize::Serialize;
@@ -73,7 +73,13 @@ impl StateChange {
         let mut konts_diff: BTreeMap<Vec<Blake2b256Hash>, ChannelChange<Vec<u8>>> = BTreeMap::new();
         let mut joins_map: BTreeMap<Vec<Blake2b256Hash>, Vec<u8>> = BTreeMap::new();
 
-        let produce_hashes: Vec<Blake2b256Hash> = produces_affected(event_log_index)
+        // **The diff unit is the channel (one trie leaf), not the produce event.** A
+        // consume-and-replace logs the consumed datum (from the Comm) and the produced datum (the
+        // Produce event) on the same channel with different event hashes; a per-event pass diffs
+        // that channel twice and appends the produced datum twice. `Vec::dedup` would not do:
+        // entries arrive in event-hash order, not grouped by channel. Key the collector by the diff
+        // key.
+        let produce_hashes: BTreeSet<Blake2b256Hash> = produces_affected(event_log_index)
             .iter()
             .map(|p| p.channels_hash)
             .collect();
@@ -98,10 +104,14 @@ impl StateChange {
             cur.removed.extend(change.removed);
         }
 
-        let consume_channel_sets: Vec<Vec<Blake2b256Hash>> = consumes_affected(event_log_index)
-            .iter()
-            .map(|c| c.channels_hashes.clone())
-            .collect();
+        // The consume diff unit is the sorted channel set (`channels_hashes`), not the consume
+        // event: two continuations on one channel set are one trie leaf. The joins map is keyed by
+        // the same set and is idempotent, so deduping removes duplicate reads, not information.
+        let consume_channel_sets: BTreeSet<Vec<Blake2b256Hash>> =
+            consumes_affected(event_log_index)
+                .iter()
+                .map(|c| c.channels_hashes.clone())
+                .collect();
         for consume_channels in consume_channel_sets {
             let history_pointer = hash_hashes(&consume_channels);
             let start: Vec<Vec<u8>> = pre_state_reader
@@ -543,5 +553,91 @@ mod diff_tests {
             ab.datums_changes.get(&hash(1)).expect("key").added,
             vec![vec![1]]
         );
+    }
+    /// **A consume-and-replace is one channel, not two events.** The Comm logs the consumed datum
+    /// and the Produce logs the produced datum on the same channel; their event hashes differ, so
+    /// collecting `produces_affected` by hash yields the channel twice. The diff must be applied
+    /// once, or the produced datum is appended twice (issue #420).
+    #[tokio::test]
+    async fn a_consume_and_replace_diffs_its_channel_once() {
+        let channel = "shared".to_string();
+        let consumed = Produce::apply(&channel, &"a".to_string(), false);
+        let produced = Produce::apply(&channel, &"b".to_string(), false);
+        assert_eq!(consumed.channels_hash, produced.channels_hash);
+        assert_ne!(consumed.hash, produced.hash);
+        let shared_hash = consumed.channels_hash;
+
+        let pre = MockReader {
+            data: [(shared_hash, vec![datum_b(1)])].into_iter().collect(),
+            ..Default::default()
+        };
+        let post = MockReader {
+            data: [(shared_hash, vec![datum_b(2)])].into_iter().collect(),
+            ..Default::default()
+        };
+        let index = EventLogIndex {
+            produces_linear: [produced].into_iter().collect(),
+            produces_consumed: [consumed].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let change = StateChange::apply(&pre, &post, &index)
+            .await
+            .expect("apply");
+        let datums = change
+            .datums_changes
+            .get(&shared_hash)
+            .expect("the channel");
+        assert_eq!(
+            datums.added,
+            vec![vec![2]],
+            "the produced datum must be added once, not once per produce event"
+        );
+        assert_eq!(datums.removed, vec![vec![1]]);
+    }
+
+    /// **Two continuations on one channel set are one diff.** `kont_changes` is keyed by the sorted
+    /// channel set (one trie leaf); two different continuations that share it must not each append
+    /// the same change (issue #420, consume side).
+    #[tokio::test]
+    async fn two_continuations_on_one_channel_set_are_diffed_once() {
+        let channels = vec!["chanA".to_string(), "chanB".to_string()];
+        let patterns = vec!["patA".to_string(), "patB".to_string()];
+        let retired = Consume::apply(&channels, &patterns, &"cont-old".to_string(), false);
+        let installed = Consume::apply(&channels, &patterns, &"cont-new".to_string(), false);
+        assert_eq!(retired.channels_hashes, installed.channels_hashes);
+        assert_ne!(retired.hash, installed.hash);
+        let channel_set = retired.channels_hashes.clone();
+        let pointer = crate::hashing::stable_hash_provider::hash_hashes(&channel_set);
+
+        let pre = MockReader {
+            konts: [(pointer, vec![kont_b(1)])].into_iter().collect(),
+            joins: [(channel_set[0], vec![joins_b(4, channels.clone())])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let post = MockReader {
+            konts: [(pointer, vec![kont_b(2)])].into_iter().collect(),
+            ..Default::default()
+        };
+        let index = EventLogIndex {
+            consumes_linear_and_peeks: [retired.clone(), installed].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let change = StateChange::apply(&pre, &post, &index)
+            .await
+            .expect("apply");
+        let konts = change
+            .kont_changes
+            .get(&channel_set)
+            .expect("the channel set");
+        assert_eq!(
+            konts.added,
+            vec![vec![2]],
+            "the new continuation must be added once, not once per consume event"
+        );
+        assert_eq!(konts.removed, vec![vec![1]]);
     }
 }
