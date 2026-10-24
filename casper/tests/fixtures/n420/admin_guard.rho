@@ -1,0 +1,76 @@
+// v0.3 AdminGuard: threshold signatures over the canonical admin payload.
+// Three contract definitions, no state.
+// Placeholders: rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co.
+new
+  AdminGuard, adminAnySig, adminCount,
+  hash(`rho:crypto:blake2b256Hash`),
+  verify(`rho:crypto:secp256k1Verify`),
+  rl(`rho:registry:lookup`),
+  rs(`rho:registry:insertArbitrary`),
+  deployerId(`rho:rchain:deployerId`),
+  deployId(`rho:rchain:deployId`),
+  rootCh, Root, uAdminGuard, ack
+in {
+
+  contract adminAnySig(@digest, @sigs, @j, @key, ret) = {
+    if (j >= sigs.length()) { ret!(false) }
+    else {
+      match sigs.nth(j) {
+        sig => {
+          new vCh in {
+            verify!(digest, sig, key, *vCh) |
+            for (@ok <- vCh) {
+              if (ok) { ret!(true) }
+              else { adminAnySig!(digest, sigs, j + 1, key, *ret) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract adminCount(@digest, @sigs, @i, @count, @admins, @threshold, ret) = {
+    if (i >= admins.length()) { ret!(count >= threshold) }
+    else {
+      match admins.nth(i) {
+        key => {
+          new anyCh in {
+            adminAnySig!(digest, sigs, 0, key, *anyCh) |
+            for (@any <- anyCh) {
+              if (any) { adminCount!(digest, sigs, i + 1, count + 1, admins, threshold, *ret) }
+              else { adminCount!(digest, sigs, i + 1, count, admins, threshold, *ret) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract AdminGuard(@"verify", @domain, @nonce, @action, @argsHash, @sigs,
+                       @admins, @threshold, ret) = {
+    new dCh, okCh in {
+      match "rcash:admin:v1|" ++ domain ++ "|" ++ nonce.toString() ++ "|"
+            ++ action ++ "|" ++ argsHash {
+        payload => {
+          hash!(payload.toUtf8Bytes(), *dCh) |
+          for (@digest <- dCh) {
+            adminCount!(digest, sigs, 0, 0, admins, threshold, *okCh) |
+            for (@ok <- okCh) {
+              if (ok) { ret!((true, Nil)) }
+              else { ret!((false, "below threshold")) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  rl!(`rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co`, *rootCh) |
+  for (Root <- rootCh) {
+    rs!(bundle+{*AdminGuard}, *uAdminGuard) |
+    for (@adminUri <- uAdminGuard) {
+      Root!("register", "component:admin-guard", adminUri, 1, "kernel", *deployerId, *ack) |
+      for (@r <- ack) { deployId!([adminUri]) }
+    }
+  }
+}

@@ -1,0 +1,173 @@
+// v0.3 Governor: the sole admin authorisation and per-domain replay ledger.
+// Units call authorize(domain, nonce, ...) and apply the verified intent.
+// Placeholders: rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co, ["04df0092d2416c46f9e8711136f90f3c9026ed3ccf8c82ffff944e6a1215e53cc9d361ef70ab28417ebd979a92411397d5abf00ef7657029a9674e9875cb5739c2".hexToBytes(), "04db11c81588f16118564d383d9f7d6ee86318d1c0d04a3bcfbb315d4110f25c7056f6c0369fc66c985d94deb9d89ed4b6e99686eb47425352eba9c50dc3368fe2".hexToBytes(), "04ff68fdfc50f6ca6b71f8b0e390f756375be510e5145402cb212df23468500f3315e3667ef871bf6e8902c6ea2edd25942d17593a66f9ee3c9a451d7de3585812".hexToBytes()].
+new
+  Governor, governorState, governorLast, governorAdminGuard,
+  rl(`rho:registry:lookup`),
+  rs(`rho:registry:insertArbitrary`),
+  deployerId(`rho:rchain:deployerId`),
+  deployId(`rho:rchain:deployId`),
+  rootCh, Root, agCh, AdminGuard,
+  uGovernor, ack
+in {
+
+  contract governorLast(@nonces, @domain, ret) = {
+    match nonces.get(domain) {
+      Nil => { ret!(0) }
+      value => { ret!(value) }
+    }
+  } |
+
+  contract governorAdminGuard(ret) = {
+    new rootCh, rCh, agCh in {
+      rl!(`rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co`, *rootCh) |
+      for (Root <- rootCh) {
+        Root!("resolve", "component:admin-guard", 1, *rCh) |
+        for (@(true, agUri, v) <- rCh) {
+          rl!(agUri, *agCh) |
+          for (AdminGuard <- agCh) { ret!(*AdminGuard) }
+        }
+      }
+    }
+  } |
+
+  contract Governor(@"authorize", @domain, @nonce, @action, @argsHash, @sigs, ret) = {
+    for (@s <<- governorState) {
+      new lastCh in {
+        governorLast!(s.get("nonces"), domain, *lastCh) |
+        for (@last <- lastCh) {
+          if (nonce <= last) { ret!((false, "replay")) }
+          else {
+            new vCh in {
+              governorAdminGuard!(*agCh) |
+              for (AG <- agCh) {
+                AG!("verify", domain, nonce, action, argsHash, sigs,
+                    s.get("admins"), s.get("threshold"), *vCh) |
+                for (@v <- vCh) {
+                  match v {
+                    (true, Nil) => {
+                      for (@s2 <- governorState) {
+                        new last2Ch in {
+                          governorLast!(s2.get("nonces"), domain, *last2Ch) |
+                          for (@last2 <- last2Ch) {
+                            if (nonce <= last2) {
+                              governorState!(s2) | ret!((false, "replay"))
+                            } else {
+                              governorState!(s2.set("nonces",
+                                s2.get("nonces").set(domain, nonce))) |
+                              ret!((true, Nil))
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => { ret!(v) }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Governor(@"admins", ret) = {
+    for (@s <<- governorState) {
+      ret!((true, s.get("admins"), s.get("threshold")))
+    }
+  } |
+
+  contract Governor(@"admin", @nonce, @action, @args, @sigs, ret) = {
+    for (@s <<- governorState) {
+      new lastCh in {
+        governorLast!(s.get("nonces"), "governor", *lastCh) |
+        for (@last <- lastCh) {
+          if (nonce <= last) { ret!((false, "replay")) }
+          else {
+            new vCh in {
+              governorAdminGuard!(*agCh) |
+              for (AG <- agCh) {
+                AG!("verify", "governor", nonce, action, args.toString(), sigs,
+                    s.get("admins"), s.get("threshold"), *vCh) |
+                for (@v <- vCh) {
+                  match v {
+                    (true, Nil) => {
+                      for (@s2 <- governorState) {
+                        new last2Ch in {
+                          governorLast!(s2.get("nonces"), "governor", *last2Ch) |
+                          for (@last2 <- last2Ch) {
+                            if (nonce <= last2) {
+                              governorState!(s2) | ret!((false, "replay"))
+                            } else {
+                              match action {
+                                "setAdmins" => {
+                                  match args.nth(0) {
+                                    newAdmins => {
+                                      match args.nth(1) {
+                                        newThreshold => {
+                                          if (newThreshold < 1
+                                              || newThreshold > newAdmins.length()) {
+                                            governorState!(s2) | ret!((false, "threshold"))
+                                          } else {
+                                            governorState!(s2.set("admins", newAdmins)
+                                              .set("threshold", newThreshold)
+                                              .set("nonces", s2.get("nonces")
+                                                .set("governor", nonce))) |
+                                            ret!((true, Nil))
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                "setThreshold" => {
+                                  match args.nth(0) {
+                                    newThreshold => {
+                                      if (newThreshold < 1
+                                          || newThreshold > s2.get("admins").length()) {
+                                        governorState!(s2) | ret!((false, "threshold"))
+                                      } else {
+                                        governorState!(s2.set("threshold", newThreshold)
+                                          .set("nonces", s2.get("nonces")
+                                            .set("governor", nonce))) |
+                                        ret!((true, Nil))
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  governorState!(s2) | ret!((false, "unknown admin action"))
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => { ret!(v) }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  governorState!({
+    "admins": ["04df0092d2416c46f9e8711136f90f3c9026ed3ccf8c82ffff944e6a1215e53cc9d361ef70ab28417ebd979a92411397d5abf00ef7657029a9674e9875cb5739c2".hexToBytes(), "04db11c81588f16118564d383d9f7d6ee86318d1c0d04a3bcfbb315d4110f25c7056f6c0369fc66c985d94deb9d89ed4b6e99686eb47425352eba9c50dc3368fe2".hexToBytes(), "04ff68fdfc50f6ca6b71f8b0e390f756375be510e5145402cb212df23468500f3315e3667ef871bf6e8902c6ea2edd25942d17593a66f9ee3c9a451d7de3585812".hexToBytes()],
+    "threshold": 2,
+    "nonces": {}
+  }) |
+
+  rl!(`rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co`, *rootCh) |
+  for (Root <- rootCh) {
+    rs!(bundle+{*Governor}, *uGovernor) |
+    for (@uri <- uGovernor) {
+      Root!("register", "component:governor", uri, 1, "authority", *deployerId, *ack) |
+      for (@r <- ack) { deployId!([uri]) }
+    }
+  }
+}

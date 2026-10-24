@@ -1,0 +1,63 @@
+// v0.3 kernel: Clock, Verifier and Codec in one deploy term.
+// Seven contract definitions; none is inlined from another deploy.
+// Placeholders: rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co.
+new
+  Clock, Verifier, Codec, codecJoin,
+  bd(`rho:block:data`),
+  hash(`rho:crypto:blake2b256Hash`),
+  verify(`rho:crypto:secp256k1Verify`),
+  rl(`rho:registry:lookup`),
+  rs(`rho:registry:insertArbitrary`),
+  deployerId(`rho:rchain:deployerId`),
+  deployId(`rho:rchain:deployId`),
+  rootCh, Root,
+  uClock, uVerifier, uCodec,
+  a1, a2, a3
+in {
+
+  contract Clock(@"now", ret) = {
+    new ch in { bd!(*ch) | for (@h, @s, @t <- ch) { ret!(h) } }
+  } |
+
+  contract Verifier(@"hash", @bytes, ret) = { hash!(bytes, *ret) } |
+  contract Verifier(@"sigOk", @digest, @sig, @pub, ret) = { verify!(digest, sig, pub, *ret) } |
+  contract Verifier(@"claimHash", @secret, ret) = { hash!(secret, *ret) } |
+
+  contract codecJoin(@values, @i, @acc, ret) = {
+    if (i >= values.length()) { ret!(acc) }
+    else {
+      match values.nth(i) {
+        v => {
+          codecJoin!(values, i + 1,
+                     acc ++ "|" ++ v.length().toString() ++ ":" ++ v, *ret)
+        }
+      }
+    }
+  } |
+
+  contract Codec(@"canonical", @schema, @values, ret) = {
+    codecJoin!(values, 0, schema, *ret)
+  } |
+
+  contract Codec(@"hash", @schema, @values, ret) = {
+    new cCh in {
+      codecJoin!(values, 0, schema, *cCh) |
+      for (@text <- cCh) { hash!(text.toUtf8Bytes(), *ret) }
+    }
+  } |
+
+  rl!(`rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co`, *rootCh) |
+  for (Root <- rootCh) {
+    rs!(bundle+{*Clock}, *uClock) |
+    rs!(bundle+{*Verifier}, *uVerifier) |
+    rs!(bundle+{*Codec}, *uCodec) |
+    for (@clockUri <- uClock; @verifierUri <- uVerifier; @codecUri <- uCodec) {
+      Root!("register", "component:clock", clockUri, 1, "kernel", *deployerId, *a1) |
+      Root!("register", "component:verifier", verifierUri, 1, "kernel", *deployerId, *a2) |
+      Root!("register", "component:codec", codecUri, 1, "kernel", *deployerId, *a3) |
+      for (@r1 <- a1; @r2 <- a2; @r3 <- a3) {
+        deployId!([clockUri, verifierUri, codecUri])
+      }
+    }
+  }
+}
