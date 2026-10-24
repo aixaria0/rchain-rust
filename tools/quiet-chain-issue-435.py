@@ -32,6 +32,85 @@ def call(port, path, body=None):
 def node(i):
     return "acceptance-bootstrap" if i == 0 else "acceptance-validator-%d" % i
 
+
+def require_ready(validators, events, seconds=90):
+    """Require connected, same-genesis nodes before taking away bonded stake.
+
+    The devnet is a bootstrap-star, not a complete mesh: a joiner normally has
+    only one peer. Do not demand N-1 peers on each joiner.
+    """
+    deadline = time.monotonic() + seconds
+    stable = 0
+    while time.monotonic() < deadline:
+        try:
+            states = [call(40403 + 1000*i, "/api/status") for i in range(validators)]
+            blocks = [call(40403 + 1000*i, "/api/blocks/1") for i in range(validators)]
+            roots = [xs[0]["blockHash"] for xs in blocks]
+            ready = (all(isinstance(xs,list) and len(xs)>0 for xs in blocks)
+                     and len(set(roots)) == 1
+                     and states[0].get("peers", 0) >= validators - 1
+                     and all(x.get("peers", 0) >= 1 and
+                             x.get("latestBlockNumber", 0) >= 1 for x in states[1:]))
+            record(events, phase="readiness", ready=ready, peers=[x.get("peers") for x in states],
+                   genesis_hashes=roots, heights=[x.get("latestBlockNumber") for x in states])
+            stable = stable + 1 if ready else 0
+            if stable >= 3:
+                return
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+            stable = 0
+            record(events, phase="readiness_error", error=repr(exc))
+        time.sleep(2)
+    raise RuntimeError("SETUP_NOT_READY: peer/bootstrap connectivity and genesis agreement were not stable")
+
+
+def sign_term(term, status):
+    """Use the real signed CLI deploy path, never the admin propose endpoint."""
+    write = subprocess.run(
+        ["docker", "exec", "-i", node(0), "sh", "-c", "cat > /tmp/quiet435.rho"],
+        input=term, capture_output=True, text=True, timeout=10)
+    if write.returncode:
+        raise RuntimeError("term file write failed: " + write.stderr[:1000])
+    cmd = ["docker", "exec", node(0), "rnode", "--grpc-host", "localhost",
+           "deploy", "--phlo-limit", "1000000", "--phlo-price", "1",
+           "--private-key", fuzz.DEPLOYER_PRIV, "--shard-id", status["shardId"],
+           "--valid-after-block-number", str(status["latestBlockNumber"]),
+           "/tmp/quiet435.rho"]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+
+def preseed_finality(validators, events):
+    """Optional explicit CONTROL: establish a healthy finalized baseline with work.
+
+    No bootstrap work is included in the post-pause quiet-chain verdict.
+    A failure to establish the baseline is a setup failure, not a quiet PASS.
+    """
+    deadline = time.monotonic() + 180
+    count = 0
+    next_seed = 0
+    stable = 0
+    while time.monotonic() < deadline:
+        if time.monotonic() >= next_seed:
+            submission = sign_term("Nil", call(40403, "/api/status"))
+            count += 1
+            record(events, phase="preseed", index=count, returncode=submission.returncode,
+                   stdout=submission.stdout[:400], stderr=submission.stderr[:400])
+            if submission.returncode:
+                raise RuntimeError("SETUP_SEED_DEPLOY_FAILED")
+            next_seed = time.monotonic() + 6
+        try:
+            finalized = [call(40403+1000*i, "/api/last-finalized-block")["blockInfo"]
+                         for i in range(validators)]
+            ids = {(x["blockNumber"], x["blockHash"]) for x in finalized}
+            stable = stable+1 if len(ids)==1 and min(x["blockNumber"] for x in finalized)>=2 else 0
+            if stable >= 2:
+                record(events, phase="preseed_finalized", identity=list(ids)[0], deploys=count)
+                return count
+        except (urllib.error.HTTPError, KeyError, OSError, ValueError) as exc:
+            record(events, phase="preseed_wait", error=str(exc))
+            stable = 0
+        time.sleep(3)
+    raise RuntimeError("SETUP_NO_FINALIZED_BASELINE: preseed control could not finalize within 180s")
+
 def record(path, **data):
     with path.open("a") as out:
         out.write(json.dumps({"utc": time.time(), **data}, sort_keys=True) + "\n")
@@ -48,7 +127,7 @@ def run(args):
              "paused_validator": paused, "live_validators": survivors,
              "quiet_window_seconds": args.window,
              "marker": marker, "marker_value": 435, "signed_deploy_count": 0,
-             "helper_deploy_count": 0}
+             "helper_deploy_count": 0, "initialization": args.initialization, "preseed_deploy_count": 0}
     record(events, phase="setup", **base)
     versions = []
     for i in range(args.validators):
@@ -62,6 +141,10 @@ def run(args):
     if len(set(versions)) != 1:
         raise AssertionError("mixed node binary versions")
     base["version"] = versions[0]
+    require_ready(args.validators, events)
+    if args.initialization == "seeded":
+        base["preseed_deploy_count"] = preseed_finality(args.validators, events)
+    # Only one marker deploy is permitted after pausing the validator.
     subprocess.run(["docker", "pause", node(paused)], check=True, timeout=12)
     check = subprocess.check_output(
         ["docker", "inspect", "-f", "{{.State.Paused}}", node(paused)], text=True, timeout=10).strip()
@@ -70,17 +153,7 @@ def run(args):
     record(events, phase="paused", node=paused, paused=check)
     status = call(40403, "/api/status")
     term = '@' + json.dumps(marker) + '!(435)'
-    write = subprocess.run(
-        ["docker", "exec", "-i", node(0), "sh", "-c", "cat > /tmp/quiet435.rho"],
-        input=term, capture_output=True, text=True, timeout=10)
-    if write.returncode:
-        raise RuntimeError("marker file write failed: " + write.stderr)
-    cmd = ["docker", "exec", node(0), "rnode", "--grpc-host", "localhost",
-           "deploy", "--phlo-limit", "1000000", "--phlo-price", "1",
-           "--private-key", fuzz.DEPLOYER_PRIV, "--shard-id", status["shardId"],
-           "--valid-after-block-number", str(status["latestBlockNumber"]),
-           "/tmp/quiet435.rho"]
-    submit = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    submit = sign_term(term, status)
     base["signed_deploy_count"] = 1
     record(events, phase="signed_marker_deploy", returncode=submit.returncode,
            stdout=submit.stdout[:2000], stderr=submit.stderr[:2000])
@@ -88,7 +161,9 @@ def run(args):
         raise RuntimeError("marker deploy submission failed")
     deadline = time.monotonic() + args.window
     last = {}
+    cycles = 0
     while time.monotonic() < deadline:
+        cycles += 1
         ready = 0
         for i in survivors:
             try:
@@ -104,9 +179,24 @@ def run(args):
                 last[str(i)] = observed
                 if match: ready += 1
                 record(events, phase="poll", node=i, **observed)
-            except (OSError, ValueError, KeyError, urllib.error.HTTPError) as error:
-                last[str(i)] = {"error": str(error)}
-                record(events, phase="poll_error", node=i, error=str(error))
+            except urllib.error.HTTPError as error:
+                body = error.read(3000).decode("utf-8", "replace")
+                last[str(i)] = {"http_status": error.code, "response_body": body}
+                record(events, phase="poll_http_error", node=i, status=error.code, body=body)
+            except (OSError, ValueError, KeyError) as error:
+                last[str(i)] = {"error": repr(error)}
+                record(events, phase="poll_error", node=i, error=repr(error))
+        if cycles % 5 == 0:
+            for i in survivors:
+                try:
+                    status = call(40405+1000*i, "/api/v1/status/operator")
+                    record(events, phase="operator_status", node=i,
+                           latest=status.get("latestBlockNumber"),
+                           finality_stall=status.get("finalityStall"),
+                           unrestorable=status.get("unrestorableRecords"),
+                           peers=status.get("peers"))
+                except (OSError, ValueError) as error:
+                    record(events, phase="operator_error", node=i, error=repr(error))
         if ready == len(survivors):
             base.update({"result":"PASS", "observations":last})
             (out / "result.json").write_text(json.dumps(base, indent=2, sort_keys=True)+"\n")
@@ -126,6 +216,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--validators", required=True, type=int, choices=[4,8])
     ap.add_argument("--window", type=int, default=240)
+    ap.add_argument("--initialization", choices=["fresh", "seeded"], default="fresh")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
