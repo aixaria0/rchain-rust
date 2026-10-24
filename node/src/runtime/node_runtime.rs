@@ -1278,6 +1278,7 @@ pub async fn setup_node_program(
             id,
             &comm_state,
             &validator_opt,
+            resources.clone(),
             &log,
             metrics.clone(),
         )
@@ -1701,6 +1702,7 @@ async fn setup_shard_runtime(
     id: &NodeIdentifier,
     comm_state: &CommState,
     validator_opt: &Option<ValidatorIdentity>,
+    resources: Arc<ResourceGuard>,
     log: &Arc<dyn Log>,
     metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardRuntime, String> {
@@ -2135,6 +2137,7 @@ async fn setup_shard_runtime(
             proposer_parts.queue_tx,
             proposer,
             proposer_parts.state,
+            resources.clone(),
             log.clone(),
         );
         tokio::spawn(async move {
