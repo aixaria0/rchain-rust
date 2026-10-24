@@ -503,6 +503,10 @@ pub struct NodeProgram {
     ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
+    /// The host-resource watchdog's sampled snapshot (A1). The status surfaces read it, and the
+    /// ingress gates (B34) evaluate their admission floor against it — one signal, so the answer a
+    /// client is refused with and the state an operator sees cannot come from two readings.
+    resources: Arc<ResourceGuard>,
     /// The primary shard's runtime manager. Exposed so an integration test can read the native
     /// state the running node actually installed (the developer-allocation leaf, the PoS params)
     /// without a second reader against the node's LMDB directory while it holds it.
@@ -549,6 +553,7 @@ impl NodeProgram {
             protocol_server,
             status_provider,
             gateway,
+            resources,
             primary_runtime: _,
         } = self;
 
@@ -574,6 +579,10 @@ impl NodeProgram {
             deploy,
             grpc_external_addr,
             grpc_max_recv_message_size,
+            crate::resources::PressureGate::new(
+                resources.clone(),
+                crate::resources::AdmissionPolicy::default(),
+            ),
             stop.clone(),
         ));
         let mut grpc_internal = tokio::spawn(serve_internal(
@@ -604,6 +613,7 @@ impl NodeProgram {
                     shards,
                     status_provider,
                     pos_read.clone(),
+                    resources.clone(),
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
@@ -1493,6 +1503,7 @@ pub async fn setup_node_program(
             discovery: comm_state.discovery.clone(),
         }),
         gateway,
+        resources,
         primary_runtime: primary_parts.runtime_manager.clone(),
     })
 }
