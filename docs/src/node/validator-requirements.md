@@ -228,6 +228,6 @@ CPU/RAM needs are modest. Four caveats matter more than raw specs:
 The numbers above are the sizing; the **boundary** is the operator's. A node cannot set its own cgroup
 limits, choose the kernel's OOM victim or prevent two validators sharing a host. See
 [Ringfencing a node](resource-ringfence.md) for the systemd/Docker memory, CPU, I/O and PID limits, the
-dedicated-NVMe data-directory rule and the cgroup signals to alert on. The node-side preflight,
-memory-aware admission and fallback states are tracked in the
+dedicated-NVMe data-directory rule and the cgroup signals to alert on. The node-side start-up preflight
+is shipped and documented there; memory-aware admission and fallback states are tracked in the
 [resource safety case](../spec/resource-safety-case.md) and HAZOP study node U17.

@@ -446,6 +446,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "no-attest-on-new-blocks",
             run.no_attest_on_new_blocks,
         );
+        flag(
+            &mut e,
+            "resource-guard.allow-under-minimum",
+            run.allow_under_minimum,
+        );
         opt_str(
             &mut e,
             "dev.deployer-private-key",

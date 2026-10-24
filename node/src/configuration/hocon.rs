@@ -13,7 +13,8 @@ use rchain_comm::peer_node::PeerNode;
 use rchain_comm::transport::tls_conf::TlsConf;
 
 use super::model::{
-    ApiServer, DevConf, Metrics, NodeConf, PeersDiscovery, ProtocolClient, ProtocolServer, Storage,
+    ApiServer, DevConf, Metrics, NodeConf, PeersDiscovery, ProtocolClient, ProtocolServer,
+    ResourceGuardConf, Storage,
 };
 
 /// Parse a size-in-bytes string (`256K`, `16M`, `256M`) into a byte count (port of
@@ -573,6 +574,15 @@ pub fn check_shard_config_exclusivity(config: &Hocon, source: &str) -> Result<()
 }
 
 /// Build a `NodeConf` from a merged `Hocon` tree (port of `mergedConf.load[NodeConf]`).
+fn resource_guard_from_hocon(h: &Hocon) -> Result<ResourceGuardConf, String> {
+    Ok(ResourceGuardConf {
+        enforce_startup: to_string(get(h, "enforce-startup")?)?,
+        allow_under_minimum: to_bool(get(h, "allow-under-minimum")?)?,
+        min_available_mb: to_i64(get(h, "min-available-mb")?)?,
+        min_data_dir_free_mb: to_i64(get(h, "min-data-dir-free-mb")?)?,
+    })
+}
+
 pub fn node_conf_from_hocon(h: &Hocon) -> Result<NodeConf, String> {
     Ok(NodeConf {
         standalone: to_bool(get(h, "standalone")?)?,
@@ -590,6 +600,7 @@ pub fn node_conf_from_hocon(h: &Hocon) -> Result<NodeConf, String> {
         metrics: metrics_from_hocon(get(h, "metrics")?)?,
         dev_mode: to_bool(get(h, "dev-mode")?)?,
         dev: dev_conf_from_hocon(get(h, "dev")?)?,
+        resource_guard: resource_guard_from_hocon(get(h, "resource-guard")?)?,
         default_data_dir: to_string(get(h, "default-data-dir")?)?,
     })
 }
