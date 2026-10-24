@@ -1,0 +1,270 @@
+// v0.3 Root: the frozen directory of singleton component URIs.
+// Bootstrap writes authenticate the deploy's deployerId against `installer`;
+// rotations, deprecations and freeze use AdminGuard threshold signatures.
+// Placeholders: 04d0b8c0f313a5de9a6768e82a6073a4ed5f63d175ad4ad04f5df49fa1b9f6824d774621c1248a698458ae8e7599f1f5cd8fd6d5f73795dcaba8c2b8c29ad5140f, ["04df0092d2416c46f9e8711136f90f3c9026ed3ccf8c82ffff944e6a1215e53cc9d361ef70ab28417ebd979a92411397d5abf00ef7657029a9674e9875cb5739c2".hexToBytes(), "04db11c81588f16118564d383d9f7d6ee86318d1c0d04a3bcfbb315d4110f25c7056f6c0369fc66c985d94deb9d89ed4b6e99686eb47425352eba9c50dc3368fe2".hexToBytes(), "04ff68fdfc50f6ca6b71f8b0e390f756375be510e5145402cb212df23468500f3315e3667ef871bf6e8902c6ea2edd25942d17593a66f9ee3c9a451d7de3585812".hexToBytes()].
+new
+  Root, rootState, rootAuthorize,
+  rl(`rho:registry:lookup`),
+  rs(`rho:registry:insertArbitrary`),
+  deployerIdOps(`rho:rchain:deployerId:ops`),
+  deployerId(`rho:rchain:deployerId`),
+  deployId(`rho:rchain:deployId`),
+  uriCh, ack
+in {
+
+  contract rootAuthorize(@domain, @nonce, @action, @argsHash, @sigs,
+                          @admins, @threshold, ret) = {
+    new rCh, agCh in {
+      Root!("resolve", "component:admin-guard", 1, *rCh) |
+      for (@(true, agUri, v) <- rCh) {
+        rl!(agUri, *agCh) |
+        for (AdminGuard <- agCh) {
+          AdminGuard!("verify", domain, nonce, action, argsHash, sigs,
+                      admins, threshold, *ret)
+        }
+      }
+    }
+  } |
+
+  contract Root(@"resolve", @key, @minVersion, ret) = {
+    for (@s <<- rootState) {
+      match s.get("entries").get(key) {
+        Nil => { ret!((false, "unknown component")) }
+        entry => {
+          if (entry.get("status") == "retired") { ret!((false, "retired")) }
+          else {
+            if (entry.get("version") < minVersion) { ret!((false, "stale")) }
+            else { ret!((true, entry.get("uri"), entry.get("version"))) }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Root(@"get", @key, ret) = {
+    for (@s <<- rootState) {
+      match s.get("entries").get(key) {
+        Nil => { ret!((false, "unknown component")) }
+        entry => { ret!((true, entry)) }
+      }
+    }
+  } |
+
+  contract Root(@"keys", ret) = {
+    for (@s <<- rootState) { ret!((true, s.get("entries").keys())) }
+  } |
+
+  contract Root(@"register", @key, @uri, @version, @kind, deployerId, ret) = {
+    new pkCh in {
+      deployerIdOps!("pubKeyBytes", *deployerId, *pkCh) |
+      for (@pk <- pkCh) {
+        for (@s <- rootState) {
+          if (s.get("frozen")) { rootState!(s) | ret!((false, "frozen")) }
+          else {
+            if (pk != s.get("installer")) { rootState!(s) | ret!((false, "not installer")) }
+            else {
+              if (version < 1) { rootState!(s) | ret!((false, "bad version")) }
+              else {
+                match s.get("entries").get(key) {
+                  Nil => {
+                    rootState!(s.set("entries", s.get("entries").set(key, {
+                      "uri": uri, "version": version, "kind": kind, "status": "active"
+                    }))) |
+                    ret!((true, Nil))
+                  }
+                  _ => { rootState!(s) | ret!((false, "duplicate")) }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Root(@"rotate", @key, @expectedVersion, @newUri, @newVersion,
+                 @nonce, @sigs, ret) = {
+    for (@s <<- rootState) {
+      if (s.get("frozen")) { ret!((false, "frozen")) }
+      else {
+        match s.get("entries").get(key) {
+          Nil => { ret!((false, "unknown component")) }
+          entry => {
+            if (entry.get("version") != expectedVersion) { ret!((false, "stale")) }
+            else {
+              new vCh in {
+                rootAuthorize!("root", nonce, "rotate",
+                               key ++ "|" ++ expectedVersion.toString() ++ "|"
+                               ++ newUri ++ "|" ++ newVersion.toString(),
+                               sigs, s.get("admins"), s.get("threshold"), *vCh) |
+                for (@v <- vCh) {
+                  match v {
+                    (true, Nil) => {
+                      for (@s2 <- rootState) {
+                        if (s2.get("govNonce") >= nonce) {
+                          rootState!(s2) | ret!((false, "replay"))
+                        } else {
+                          match s2.get("entries").get(key) {
+                            Nil => { rootState!(s2) | ret!((false, "unknown component")) }
+                            entry2 => {
+                              if (entry2.get("version") != expectedVersion) {
+                                rootState!(s2) | ret!((false, "stale"))
+                              } else {
+                                rootState!(s2.set("entries",
+                                  s2.get("entries").set(key, entry2.set("uri", newUri)
+                                    .set("version", newVersion)
+                                    .set("status", "active")))
+                                  .set("govNonce", nonce)) |
+                                ret!((true, Nil))
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => { ret!(v) }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Root(@"deprecate", @key, @nonce, @sigs, ret) = {
+    for (@s <<- rootState) {
+      if (s.get("frozen")) { ret!((false, "frozen")) }
+      else {
+        new vCh in {
+          rootAuthorize!("root", nonce, "deprecate", key, sigs,
+                         s.get("admins"), s.get("threshold"), *vCh) |
+          for (@v <- vCh) {
+            match v {
+              (true, Nil) => {
+                for (@s2 <- rootState) {
+                  if (s2.get("govNonce") >= nonce) {
+                    rootState!(s2) | ret!((false, "replay"))
+                  } else {
+                    match s2.get("entries").get(key) {
+                      Nil => { rootState!(s2) | ret!((false, "unknown component")) }
+                      entry => {
+                        rootState!(s2.set("entries",
+                          s2.get("entries").set(key, entry.set("status", "retired")))
+                          .set("govNonce", nonce)) |
+                        ret!((true, Nil))
+                      }
+                    }
+                  }
+                }
+              }
+              _ => { ret!(v) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Root(@"freeze", @nonce, @sigs, ret) = {
+    for (@s <<- rootState) {
+      if (s.get("frozen")) { ret!((false, "frozen")) }
+      else {
+        new vCh in {
+          rootAuthorize!("root", nonce, "freeze", "", sigs,
+                         s.get("admins"), s.get("threshold"), *vCh) |
+          for (@v <- vCh) {
+            match v {
+              (true, Nil) => {
+                for (@s2 <- rootState) {
+                  if (s2.get("govNonce") >= nonce) {
+                    rootState!(s2) | ret!((false, "replay"))
+                  } else {
+                    rootState!(s2.set("frozen", true).set("govNonce", nonce)) |
+                    ret!((true, Nil))
+                  }
+                }
+              }
+              _ => { ret!(v) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Root(@"admin", @nonce, @action, @args, @sigs, ret) = {
+    for (@s <<- rootState) {
+      if (s.get("frozen")) { ret!((false, "frozen")) }
+      else {
+        new vCh in {
+          rootAuthorize!("root", nonce, action, args.toString(), sigs,
+                         s.get("admins"), s.get("threshold"), *vCh) |
+          for (@v <- vCh) {
+            match v {
+              (true, Nil) => {
+                for (@s2 <- rootState) {
+                  if (s2.get("govNonce") >= nonce) {
+                    rootState!(s2) | ret!((false, "replay"))
+                  } else {
+                    match action {
+                      "setAdmins" => {
+                        match args.nth(0) {
+                          newAdmins => {
+                            match args.nth(1) {
+                              newThreshold => {
+                                if (newThreshold < 1 || newThreshold > newAdmins.length()) {
+                                  rootState!(s2) | ret!((false, "threshold"))
+                                } else {
+                                  rootState!(s2.set("admins", newAdmins)
+                                    .set("threshold", newThreshold)
+                                    .set("govNonce", nonce)) |
+                                  ret!((true, Nil))
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                      "setThreshold" => {
+                        match args.nth(0) {
+                          newThreshold => {
+                            if (newThreshold < 1 || newThreshold > s2.get("admins").length()) {
+                              rootState!(s2) | ret!((false, "threshold"))
+                            } else {
+                              rootState!(s2.set("threshold", newThreshold)
+                                .set("govNonce", nonce)) |
+                              ret!((true, Nil))
+                            }
+                          }
+                        }
+                      }
+                      _ => { rootState!(s2) | ret!((false, "unknown admin action")) }
+                    }
+                  }
+                }
+              }
+              _ => { ret!(v) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  rootState!({
+    "installer": "04d0b8c0f313a5de9a6768e82a6073a4ed5f63d175ad4ad04f5df49fa1b9f6824d774621c1248a698458ae8e7599f1f5cd8fd6d5f73795dcaba8c2b8c29ad5140f".hexToBytes(),
+    "admins": ["04df0092d2416c46f9e8711136f90f3c9026ed3ccf8c82ffff944e6a1215e53cc9d361ef70ab28417ebd979a92411397d5abf00ef7657029a9674e9875cb5739c2".hexToBytes(), "04db11c81588f16118564d383d9f7d6ee86318d1c0d04a3bcfbb315d4110f25c7056f6c0369fc66c985d94deb9d89ed4b6e99686eb47425352eba9c50dc3368fe2".hexToBytes(), "04ff68fdfc50f6ca6b71f8b0e390f756375be510e5145402cb212df23468500f3315e3667ef871bf6e8902c6ea2edd25942d17593a66f9ee3c9a451d7de3585812".hexToBytes()],
+    "threshold": 2,
+    "frozen": false,
+    "govNonce": 0,
+    "entries": {}
+  }) |
+
+  rs!(bundle+{*Root}, *uriCh) |
+  for (@uri <- uriCh) {
+    Root!("register", "rcash:root", uri, 1, "kernel", *deployerId, *ack) |
+    for (@r <- ack) { deployId!([uri]) }
+  }
+}

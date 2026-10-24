@@ -1,0 +1,130 @@
+// v0.3 Bounds: pure on-chain checks for zone, feed, pool, book and market terms.
+// Seven contract definitions, no state.
+// Placeholders: rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co.
+new
+  Bounds, boundsTermFields, boundsTerms,
+  rl(`rho:registry:lookup`),
+  rs(`rho:registry:insertArbitrary`),
+  deployerId(`rho:rchain:deployerId`),
+  deployId(`rho:rchain:deployId`),
+  rootCh, Root, uBounds, ack
+in {
+
+  contract Bounds(@"checkIssuer", @params, ret) = {
+    new mcr, bonus, close, rate, ceiling, minD, maxD, age in {
+      mcr!(params.get("mcrBps")) | bonus!(params.get("bonusBps")) |
+      close!(params.get("closeFactorBps")) | rate!(params.get("ratePerBlock")) |
+      ceiling!(params.get("debtCeiling")) | minD!(params.get("minDebt")) |
+      maxD!(params.get("maxDebt")) | age!(params.get("maxOracleAge")) |
+      for (@a <- mcr; @b <- bonus; @c <- close; @r <- rate;
+           @dc <- ceiling; @mn <- minD; @mx <- maxD; @ag <- age) {
+        if (a < 10000 || a > 50000) { ret!((false, "mcr")) }
+        else { if (b < 0 || b > 5000) { ret!((false, "bonus")) }
+        else { if (c < 1 || c > 10000) { ret!((false, "close")) }
+        else { if (r < 0 || r > 50000) { ret!((false, "rate")) }
+        else { if (dc < 10000000000 || dc > 1000000000000000) { ret!((false, "ceiling")) }
+        else { if (mn < 10000 || mn > 1000000000) { ret!((false, "min debt")) }
+        else { if (mx < mn || mx > dc) { ret!((false, "max debt")) }
+        else { if (ag < 1 || ag > 1000) { ret!((false, "oracle age")) }
+        else { ret!((true, Nil)) } } } } } } } }
+      }
+    }
+  } |
+
+  contract Bounds(@"checkFeed", @quorum, @age, @spread, @minP, @maxP, @tb, @tms, ret) = {
+    if (quorum < 1 || quorum > 3) { ret!((false, "quorum")) }
+    else { if (age < 1) { ret!((false, "age")) }
+    else { if (spread < 0 || spread > 10000) { ret!((false, "spread")) }
+    else { if (minP <= 0 || maxP < minP) { ret!((false, "band")) }
+    else { if (tb < 1) { ret!((false, "trial")) }
+    else { if (tms < quorum) { ret!((false, "trial submits")) }
+    else { ret!((true, Nil)) } } } } } }
+  } |
+
+  contract Bounds(@"checkPool", @params, ret) = {
+    new bs, sk, mt, ml, tol, df, mtk in {
+      bs!(params.get("baseSpreadBps")) | sk!(params.get("skewSpreadBps")) |
+      mt!(params.get("maxTradeBps")) | ml!(params.get("minLiquidity")) |
+      tol!(params.get("firstDepositToleranceBps")) | df!(params.get("depthFloorQuote")) |
+      mtk!(params.get("minTicketQuote")) |
+      for (@a <- bs; @b <- sk; @c <- mt; @d <- ml; @e <- tol; @f <- df; @g <- mtk) {
+        if (a < 0 || a > 10000) { ret!((false, "base spread")) }
+        else { if (b < 0 || b > 10000) { ret!((false, "skew")) }
+        else { if (c < 1 || c > 10000) { ret!((false, "max trade")) }
+        else { if (d < 0) { ret!((false, "min liquidity")) }
+        else { if (e < 0 || e > 1000) { ret!((false, "tolerance")) }
+        else { if (f < 0) { ret!((false, "depth floor")) }
+        else { if (g <= 0) { ret!((false, "min ticket")) }
+        else { ret!((true, Nil)) } } } } } } }
+      }
+    }
+  } |
+
+  contract Bounds(@"checkBook", @params, ret) = {
+    new de, me, ma in {
+      de!(params.get("defaultExpiryBlocks")) | me!(params.get("maxExpiryBlocks")) |
+      ma!(params.get("minAmount")) |
+      for (@a <- de; @b <- me; @c <- ma) {
+        if (a < 1) { ret!((false, "default expiry")) }
+        else { if (b < a || b > 1296000) { ret!((false, "max expiry")) }
+        else { if (c < 0) { ret!((false, "min amount")) }
+        else { ret!((true, Nil)) } } }
+      }
+    }
+  } |
+
+  contract boundsTermFields(@terms, @values, @keys, @i, ret) = {
+    if (i >= keys.length()) { ret!((true, Nil)) }
+    else {
+      match keys.nth(i) {
+        k => {
+          match terms.get(k) {
+            Nil => { ret!((false, "terms fields")) }
+            v => {
+              if (v.toString() != values.nth(i)) { ret!((false, "terms fields")) }
+              else { boundsTermFields!(terms, values, keys, i + 1, *ret) }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract boundsTerms(@terms, @values, ret) = {
+    new keysCh in {
+      keysCh!(["marketId", "slug", "base", "quote", "version",
+               "sponsorPubKey", "sponsorOwnerId",
+               "baseFeedPolicyHash", "quoteFeedPolicyHash", "baseSpreadBps",
+               "skewSpreadBps", "maxTradeBps", "minLiquidity",
+               "firstDepositToleranceBps", "depthFloorQuote", "minTicketQuote",
+               "seedBase", "seedQuote", "seedInitialShares",
+               "lockBeneficiaryPubKey", "lockMinBlocks", "lockUntilHeight",
+               "bookDefaultExpiryBlocks", "bookMaxExpiryBlocks", "maxPairAgeBlocks"]) |
+      for (@keys <- keysCh) {
+        if (values.length() != keys.length()) { ret!((false, "terms fields")) }
+        else {
+          new fCh in {
+            boundsTermFields!(terms, values, keys, 0, *fCh) |
+            for (@f <- fCh) {
+              match f {
+                (true, Nil) => { Bounds!("checkPool", terms, *ret) }
+                _ => { ret!(f) }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  contract Bounds(@"checkTerms", @terms, @values, ret) = { boundsTerms!(terms, values, *ret) } |
+
+  rl!(`rho:id:7srrj8is8zcz6de4p1oqsi87sj1fod7x4r5dzz8pf1fnnsy176co`, *rootCh) |
+  for (Root <- rootCh) {
+    rs!(bundle+{*Bounds}, *uBounds) |
+    for (@boundsUri <- uBounds) {
+      Root!("register", "component:bounds", boundsUri, 1, "kernel", *deployerId, *ack) |
+      for (@r <- ack) { deployId!([boundsUri]) }
+    }
+  }
+}
