@@ -2468,35 +2468,78 @@ mod quiet_finality_retry_tests {
         let t = Instant::now();
         assert!(!quiet_finality_retry_due(true, true, true, true, &timer, t));
         assert!(!quiet_finality_retry_due(
-            true, true, true, true, &timer,
+            true,
+            true,
+            true,
+            true,
+            &timer,
             t + ROUND_STALL_ESCAPE - Duration::from_millis(1),
         ));
         assert!(quiet_finality_retry_due(
-            true, true, true, true, &timer, t + ROUND_STALL_ESCAPE,
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE,
         ));
         assert!(!quiet_finality_retry_due(
-            true, true, true, true, &timer,
+            true,
+            true,
+            true,
+            true,
+            &timer,
             t + ROUND_STALL_ESCAPE + Duration::from_secs(1),
         ));
         assert!(quiet_finality_retry_due(
-            true, true, true, true, &timer, t + ROUND_STALL_ESCAPE * 2,
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 2,
         ));
         // Even on an expired workload, a minority must never use the retry.
         assert!(!quiet_finality_retry_due(
-            true, true, false, true, &timer, t + ROUND_STALL_ESCAPE * 3,
+            true,
+            true,
+            false,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 3,
         ));
         // A subsequent quorum observation has to re-arm, not borrow an old clock.
         assert!(!quiet_finality_retry_due(
-            true, true, true, true, &timer, t + ROUND_STALL_ESCAPE * 3,
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 3,
         ));
         assert!(!quiet_finality_retry_due(
-            true, false, true, true, &timer, t + ROUND_STALL_ESCAPE * 4,
+            true,
+            false,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 4,
         ));
         assert!(!quiet_finality_retry_due(
-            false, true, true, true, &timer, t + ROUND_STALL_ESCAPE * 5,
+            false,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 5,
         ));
         assert!(!quiet_finality_retry_due(
-            true, true, true, false, &timer, t + ROUND_STALL_ESCAPE * 6,
+            true,
+            true,
+            true,
+            false,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 6,
         ));
     }
 }
