@@ -17,7 +17,7 @@ python3 tools/mainnet-acceptance.py \
   --manifest spec/audit/evidence/mainnet-acceptance/manifest.json --strict
 ```
 
-The ordinary report command returns zero when the *evaluator worked*, **not when Mainnet passed**. The separate manually triggered strict GitHub Actions step is deliberately red until all M1–M6 evidence contracts pass. Even a strict pass is **PENDING_MAINTAINER_SIGNOFF** and explicitly **NOT_CERTIFIED**.
+The ordinary report command returns zero when the *evaluator worked*, **not when Mainnet passed**. In GitHub Actions, manual **Run workflow** defaults to \`mode=report\` to generate a non-certifying report; selecting \`mode=strict\` deliberately makes the job fail (exit 2) until every M1–M6 evidence contract passes. Even a strict pass is **PENDING_MAINTAINER_SIGNOFF** and explicitly **NOT_CERTIFIED**. A PR's green validation badge is **never** a claim that the strict acceptance gate has passed.
 
 ## Evidence contract (v1)
 
@@ -31,7 +31,7 @@ The manifest names an explicit 40-character candidate source revision and exactl
 }
 ```
 
-Evidence paths are relative to the manifest directory; absolute paths, traversal, external symlinks, files over 256 KiB and hash mismatches are blocked. Each referenced JSON witness must identify the *same* `candidate_sha`, `gate` and `criterion`, a reproducible `command`, an `environment`, a unique `run_id`, UTC `started_at`/`finished_at` and a `checks` mapping containing **exactly** the named required affirmative assertions. Example shape (illustrative only; do not submit fabricated records):
+Evidence paths are relative to the manifest directory; absolute paths, traversal, external symlinks, empty/oversized files (maximum 256 KiB) and hash mismatches are blocked. Files are parsed from the **same bounded bytes** used for their SHA-256. Duplicate JSON members, non-standard \`NaN\`/\`Infinity\`, extra manifest/witness fields, invalid UTF-8 and noncanonical UTC timestamps fail closed. Each referenced JSON witness must identify the *same* `candidate_sha`, `gate` and `criterion`, a reproducible `command`, an `environment`, a unique `run_id`, UTC `started_at`/`finished_at` and a `checks` mapping containing **exactly** the named required affirmative assertions. Example shape (illustrative only; do not submit fabricated records):
 
 ```json
 {
@@ -51,7 +51,7 @@ Evidence paths are relative to the manifest directory; absolute paths, traversal
 }
 ```
 
-These fields are **not a cryptographic proof of the measurements**. The evaluator verifies file integrity and schema consistency, not the authenticity of external hosts, identities, timestamps, reported booleans, or any particular consensus invariant. The owner must preserve raw run artifacts, hardware/cgroup measurements, block/state hashes and reviewer evidence **outside the public fixture**, with a verifiable chain of custody and independent review. A manually edited JSON report must not be treated as an independently executed acceptance run.
+The sample above is illustrative and **must not** be submitted as evidence. The v1 schema accepts only the documented fields and exactly the published affirmative \`checks\` for each criterion. These fields are **not a cryptographic proof of the measurements**. The evaluator verifies file integrity and schema consistency, not the authenticity of external hosts, identities, timestamps, reported booleans, or any particular consensus invariant. The owner must preserve raw run artifacts, hardware/cgroup measurements, block/state hashes and reviewer evidence **outside the public fixture**, with a verifiable chain of custody and independent review. A manually edited JSON report must not be treated as an independently executed acceptance run.
 
 ## Gate meaning
 

@@ -16,6 +16,7 @@ import sys
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+UTC_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
 TOKEN = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 LIMIT = 256 * 1024
 
@@ -59,23 +60,42 @@ class EvidenceError(ValueError):
     pass
 
 
-def load_json(path: Path) -> dict:
-    if path.is_symlink() or not path.is_file():
-        raise EvidenceError("evidence must be a regular file, not a symlink")
-    if path.stat().st_size > LIMIT:
-        raise EvidenceError("evidence exceeds 256 KiB")
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as e:
-        raise EvidenceError(f"invalid JSON: {type(e).__name__}") from e
-    if not isinstance(obj, dict):
-        raise EvidenceError("JSON root must be an object")
+def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise EvidenceError("duplicate JSON member")
+        obj[key] = value
     return obj
 
 
+def _reject_constant(_value: str) -> None:
+    raise EvidenceError("non-standard JSON numeric value")
+
+
+def load_json(path: Path) -> tuple[dict, str]:
+    """Read bounded bytes once; parse and digest exactly the same payload."""
+    if path.is_symlink() or not path.is_file():
+        raise EvidenceError("evidence must be a regular file, not a symlink")
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(LIMIT + 1)
+        if not raw or len(raw) > LIMIT:
+            raise EvidenceError("JSON file must be 1 byte to 256 KiB")
+        obj = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_no_duplicate_keys,
+            parse_constant=_reject_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as err:
+        raise EvidenceError(f"unreadable/invalid JSON: {type(err).__name__}") from err
+    if not isinstance(obj, dict):
+        raise EvidenceError("JSON root must be an object")
+    return obj, hashlib.sha256(raw).hexdigest()
+
 def valid_utc(value: object) -> datetime:
-    if not isinstance(value, str) or not value.endswith("Z"):
-        raise EvidenceError("timestamps must be UTC ISO-8601 with Z")
+    if not isinstance(value, str) or UTC_Z.fullmatch(value) is None:
+        raise EvidenceError("timestamps must be UTC RFC3339 with seconds and Z")
     try:
         d = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as e:
@@ -105,10 +125,14 @@ def verify_entry(root: Path, item: object, gate: str, criterion: str, candidate:
         return "BLOCKED", "missing/invalid evidence SHA-256"
     try:
         path = resolve_under(root, item["path"])
-        evidence = load_json(path)
-        real_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        evidence, real_digest = load_json(path)
         if real_digest != digest:
             return "BLOCKED", "evidence digest mismatch"
+        if set(evidence) != {
+            "gate", "criterion", "candidate_sha", "run_id", "command",
+            "environment", "started_at", "finished_at", "checks",
+        }:
+            return "BLOCKED", "unexpected or missing evidence fields"
         if evidence.get("gate") != gate or evidence.get("criterion") != criterion:
             return "BLOCKED", "evidence gate/criterion mismatch"
         if evidence.get("candidate_sha") != candidate:
@@ -132,13 +156,17 @@ def verify_entry(root: Path, item: object, gate: str, criterion: str, candidate:
         if failed:
             return "FAIL", "failed checks: " + ", ".join(failed)
         return "PASS", "digest/metadata/check contract satisfied (not independent certification)"
-    except (EvidenceError, OSError) as e:
+    except EvidenceError as e:
         return "BLOCKED", str(e)
+    except OSError:
+        return "BLOCKED", "unreadable evidence file"
 
 
 def evaluate(manifest_path: Path) -> dict:
-    manifest = load_json(manifest_path)
-    if manifest.get("schema_version") != 1:
+    manifest, _manifest_sha256 = load_json(manifest_path)
+    if set(manifest) != {"schema_version", "candidate_sha", "gates"}:
+        raise EvidenceError("unexpected or missing manifest fields")
+    if type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
         raise EvidenceError("unsupported manifest version")
     candidate = manifest.get("candidate_sha")
     if not isinstance(candidate, str) or not HEX40.fullmatch(candidate):

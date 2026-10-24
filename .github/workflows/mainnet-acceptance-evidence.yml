@@ -17,6 +17,13 @@ on:
       - 'docs/src/node/mainnet-acceptance-evidence.md'
       - '.github/workflows/mainnet-acceptance-evidence.yml'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Report only, or enforce the strict evidence contract"
+        required: true
+        type: choice
+        options: [report, strict]
+        default: report
 
 permissions:
   contents: read
@@ -47,7 +54,7 @@ jobs:
             mainnet-report.md
           retention-days: 30
       - name: Strict evidence gate (manual invocation only)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'strict'
         run: |
           python3 tools/mainnet-acceptance.py \
             --manifest spec/audit/evidence/mainnet-acceptance/manifest.json \

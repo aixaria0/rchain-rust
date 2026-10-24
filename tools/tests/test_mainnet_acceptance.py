@@ -156,6 +156,97 @@ class AcceptanceTests(unittest.TestCase):
         entry["path"] = "proofs/proof-1.json"
         self.assertEqual(self.status("M1", "failure_domains"), "BLOCKED")
 
+    def test_duplicate_json_keys_in_witness_block(self):
+        dest, entry = self.add("M1", "supported_capacity")
+        raw = dest.read_text(encoding="utf-8")
+        raw = raw.replace(
+            '"run_id": "run-1"',
+            '"run_id": "run-1", "run_id": "run-overridden"',
+            1,
+        )
+        dest.write_text(raw, encoding="utf-8")
+        entry["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
+        self.assertEqual(self.status("M1", "supported_capacity"), "BLOCKED")
+
+    def test_duplicate_json_keys_in_manifest_refused(self):
+        path = self.save()
+        raw = path.read_text(encoding="utf-8")
+        raw = raw.replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1', 1)
+        path.write_text(raw, encoding="utf-8")
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(path)
+
+    def test_nonstandard_nan_in_evidence_blocks(self):
+        dest, entry = self.add("M1", "supported_capacity")
+        raw = dest.read_text(encoding="utf-8")
+        raw = raw.replace('"environment": "isolated-test-fixture"',
+                          '"environment": NaN', 1)
+        dest.write_text(raw, encoding="utf-8")
+        entry["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
+        self.assertEqual(self.status("M1", "supported_capacity"), "BLOCKED")
+
+    def test_boolean_manifest_schema_version_rejected(self):
+        self.manifest["schema_version"] = True
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(self.save())
+
+    def test_unknown_manifest_field_rejected(self):
+        self.manifest["approved"] = True
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(self.save())
+
+    def test_extra_evidence_payload_field_blocked(self):
+        self.add("M1", "supported_capacity", overrides={"secrets": "do-not-embed"})
+        self.assertEqual(self.status("M1", "supported_capacity"), "BLOCKED")
+
+    def test_malformed_utc_blocks(self):
+        for value in [
+            "2026-10-24T00:00Z",
+            "2026-10-24T00:00:00+00:00",
+            "2026-10-24T25:00:00Z",
+            "2026-10-24T00:00:00.123456789Z",
+        ]:
+            self.assertRaises(MODULE.EvidenceError, MODULE.valid_utc, value)
+
+    def test_source_digest_is_exact_parsed_byte_sequence(self):
+        dest, entry = self.add("M1", "supported_capacity")
+        self.assertEqual(entry["sha256"], MODULE.load_json(dest)[1])
+        self.assertEqual(self.status("M1", "supported_capacity"), "PASS")
+
+    def test_empty_and_oversized_manifest_fail_closed(self):
+        path = self.save()
+        path.write_bytes(b"")
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(path)
+        path.write_bytes(b" " * (MODULE.LIMIT + 1))
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(path)
+
+    def test_manifest_symlink_rejected(self):
+        real = self.save()
+        link = self.root / "linked.json"
+        link.symlink_to(real)
+        with self.assertRaises(MODULE.EvidenceError):
+            MODULE.evaluate(link)
+
+    def test_raw_control_character_in_json_is_rejected(self):
+        dest, entry = self.add("M1", "supported_capacity")
+        raw = dest.read_text(encoding="utf-8")
+        raw = raw.replace("test-tool --isolated", "test-tool --isolated\x00", 1)
+        dest.write_text(raw, encoding="utf-8")
+        entry["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
+        self.assertEqual(self.status("M1", "supported_capacity"), "BLOCKED")
+
+    def test_output_never_promotes_unsigned_claims_to_certification(self):
+        for gate, criteria in MODULE.CRITERIA.items():
+            for criterion in criteria:
+                self.add(gate, criterion)
+        result = MODULE.evaluate(self.save())
+        self.assertEqual(result["certification"], "NOT_CERTIFIED")
+        self.assertEqual(result["release_decision"], "PENDING_MAINTAINER_SIGNOFF")
+        self.assertIn("NOT_CERTIFIED", MODULE.markdown(result))
+        self.assertIn("not an authorization", MODULE.markdown(result))
+
     def test_markdown_never_claims_approval(self):
         self.add("M1", "supported_capacity")
         report = MODULE.evaluate(self.save())
