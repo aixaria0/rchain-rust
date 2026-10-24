@@ -1736,8 +1736,36 @@ impl MergeScope {
         child_map: &BTreeMap<BlockHash, BTreeSet<BlockHash>>,
         dag_data: &BTreeMap<BlockHash, Message<BlockHash, Validator>>,
     ) -> Result<(MergeScope, Option<BlockHash>), String> {
+        // A block's merged state is a function of the ancestry of its declared
+        // parents, not of later siblings that happened to arrive at this node.
+        // prune_fringe considers children of the finalized frontier, including
+        // those outside this merge's causal past if given the global child map.
+        // A post-partition node may hold more of these children than the author,
+        // changing the final scope and recomputed pre-state for fixed parents.
+        //
+        // Restrict only the children used for pruning; keep the full message map
+        // for computing scope ancestry. Membership checks avoid cloning every
+        // parent's accumulated seen set.
+        let mut causal_children = BTreeMap::new();
+        for member in final_fringe {
+            if let Some(children) = child_map.get(member) {
+                let in_past: BTreeSet<BlockHash> = children
+                    .iter()
+                    .filter(|child| {
+                        merge_fringe.iter().any(|tip| {
+                            tip == *child
+                                || dag_data
+                                    .get(tip)
+                                    .is_some_and(|message| message.seen.contains(*child))
+                        })
+                    })
+                    .copied()
+                    .collect();
+                causal_children.insert(*member, in_past);
+            }
+        }
         let prune_fringe: BTreeSet<BlockHash> =
-            message_map::prune_fringe(dag_data, final_fringe, child_map)
+            message_map::prune_fringe(dag_data, final_fringe, &causal_children)
                 .iter()
                 .map(|m| m.id)
                 .collect();
@@ -4539,23 +4567,18 @@ mod index_stats_tests {
         assert!(after.summary().contains("blocks indexed"));
     }
 
-    /// **C215's first candidate mechanism, refuted — and the fence that keeps it refuted.**
+    /// Regress a local-view-dependent merge scope after a partition.
     ///
-    /// `MergeScope::from_dag` derives `final_scope` from `message_map::between(final_fringe,
-    /// prune_fringe)`, and `prune_fringe` is read out of **this node's** `child_map`: it takes the
-    /// *children* of the final fringe — every message that justifies a just-finalised block — and keeps
-    /// the one carrying the lowest fringe. Those children are neither the validated block's
-    /// justifications nor its ancestors; they are whatever this node happens to hold. That made "a node
-    /// holding one more unfinalised child derives a different scope" the obvious reading of C215, whose
-    /// two survivors differed by the returner's catch-up chain.
+    /// The same parent/merge fringe has the same causal ancestors on both nodes,
+    /// but one node may hold a later sibling child of the final fringe that is
+    /// absent from the parent's ancestry. That unrelated child can have an older
+    /// fringe. Reading the global child map without a causal bound changes
+    /// prune_fringe and, for a nonempty seen closure, final_scope itself.
+    /// This fixture gives every message a real seen closure (including itself);
+    /// empty seen sets masked the divergence in the earlier version of this test.
     ///
-    /// **It is not the mechanism, and this test says so with the difference present.** Node A holds only
-    /// C1 below F; node B holds C1 and C2. Their prune fringes **do** differ — asserted first, because a
-    /// probe whose inputs are equal tests nothing — and their merge scopes are nevertheless equal:
-    /// `from_fringes` bounds the walk by the merge fringe, so a lower prune bound changes nothing here.
-    ///
-    /// So the scope is a function of `(merge_fringe, final_fringe, the validated block's ancestry)`, and
-    /// the node's incidental children do not enter. C215 stays open, with one route closed.
+    /// The raw global prune boundaries below MUST differ for the fixture to be
+    /// meaningful. Scope calculation must ignore the noncausal child and agree.
     #[test]
     fn the_merge_scope_does_not_depend_on_which_children_this_node_holds() {
         use std::collections::{BTreeMap, BTreeSet};
@@ -4575,7 +4598,8 @@ mod index_stats_tests {
                    height: i64,
                    seq: i64,
                    parents: Vec<BlockHash>,
-                   fringe: Vec<BlockHash>| Message {
+                   fringe: Vec<BlockHash>,
+                   seen: Vec<BlockHash>| Message {
             id,
             height: BlockHeight::try_from(height).unwrap(),
             sender,
@@ -4583,15 +4607,31 @@ mod index_stats_tests {
             bonds_map: BTreeMap::new(),
             parents: parents.into_iter().collect(),
             fringe: fringe.into_iter().collect(),
-            seen: Arc::new(BTreeSet::new()),
+            seen: Arc::new(seen.into_iter().collect()),
         };
 
         // G is the genesis-ish base; F is a block both nodes have just finalised; C1 and C2 are two
         // blocks that justify F — the unfinalised tip. C1 carries F in its fringe; C2 is further back.
-        let g = msg(h(1), v(1), 0, 0, vec![], vec![h(1)]);
-        let f = msg(h(2), v(1), 3, 1, vec![h(1)], vec![h(1)]);
-        let c1 = msg(h(3), v(1), 4, 2, vec![h(2)], vec![h(2)]);
-        let c2 = msg(h(4), v(2), 4, 0, vec![h(2)], vec![h(1)]);
+        let g = msg(h(1), v(1), 0, 0, vec![], vec![h(1)], vec![h(1)]);
+        let f = msg(h(2), v(1), 3, 1, vec![h(1)], vec![h(1)], vec![h(1), h(2)]);
+        let c1 = msg(
+            h(3),
+            v(1),
+            4,
+            2,
+            vec![h(2)],
+            vec![h(2)],
+            vec![h(1), h(2), h(3)],
+        );
+        let c2 = msg(
+            h(4),
+            v(2),
+            4,
+            0,
+            vec![h(2)],
+            vec![h(1)],
+            vec![h(1), h(2), h(4)],
+        );
 
         let dag_data: BTreeMap<BlockHash, Message<BlockHash, Validator>> = [
             (g.id, g.clone()),
@@ -4640,10 +4680,16 @@ mod index_stats_tests {
             MergeScope::from_dag(&merge_fringe, &final_fringe, &child_map_b, &dag_data).unwrap();
 
         assert_eq!(
+            scope_a.final_scope,
+            BTreeSet::new(),
+            "the causal child keeps the final scope empty"
+        );
+        assert_eq!(scope_a.conflict_scope, BTreeSet::from([c1.id]));
+        assert_eq!(
             scope_a, scope_b,
             "law 17a: the same justifications must give the same merge scope. Node A holds only C1 \
              below F; node B also holds C2. A's scope is {:?}; B's is {:?} — the difference is \
-             `prune_fringe`'s read of this node's `child_map` (AUDIT C215).",
+             an unrelated later child must not influence causal pruning.",
             scope_a, scope_b
         );
     }
