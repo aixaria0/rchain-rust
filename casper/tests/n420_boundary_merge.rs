@@ -677,7 +677,10 @@ async fn registered_values_survive_a_burst_and_read_the_same() {
             &[],
         )
         .await;
-        assert_ne!(block.post, start, "the burst block must compute a new state");
+        assert_ne!(
+            block.post, start,
+            "the burst block must compute a new state"
+        );
     }
 
     let again = rm
