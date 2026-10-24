@@ -1346,30 +1346,54 @@ mod tests {
         let t = Instant::now();
         assert!(!quiet_finality_retry_due(&since, t, true, true));
         assert!(!quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE - Duration::from_millis(1), true, true
+            &since,
+            t + ROUND_STALL_ESCAPE - Duration::from_millis(1),
+            true,
+            true
         ));
         assert!(quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE, true, true
+            &since,
+            t + ROUND_STALL_ESCAPE,
+            true,
+            true
         ));
         assert!(!quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE + Duration::from_millis(1), true, true
+            &since,
+            t + ROUND_STALL_ESCAPE + Duration::from_millis(1),
+            true,
+            true
         ));
         assert!(quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE * 2, true, true
+            &since,
+            t + ROUND_STALL_ESCAPE * 2,
+            true,
+            true
         ));
         // A lost quorum must not use a retry to mint a different finality rule.
         assert!(!quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE * 3, false, true
+            &since,
+            t + ROUND_STALL_ESCAPE * 3,
+            false,
+            true
         ));
         assert!(!quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE * 4, true, true
+            &since,
+            t + ROUND_STALL_ESCAPE * 4,
+            true,
+            true
         ));
         assert!(quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE * 5, true, true
+            &since,
+            t + ROUND_STALL_ESCAPE * 5,
+            true,
+            true
         ));
         // Explicit proposals have their own ingress and cannot arm the timer.
         assert!(!quiet_finality_retry_due(
-            &since, t + ROUND_STALL_ESCAPE * 6, true, false
+            &since,
+            t + ROUND_STALL_ESCAPE * 6,
+            true,
+            false
         ));
     }
 
