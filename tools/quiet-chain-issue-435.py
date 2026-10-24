@@ -33,6 +33,19 @@ def node(i):
     return "acceptance-bootstrap" if i == 0 else "acceptance-validator-%d" % i
 
 
+def canonical_bonds(block, validators):
+    rows = block.get("bonds")
+    if not isinstance(rows, list) or len(rows) != validators:
+        raise RuntimeError("BOND_MAP_MISMATCH: incomplete bonded topology")
+    result = {}
+    for row in rows:
+        validator, stake = row.get("validator"), row.get("stake")
+        if not isinstance(validator, str) or not validator or type(stake) is not int or stake <= 0 or validator in result:
+            raise RuntimeError("BOND_MAP_MISMATCH: invalid or duplicate bond")
+        result[validator] = stake
+    return result
+
+
 def require_ready(validators, events, seconds=90):
     """Require connected, same-genesis nodes before taking away bonded stake.
 
@@ -55,7 +68,10 @@ def require_ready(validators, events, seconds=90):
                    genesis_hashes=roots, heights=[x.get("latestBlockNumber") for x in states])
             stable = stable + 1 if ready else 0
             if stable >= 3:
-                return
+                bonds = [canonical_bonds(xs[0], validators) for xs in blocks]
+                if any(b != bonds[0] for b in bonds):
+                    raise RuntimeError("BOND_MAP_MISMATCH: validators disagree")
+                return bonds[0]
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             stable = 0
             record(events, phase="readiness_error", error=repr(exc))
@@ -143,7 +159,7 @@ def run(args):
     if any(not isinstance(v, str) or source not in v for v in versions):
         raise AssertionError("node version does not match exact source SHA")
     base["version"] = versions[0]
-    require_ready(args.validators, events)
+    base["original_bonds"] = require_ready(args.validators, events)
     if args.initialization == "seeded":
         base["preseed_deploy_count"] = preseed_finality(args.validators, events)
     # Only one marker deploy is permitted after pausing the validator.
@@ -172,6 +188,10 @@ def run(args):
         for i in survivors:
             try:
                 block = call(40403+1000*i, "/api/last-finalized-block")["blockInfo"]
+                latest = call(40403+1000*i, "/api/blocks/1")[0]
+                if (canonical_bonds(block, args.validators) != base["original_bonds"]
+                        or canonical_bonds(latest, args.validators) != base["original_bonds"]):
+                    raise RuntimeError("BOND_MAP_MISMATCH: validator %d changed bonded stake" % i)
                 block_hash = block["blockHash"]
                 term_read = 'new return in { for (@v <- @' + json.dumps(marker) + ') { return!(v) } }'
                 response = call(40403+1000*i, "/api/v1/explore-deploy-by-block-hash",

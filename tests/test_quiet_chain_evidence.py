@@ -46,6 +46,13 @@ class QuietEvidence(unittest.TestCase):
             self.observations['2']['finalized_hash'] = value
             self.assertFalse(self.verdict())
 
+    def test_bond_map_must_be_complete_positive_and_unique(self):
+        bonds = [dict(validator=str(i), stake=100) for i in range(4)]
+        self.assertEqual(quiet.canonical_bonds(dict(bonds=bonds), 4), {str(i): 100 for i in range(4)})
+        for rows in (bonds[:3], bonds + bonds[:1], bonds[:3] + [bonds[0]], bonds[:3] + [dict(validator='3', stake=0)]):
+            with self.assertRaisesRegex(RuntimeError, 'BOND_MAP_MISMATCH'):
+                quiet.canonical_bonds(dict(bonds=rows), 4)
+
     def test_absent_marker_refuses_pass(self):
         self.observations['2']['marker_present'] = False
         self.assertFalse(self.verdict())
