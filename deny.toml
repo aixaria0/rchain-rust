@@ -11,12 +11,11 @@
 # visible and scoped to the specific RustSec advisory while the dependency is replaced.
 ignore = [
     "RUSTSEC-2021-0153",
-    # 0.26.11 only re-exports the 1.x provider, locked at patched 1.0.10. cargo-deny 0.20.2
-    # scopes package ignores to yanked crates, so this false positive needs an ID ignore.
-    # The bans below admit only that reviewed shim and patched providers; older bundled-root
-    # versions must not bypass the advisory. Remove this exception and its bans when no shim remains.
-    # Shim source: https://github.com/rustls/webpki-roots/blob/v/0.26.11/webpki-roots/src/lib.rs
-    "RUSTSEC-2026-0381",
+    # RUSTSEC-2026-0381 was ignored here for the webpki-roots 0.26.11 re-export shim while the
+    # advisory matched it. The locked tree is now on the unaffected versions (the 0.26.11 shim
+    # re-exports a 1.0.10+ provider), so nothing matches the advisory and an unused ignore is
+    # itself an error. The [bans] entries below stay: they are the guard if an older version
+    # arrives again.
 ]
 
 [licenses]
@@ -57,7 +56,8 @@ allow = [
 ignore = true
 
 [bans]
-# RUSTSEC-2026-0381 is ignored above only for the exact 0.26.11 re-export shim.
+# RUSTSEC-2026-0381 no longer matches the locked tree (0.26.11 shim re-exports a 1.0.10+
+# provider), so the advisory ignore was removed above; these bans remain the guard.
 # Refuse every other unpatched version, including pre-1.0 releases that bundle their own roots.
 # The 1.x provider must be >=1.0.10 even when reached through the allowed shim.
 deny = [
