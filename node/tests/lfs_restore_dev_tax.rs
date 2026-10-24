@@ -99,25 +99,18 @@ async fn wait_for_genesis(client: &reqwest::Client, base: &str) {
 /// null (the task has not started), so neither is a readiness signal.
 async fn wait_for_blocks(client: &reqwest::Client, base: &str, joiner: &common::TestNode) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-    let mut last_read = String::from("no response");
     loop {
-        match client.get(format!("{base}/api/blocks")).send().await {
+        let last_read = match client.get(format!("{base}/api/blocks")).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 match resp.json::<serde_json::Value>().await {
                     Ok(serde_json::Value::Array(blocks)) if !blocks.is_empty() => return,
-                    Ok(body) => {
-                        last_read = format!("HTTP {status}, body: {body}");
-                    }
-                    Err(error) => {
-                        last_read = format!("HTTP {status}, invalid JSON: {error}");
-                    }
+                    Ok(body) => format!("HTTP {status}, body: {body}"),
+                    Err(error) => format!("HTTP {status}, invalid JSON: {error}"),
                 }
             }
-            Err(error) => {
-                last_read = format!("request failed: {error}");
-            }
-        }
+            Err(error) => format!("request failed: {error}"),
+        };
         if tokio::time::Instant::now() >= deadline {
             let messages = joiner.log.messages();
             panic!(
