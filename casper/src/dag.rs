@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::{
-    BlockDagStorage, DeployId, DeployPermit, DeployerLookup, HaltRecord, HealthCounters,
-    ResetMarker, HALT_RECORD_KEY, HEALTH_COUNTERS_KEY, RESET_MARKER_KEY,
+    BlockDagStorage, DeployId, DeployIdPermit, DeployPermit, DeployerLookup, HaltRecord,
+    HealthCounters, ResetMarker, HALT_RECORD_KEY, HEALTH_COUNTERS_KEY, RESET_MARKER_KEY,
 };
 
 use rchain_block_storage::dag::finalizer::Message;
@@ -65,6 +65,20 @@ pub const MAX_TRACKED_DEPLOYERS: usize = 4_096;
 /// lockout, which is the shape this is most likely to be wrong in.
 pub const MAX_POOLED_DEPLOYS_PER_DEPLOYER: usize = 1_000;
 
+/// **The pool's term-byte budget** (B36, the same row as the count bound above).
+///
+/// The count bound treats a 1 KiB deploy and a 64 KiB deploy as one place each; the host pays for
+/// bytes. Ten thousand maximal terms is 640 MiB — more than the 1 GiB host this programme's top event
+/// names should ever spend on a pending pool at once — and the ingress is unauthenticated, so the
+/// count alone lets a caller choose the pool's memory by sending large terms. 64 MiB is reached only
+/// when the average pooled term is above ~6.4 KiB, well above ordinary traffic, so the byte bound
+/// bites on the shape the attack uses and not on volume alone.
+///
+/// Term bytes are the proxy, and the bound says so: they are the work the ingress asks the node to
+/// hold and parse. The stored row, the signature and the pool's index carry a bounded overhead on
+/// top of the term, so this is not an RSS figure.
+pub const MAX_POOLED_DEPLOY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Build a `Message` from a `BlockMetadata` given the current message map (port of
 /// `BlockDagKeyValueStorage.messageFromBlockMetadata`). Returns `None` when a justification is
 /// absent from `msg_map` (the Scala `Map.apply` throws).
@@ -89,18 +103,23 @@ pub fn message_from_block_metadata(
     })
 }
 
-/// Count a deploy store by deployer — the starting point for [`MAX_POOLED_DEPLOYS_PER_DEPLOYER`].
+/// Count a deploy store by deployer and total its term bytes — the starting point for
+/// [`MAX_POOLED_DEPLOYS_PER_DEPLOYER`] and [`MAX_POOLED_DEPLOY_BYTES`].
 ///
 /// A node that restarts with deploys already pooled has to start from what is stored rather than
-/// from zero, or every deployer's share would be handed out a second time on top of what it holds.
-async fn pooled_by_deployer(
+/// from zero, or every deployer's share would be handed out a second time on top of what it holds —
+/// and the byte budget would admit a full pool's worth again on top of the bytes already there. One
+/// pass, because the two are read from the same rows and a second scan would be the same work twice.
+async fn pooled_accounting(
     deploy_store: &Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
-) -> Result<std::collections::HashMap<Vec<u8>, usize>, String> {
+) -> Result<(std::collections::HashMap<Vec<u8>, usize>, usize), String> {
     let mut counts: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
+    let mut term_bytes = 0usize;
     for deploy in deploy_store.to_map().await?.into_values() {
         *counts.entry(deploy.deployer).or_insert(0) += 1;
+        term_bytes = term_bytes.saturating_add(deploy.data.term.len());
     }
-    Ok(counts)
+    Ok((counts, term_bytes))
 }
 
 /// Return one place to `deployer`'s share, dropping the entry at zero.
@@ -145,6 +164,18 @@ pub struct BlockDagKeyValueStorage {
     /// map cannot grow past the number of deployers currently holding a slot — which is bounded by
     /// the pool itself, not by the caller.
     pooled_by_deployer: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>>,
+    /// **The pool's term bytes in use** (see [`MAX_POOLED_DEPLOY_BYTES`]).
+    ///
+    /// Rebuilt from the store at boot and charged where a deploy is stored, returned at both places
+    /// one leaves the pool — the same three points as the per-deployer share, because a byte bound
+    /// that misses a return is a pool that fills and never drains.
+    pooled_term_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    /// **Deploy ids being admitted right now** (see [`BlockDagStorage::reserve_deploy_id`]).
+    ///
+    /// In memory only: the durable record of a pooled deploy is its own row, and a restart rebuilds
+    /// the pool's accounting from the store. Two callers that both hold a reservation cannot both
+    /// reach the parse, which is the work this exists to refuse.
+    deploy_reservations: Arc<std::sync::Mutex<std::collections::HashSet<DeployId>>>,
     block_metadata_store: Arc<BlockMetadataStore>,
     deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
     deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
@@ -246,6 +277,11 @@ impl BlockDagKeyValueStorage {
         deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
     ) -> Result<Self, String> {
         let representation = Self::rebuild_representation(&block_metadata_store).await?;
+        // **A restarted node's pool is not empty**, and both the share and the byte budget have to
+        // start from what is actually stored rather than from zero — a node that comes back with a
+        // full pool would otherwise admit a fresh ten thousand deploys per deployer, and 64 MiB of
+        // terms, on top of what it holds.
+        let (pooled_by_deployer, pooled_term_bytes) = pooled_accounting(&deploy_store).await?;
         Ok(BlockDagKeyValueStorage {
             representation: tokio::sync::RwLock::new(Arc::new(representation)),
             lock: tokio::sync::Mutex::new(()),
@@ -254,12 +290,9 @@ impl BlockDagKeyValueStorage {
                 MAX_DEPLOYS_PER_DEPLOYER_PER_SEC,
                 MAX_TRACKED_DEPLOYERS,
             ),
-            // **A restarted node's pool is not empty**, and the share has to start from what is
-            // actually stored rather than from zero — a node that comes back with a full pool would
-            // otherwise admit a fresh ten thousand deploys per deployer on top of what it holds.
-            pooled_by_deployer: Arc::new(std::sync::Mutex::new(
-                pooled_by_deployer(&deploy_store).await?,
-            )),
+            pooled_by_deployer: Arc::new(std::sync::Mutex::new(pooled_by_deployer)),
+            pooled_term_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(pooled_term_bytes)),
+            deploy_reservations: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             block_metadata_store,
             deploy_index,
             deploy_store,
@@ -902,7 +935,13 @@ impl BlockDagKeyValueStorage {
             .collect();
         if !expired.is_empty() {
             let ids: Vec<DeployId> = expired.iter().map(|(id, _)| id.clone()).collect();
+            let expired_bytes: usize = expired
+                .iter()
+                .filter_map(|(id, _)| pooled.get(id))
+                .map(|d| d.data.term.len())
+                .sum();
             self.deploy_store.delete(&ids).await?;
+            self.return_pooled_bytes(expired_bytes);
             // Return each deployer's share of the pool. An expired deploy has left it, so holding
             // the share would lock its deployer out for a deploy the node no longer has.
             for (_, deployer) in &expired {
@@ -910,6 +949,26 @@ impl BlockDagKeyValueStorage {
             }
         }
         Ok(())
+    }
+
+    /// Return `bytes` to the pool's term budget, saturating at zero.
+    ///
+    /// Two removal paths can see the same deploy, exactly as they can for the per-deployer share; a
+    /// second return must leave the budget at zero rather than wrap it to a huge number, which would
+    /// refuse every subsequent deploy on a node that had done nothing wrong.
+    fn return_pooled_bytes(&self, bytes: usize) {
+        let _ = self.pooled_term_bytes.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |in_use| Some(in_use.saturating_sub(bytes)),
+        );
+    }
+
+    /// The pool's term bytes in use — the reading a status or metrics surface publishes, and the
+    /// value a test asserts did not move when a duplicate was refused.
+    pub fn pooled_term_bytes(&self) -> usize {
+        self.pooled_term_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -1276,6 +1335,11 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 .flatten()
                 .map(|d| d.deployer.clone())
                 .collect();
+            let released_bytes: usize = pooled_here
+                .iter()
+                .flatten()
+                .map(|d| d.data.term.len())
+                .sum();
 
             let pairs: Vec<(DeployId, BlockHash)> = deploy_hashes
                 .iter()
@@ -1283,7 +1347,9 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 .collect();
             self.deploy_index.put(&pairs).await?;
             self.deploy_store.delete(&deploy_hashes).await?;
-            // The deploy has left the pool, so its share of it goes with it.
+            // The deploy has left the pool, so its share of it goes with it — both the deployer's
+            // places and the term bytes, at the same moment the rows are deleted.
+            self.return_pooled_bytes(released_bytes);
             for deployer in &released {
                 release_deployer_slot(&self.pooled_by_deployer, deployer);
             }
@@ -1511,15 +1577,60 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         deploy: SignedDeployData,
     ) -> Result<(), String> {
         let _admitted = self.deploy_admission.lock().await;
+        // **A duplicate is refused, not overwritten** (B36, W-N2-05). The early reservation in
+        // `multi_parent_casper::deploy` keeps a resubmission from reaching the parse, but
+        // `add_deploy` is also a direct ingress: without this check the duplicate's `put` overwrote
+        // its own row while `permit.commit()` kept the second per-deployer place and the second term
+        // bytes, and the single eventual release returned one of each — a permanent lockout of the
+        // deployer's share and a byte budget that never drains.
+        if self.contains_deploy_in_pool(&deploy.sig).await? {
+            return Err(format!(
+                "deploy {} is already in the pool",
+                rchain_shared::base16::encode(&deploy.sig)
+            ));
+        }
         if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
             return Err("deploy pool is full".to_string());
+        }
+        let term_bytes = deploy.data.term.len();
+        let in_use = self
+            .pooled_term_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if in_use.saturating_add(term_bytes) > MAX_POOLED_DEPLOY_BYTES {
+            return Err(format!(
+                "deploy pool is full: {in_use} of {MAX_POOLED_DEPLOY_BYTES} term bytes in use"
+            ));
         }
         self.deploy_store
             .put(&[(deploy.sig.clone(), deploy)])
             .await?;
+        self.pooled_term_bytes
+            .fetch_add(term_bytes, std::sync::atomic::Ordering::Relaxed);
         // The place is the stored deploy's now: dropping the permit must not return it.
         permit.commit();
         Ok(())
+    }
+
+    async fn reserve_deploy_id(&self, deploy_id: &DeployId) -> Result<DeployIdPermit, String> {
+        // The store first: a deploy that is already pooled is a duplicate whatever is in flight.
+        if self.contains_deploy_in_pool(deploy_id).await? {
+            return Err(format!(
+                "deploy {} is already in the pool",
+                rchain_shared::base16::encode(deploy_id)
+            ));
+        }
+        let mut reservations = self.deploy_reservations.lock().unpoison();
+        if !reservations.insert(deploy_id.clone()) {
+            return Err(format!(
+                "deploy {} is already being admitted",
+                rchain_shared::base16::encode(deploy_id)
+            ));
+        }
+        drop(reservations);
+        Ok(DeployIdPermit::holding(
+            self.deploy_reservations.clone(),
+            deploy_id.clone(),
+        ))
     }
 
     async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String> {
@@ -1535,6 +1646,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multi_parent_casper::MAX_DEPLOY_TERM_BYTES;
     use rchain_block_storage::dag::codecs::{
         BlockHashCodec, BlockMetadataCodec, SignedDeployDataCodec,
     };
@@ -1983,6 +2095,7 @@ mod tests {
         let signed = deploy_with_id(7);
         storage.add_deploy(signed.clone()).await.unwrap();
         assert!(storage.contains_deploy_in_pool(&signed.sig).await.unwrap());
+        assert_eq!(storage.pooled_term_bytes(), signed.data.term.len());
 
         let processed = rchain_models::casper::protocol::casper_message::ProcessedDeploy {
             deploy: signed.clone(),
@@ -2005,6 +2118,11 @@ mod tests {
             Some(block_hash)
         );
         assert!(storage.pooled_deploys().await.unwrap().is_empty());
+        assert_eq!(
+            storage.pooled_term_bytes(),
+            0,
+            "the included deploy's term bytes leave the budget with its row"
+        );
     }
 
     fn deploy_with_id(id: usize) -> SignedDeployData {
@@ -2304,7 +2422,11 @@ mod tests {
             .await
             .expect("the first deploy is inside the rate");
 
-        let err = crate::multi_parent_casper::deploy(&storage, &deploy_saying(0, "((("))
+        // A *different* deploy: same key, different id, so the duplicate reservation does not answer
+        // and the rate bound is what refuses it (B36's reservation would otherwise mask this test).
+        let mut second = deploy_by(0, 1);
+        second.data.term = "(((".to_string();
+        let err = crate::multi_parent_casper::deploy(&storage, &second)
             .await
             .expect_err("the second is over the rate");
         assert!(
@@ -2317,6 +2439,78 @@ mod tests {
             "and the term must never have been parsed: {}",
             err.0
         );
+    }
+
+    /// **The pool's byte budget is exact and refuses before the store** (B36).
+    ///
+    /// The count bound treats a 1 KiB deploy and a 64 KiB deploy alike; the host does not. Filling
+    /// the budget with maximal terms — each one *inside* the term bound, so nothing here is refused
+    /// for size — leaves exactly [`MAX_POOLED_DEPLOY_BYTES`], and the next byte is refused. Two
+    /// deployers are used because one may hold at most `MAX_POOLED_DEPLOYS_PER_DEPLOYER` places, and
+    /// 64 MiB of maximal terms is 1,024 deploys: fewer than the pool's count bound, which is the
+    /// point of having a second bound.
+    ///
+    /// Falsifier: remove the byte check in `commit_deploy` and the last `add_deploy` succeeds.
+    #[tokio::test]
+    async fn a_pool_at_its_byte_cap_refuses_before_the_store() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
+        let term = " ".repeat(MAX_DEPLOY_TERM_BYTES);
+        let maximal_deploys = MAX_POOLED_DEPLOY_BYTES / MAX_DEPLOY_TERM_BYTES;
+        for id in 0..maximal_deploys {
+            let deployer = u8::try_from(id / MAX_POOLED_DEPLOYS_PER_DEPLOYER).unwrap();
+            let mut deploy = deploy_by(deployer, id);
+            deploy.data.term = term.clone();
+            storage.add_deploy(deploy).await.unwrap();
+        }
+        assert_eq!(storage.pooled_term_bytes(), MAX_POOLED_DEPLOY_BYTES);
+
+        let mut extra = deploy_by(9, maximal_deploys);
+        extra.data.term = "x".to_string();
+        let err = storage
+            .add_deploy(extra.clone())
+            .await
+            .expect_err("one byte over the budget must be refused");
+        assert!(err.contains("term bytes in use"), "{err}");
+        assert!(
+            !storage.contains_deploy_in_pool(&extra.sig).await.unwrap(),
+            "a refused deploy must not reach the store"
+        );
+    }
+
+    /// **An expired deploy returns its term bytes** (B36): a budget that only charges is a pool
+    /// that fills and never drains.
+    #[tokio::test]
+    async fn an_expired_deploy_returns_its_term_bytes() {
+        let storage = build_storage().await;
+        let mut deploy = deploy_by(0, 1);
+        deploy.data.term = "x".repeat(1_024);
+        deploy.data.valid_after_block_number = 1;
+        let id = deploy.sig.clone();
+        storage.add_deploy(deploy).await.unwrap();
+        assert_eq!(storage.pooled_term_bytes(), 1_024);
+
+        storage.expire_deploys(51).await.unwrap();
+        assert!(!storage.contains_deploy_in_pool(&id).await.unwrap());
+        assert_eq!(storage.pooled_term_bytes(), 0);
+    }
+
+    /// **A duplicate is refused at the storage's own chokepoint too** — `add_deploy` is a direct
+    /// ingress, and an overwrite would charge the share and the bytes twice while the pool stored one
+    /// row. The refused copy must move neither.
+    #[tokio::test]
+    async fn adding_the_same_deploy_twice_is_refused_and_charged_once() {
+        let storage = build_storage().await;
+        let deploy = deploy_by(0, 1);
+        storage.add_deploy(deploy.clone()).await.unwrap();
+        let err = storage
+            .add_deploy(deploy.clone())
+            .await
+            .expect_err("a byte-identical deploy is already in the pool");
+        assert!(err.contains("already in the pool"), "{err}");
+        assert_eq!(storage.pooled_deploys().await.unwrap().len(), 1);
+        assert_eq!(storage.pooled_term_bytes(), deploy.data.term.len());
     }
 
     fn deploy_by(deployer: u8, id: usize) -> SignedDeployData {
@@ -2348,8 +2542,10 @@ mod tests {
             "the fourth deploy from one key must be refused by its own rate bound, got {err:?}"
         );
 
+        // A deploy the first key has not submitted: the id (the signature) is the pool's identity,
+        // so reusing id 0 here would be the duplicate reservation answering, not this bound.
         assert!(
-            storage.add_deploy(deploy_by(2, 0)).await.is_ok(),
+            storage.add_deploy(deploy_by(2, 500)).await.is_ok(),
             "a second deployer's allowance is its own; the first deployer's flood must not refuse it"
         );
     }

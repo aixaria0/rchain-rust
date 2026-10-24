@@ -111,6 +111,13 @@ pub const MAX_DEPLOY_TERM_BYTES: usize = 64 * 1024;
 /// where it is exact, and stores the deploy. Between them is the parse, and a parse that fails drops
 /// the permit, which returns the place — so a malformed term costs the node the parse and nothing
 /// else.
+///
+/// **The duplicate reservation comes before both** (`reserve_deploy_id`, B36). A byte-identical
+/// resubmission is one deploy the pool stores once, but without the reservation it bought a second
+/// parse; two concurrent copies could both do so, because a store read before the parse cannot
+/// reserve anything. The reservation is an in-memory claim for the length of this call and is dropped
+/// on every path, so a failed parse or commit releases the id. After a successful commit the store's
+/// own row is the record and the store check refuses the next copy.
 pub async fn deploy(
     dag: &dyn BlockDagStorage,
     deploy: &SignedDeployData,
@@ -123,6 +130,12 @@ pub async fn deploy(
             deploy.data.term.len()
         )));
     }
+    let id = deploy.sig.clone();
+    // **The duplicate reservation, before the parse** (B36). `admit_deploy` bounds the submitter;
+    // this bounds the work: a byte-identical resubmission — or two concurrent submissions of the
+    // same deploy — would otherwise each pay for a parse the pool stores once. The permit drops with
+    // this call, so a failed parse or a failed commit returns the id rather than locking it out.
+    let _reserved = dag.reserve_deploy_id(&id).await.map_err(parsing_error)?;
     let permit = dag
         .admit_deploy(&deploy.deployer)
         .await
@@ -132,7 +145,6 @@ pub async fn deploy(
     let normalizer_env = NormalizerEnv::new(deploy);
     rchain_rholang::normalizer::source_to_adt_with_env(&deploy.data.term, normalizer_env.to_env())
         .map_err(|e| parsing_error(format!("Error in parsing term: \n{e}")))?;
-    let id = deploy.sig.clone();
     dag.commit_deploy(permit, deploy.clone())
         .await
         .map_err(parsing_error)?;
