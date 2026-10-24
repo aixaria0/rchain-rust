@@ -470,7 +470,7 @@ acknowledging work it has not durably accepted.
 | **F-U17-07** | REVERSE | **Restart reverses the failure into a loop**: a node killed during replay restarts and replays into the same OOM | no crash-loop marker or preflight; `Restart=on-failure` repeats the replay | the unit stays `active` while the API never opens | Terminal | R3 | owed: unit A2/E — `tools/resource-restart-arm.sh` |
 | **F-U17-08** | EARLY | **The guard fires early on a healthy node**: a shared cgroup or page-cache accounting can make `MemAvailable`/`memory.current` look critically low and throttle a healthy validator | thresholds/hysteresis do not exist yet; cgroups may be shared | latent — there is no guard today | Drift | R2 | owed: unit C — `node/src/resources/state.rs::recovery_needs_sustained_headroom` |
 | **F-U17-09** | LATE | **The guard fires late**: a watchdog on the tokio runtime or a long sample interval misses a fast allocation spike, and the node OOMs before admission closes | no watchdog exists; a tokio-based one would share the starved executor | the kernel chooses the victim | Terminal | R2 | owed: unit A1/C — `node/src/resources/state.rs::a_stale_watchdog_is_throttled_not_normal` |
-| **F-U17-10** | BEFORE | **`CURRENT_ROOT` is published before the block is accepted**: replay reaches `create_checkpoint` → `record_root` before `dag.insert`, so a refused or dropped block can leave the node's current root at a state no accepted block references | `record_root` writes the root tag and `CURRENT_ROOT` together; the replay path publishes (`casper/src/runtime_replay.rs`, `rspace/src/history/roots_store.rs:81-87`) | observable after restart: `CURRENT_ROOT` names an unaccepted state | Drift | R2 | owed: unit D1 — `casper/src/blocks/block_processor.rs::a_failed_insert_leaves_the_current_root_where_it_was` |
+| **F-U17-10** | BEFORE | **`CURRENT_ROOT` is published before the block is accepted**: replay reaches `create_checkpoint` → `record_root` before `dag.insert`, so a refused or dropped block can leave the node's current root at a state no accepted block references | checkpoints now record the root as **known only** (`rspace/src/rspace.rs`, `rspace/src/history/history_repository.rs`); an accepted block publishes at the insert site (`casper/src/blocks/block_processor.rs`), and boot republishes the latest accepted root (`casper/src/engine/node_launch.rs`) | observable after restart: `CURRENT_ROOT` names an unaccepted state | Drift | R2 | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
 | **F-U17-11** | AFTER | **Derived-index cleanup after a metadata drop is skipped**: `drop_above` returns on an empty metadata drop before cleaning the deploy/deployer indexes, so a crash between the two leaves rows pointing at unknown blocks and a pooled deploy can be silently skipped | early return removed; stale rows are now derived from the **surviving** block set, and the reset bracket and boot both run the audit (`casper/src/dag.rs:410`, `casper/src/engine/reset.rs:110`, `casper/src/engine/node_launch.rs:458`) | silent skip of a pooled deploy | Drift | R3 | casper/src/dag.rs::repair_removes_stale_entries_and_releases_the_pool_slot |
 
 ### Table C — law coverage
@@ -478,7 +478,7 @@ acknowledging work it has not durably accepted.
 | deviation | law that captures it, or the law owed | why |
 |---|---|---|
 | U17-01 to U17-09 | owed: no law models host admission; these are node-local operating-policy rows, not consensus state relations | the disposition is a refusal/status/recovery test, not a theorem; the Lean4-first rule applies where a consensus state relation is at stake |
-| U17-10 | owed: a law that `CURRENT_ROOT` names only an accepted block | the publication ordering is a durability property not yet in the register; the theorem is owed **before** unit D1, per the Lean4-first rule |
+| U17-10 | law 80 — `CURRENT_ROOT` names only an accepted block | `Rchain.Publication`: `record` writes a known root, `accept` publishes one, and `a_current_root_is_an_accepted_state` rules out the orphan; `an_early_publish_reaches_an_orphan_root` is the replay-checkpoint shape |
 | U17-11 | law 72 (extended) — a rewind's completion record brackets its derived indexes as its fourth effect | `a_rewound_record_implies_every_effect_applied` now concludes `indexed = true`, and `a_skipped_index_cleanup_reaches_a_record_that_lies` is the early-return shape the extension rules out |
 
 ## 4. The fault tree
@@ -646,7 +646,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 27 · node-words owed: 44
+**Debt.** falsifiers owed: 26 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.
