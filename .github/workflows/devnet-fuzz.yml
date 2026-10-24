@@ -350,15 +350,29 @@ jobs:
           python3 - <<'PYCONTROL'
           from pathlib import Path
           p=Path("casper/src/multi_parent_casper.rs")
-          s=p.read_text(); old="if !causal_past.contains(child)"
+          s=p.read_text(); old=".filter(|h| causal_past.contains(h))"
           assert s.count(old)==1
-          p.write_text(s.replace(old,"if false && !causal_past.contains(child)"))
+          p.write_text(s.replace(old,".filter(|_| true)"))
           PYCONTROL
           if cargo test --locked -p rchain-casper --test merge_determinism later_finalisers_cannot_change_a_parents_rejection_input > target/final-gap/rejection-view-negative.log 2>&1; then
             echo "Out-of-view rejection input was not detected"
             exit 1
           fi
           grep -q "an out-of-view finaliser changed the parents' rejection set" target/final-gap/rejection-view-negative.log
+          cp /tmp/parent-merge-original.rs casper/src/multi_parent_casper.rs
+          python3 - <<'PYCONTROL'
+          from pathlib import Path
+          p=Path("casper/src/multi_parent_casper.rs")
+          s=p.read_text(); old="        for member in newly_finalized.intersection(final_scope) {"
+          assert s.count(old)==1
+          fault="\n            if dag.lookup(member).await?.and_then(|m| m.member_of_fringe) != Some(fringe_hash_of(&meta.fringe)) { continue; }"
+          p.write_text(s.replace(old,old+fault))
+          PYCONTROL
+          if cargo test --locked -p rchain-casper --test merge_determinism later_fringe_membership_cannot_rewrite_a_parents_rejection_input > target/final-gap/membership-negative.log 2>&1; then
+            echo "Mutable membership was not detected"
+            exit 1
+          fi
+          grep -q "a later fringe membership overwrote the parents' rejection input" target/final-gap/membership-negative.log
           echo "REINTRODUCED_QUIET_AND_REJECTION_VIEW_FAULTS_DETECTED"
       - name: Reintroduced send-only fault must fail the reply regression
         shell: bash
@@ -706,6 +720,28 @@ jobs:
           mkdir -p target/lfs-crash
           git rev-parse HEAD > target/lfs-crash/source.txt
           cargo test --locked -p rchain-node --test lfs_restore_dev_tax --no-run --message-format=json > target/lfs-crash/build.jsonl
+      - name: Stress undebugged restores and capture a native core on failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=$(python3 -c 'import json; rows=[json.loads(l) for l in open("target/lfs-crash/build.jsonl")]; print(next(r["executable"] for r in rows if r.get("target",{}).get("name")=="lfs_restore_dev_tax" and r.get("executable")))')
+          ulimit -c unlimited
+          echo "$PWD/target/lfs-crash/core.%p" | sudo tee /proc/sys/kernel/core_pattern
+          for attempt in $(seq 1 12); do
+            log="target/lfs-crash/undebugged-$attempt.log"
+            if timeout 240s "$binary" --nocapture --test-threads=4 > "$log" 2>&1; then
+              grep -q 'test result: ok. 9 passed; 0 failed' "$log"
+              echo "undebugged attempt=$attempt PASS" | tee -a target/lfs-crash/verdicts.txt
+            else
+              echo "undebugged attempt=$attempt FAIL" | tee -a target/lfs-crash/verdicts.txt
+              for core in target/lfs-crash/core.*; do
+                [ -f "$core" ] || continue
+                gdb --batch -ex 'set pagination off' -ex 'thread apply all bt' "$binary" "$core" > "$core.backtrace.txt" 2>&1 || true
+              done
+              tail -100 "$log"
+              exit 1
+            fi
+          done
       - name: Repeat serial and parallel restores under debugger
         shell: bash
         run: |
