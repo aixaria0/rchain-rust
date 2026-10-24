@@ -965,7 +965,9 @@ pub const OPENAPI_JSON: &str = r##"{
           "autopropose": { "type": "boolean", "description": "Continuous block production" },
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
-          "devMode": { "type": "boolean", "description": "Dev mode is on" }
+          "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "degraded": { "type": "string", "description": "The sampled resource state: normal while the host facts are readable, unavailable when they are not. A word, not a number; the pressure states arrive with the fallback-state unit" },
+          "acceptsDeploys": { "type": "boolean", "description": "Whether the node is accepting deploys right now. True until the admission/fallback units land" }
         }
       },
       "OperatorStatus": {
@@ -984,6 +986,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "degraded": { "type": "string", "description": "The sampled resource state: normal while the host facts are readable, unavailable when they are not. A pressure state arrives with the fallback-state unit" },
+          "acceptsDeploys": { "type": "boolean", "description": "Whether the node is accepting deploys right now. True until the admission/fallback units land" },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
           "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped. Two things restart it: the process (the halt is durable, re-seeded at boot), and POST /api/v1/autopropose/resume on the admin listener, which clears the record and wakes the parked timer in-process. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
@@ -1008,7 +1012,27 @@ pub const OPENAPI_JSON: &str = r##"{
           "tasksExitedScope": { "type": "string", "description": "Always 'SinceProcessStart' — see tasksPanickedScope (W-N10-02)" },
           "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" },
           "undeliveredSendsScope": { "type": "string", "description": "Always 'SinceProcessStart' — the count lives in a process-wide cell, and a restart correctly zeroes it (W-N10-02)" },
-          "shards": { "type": "object", "nullable": true, "description": "**Every member shard's health, keyed by shard id** (W-N10-04), and total over the node's members. The flat fields above are the *primary's* reading; a non-primary shard whose autopropose timer has halted is visible here and nowhere else. Null when the caller is not a node with members", "additionalProperties": { "$ref": "#/components/schemas/ShardHealthDto" } }
+          "shards": { "type": "object", "nullable": true, "description": "**Every member shard's health, keyed by shard id** (W-N10-04), and total over the node's members. The flat fields above are the *primary's* reading; a non-primary shard whose autopropose timer has halted is visible here and nowhere else. Null when the caller is not a node with members", "additionalProperties": { "$ref": "#/components/schemas/ShardHealthDto" } },
+          "resources": { "$ref": "#/components/schemas/ResourceStatus" }
+        }
+      },
+      "ResourceStatus": {
+        "type": "object",
+        "description": "The sampled host-resource snapshot (A1), on the operator surface only. A reading with a source and an age, not a certificate: state=normal means the node did not see pressure at the sample, not that it is healthy",
+        "properties": {
+          "state": { "type": "string", "description": "normal | unavailable (throttled/critical arrive with unit C)" },
+          "memAvailableMb": { "type": "integer", "format": "int64" },
+          "memTotalMb": { "type": "integer", "format": "int64" },
+          "cgroupVersion": { "type": "string", "description": "v1 | v2 | unavailable" },
+          "cgroupLimitMb": { "type": "integer", "format": "int64", "nullable": true },
+          "cgroupCurrentMb": { "type": "integer", "format": "int64", "nullable": true },
+          "cgroupOomKills": { "type": "integer", "format": "int64" },
+          "cpuQuota": { "type": "array", "nullable": true, "description": "(quota, period) from cpu.max/cpu.cfs_quota_us", "items": { "type": "integer", "format": "int64" } },
+          "dataDirFreeMb": { "type": "integer", "format": "int64", "nullable": true },
+          "rnodeProcesses": { "type": "integer", "format": "int64", "description": "Best-effort count of rnode processes in this PID namespace, including this one; advisory only" },
+          "sampledAtMs": { "type": "integer", "format": "int64" },
+          "sampleAgeMs": { "type": "integer", "format": "int64" },
+          "source": { "type": "string", "description": "Which readers contributed, e.g. meminfo+cgroup+disk" }
         }
       },
       "ShardHealthDto": {
@@ -1852,6 +1876,8 @@ mod tests {
             propose_on_deploy: true,
             manual_propose: false,
             dev_mode: true,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         }
     }
 
@@ -1889,6 +1915,7 @@ mod tests {
             undelivered_sends: 0,
             undelivered_sends_scope: "SinceProcessStart".to_string(),
             shards: None,
+            resources: Default::default(),
         }
     }
 

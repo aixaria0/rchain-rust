@@ -123,6 +123,13 @@ pub struct PublicStatus {
     /// Dev mode is on. Public: it is a configuration fact, and a client that must not be handed
     /// dev-only answers has to be able to see it.
     pub dev_mode: bool,
+    /// **The sampled resource state** (A1): `normal` while the host facts are readable, `unavailable`
+    /// when they are not. A word, not a number — numeric host data stays on the operator surface. The
+    /// pressure states (`throttled`/`critical`) arrive with the fallback-state unit.
+    pub degraded: String,
+    /// Whether the node is accepting deploys right now. True until the admission/fallback units land;
+    /// the field is the contract, and a node under pressure will make it false.
+    pub accepts_deploys: bool,
 }
 
 /// **The shard's autopropose halt**, beside the episode count the surface already carried — which
@@ -330,6 +337,38 @@ pub struct OperatorStatus {
     /// members (a stub), which law 43's catalog carries as a nullable-but-always-present key.
     #[serde(default)]
     pub shards: Option<std::collections::BTreeMap<String, ShardHealthDto>>,
+
+    /// **The sampled resource snapshot** (A1): the operator surface carries the numbers and their
+    /// provenance; the public surface carries only `degraded`/`acceptsDeploys`.
+    pub resources: ResourceStatusDto,
+}
+
+/// The numeric host-resource reading, on the operator surface only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceStatusDto {
+    /// `normal` | `unavailable` (A1); `throttled`/`critical` arrive with unit C.
+    pub state: String,
+    pub mem_available_mb: u64,
+    pub mem_total_mb: u64,
+    /// `v1` | `v2` | `unavailable`.
+    pub cgroup_version: String,
+    #[serde(default)]
+    pub cgroup_limit_mb: Option<u64>,
+    #[serde(default)]
+    pub cgroup_current_mb: Option<u64>,
+    pub cgroup_oom_kills: u64,
+    /// `(quota, period)` from `cpu.max`/`cpu.cfs_quota_us`; `null` when unquoted or unknown.
+    #[serde(default)]
+    pub cpu_quota: Option<(u64, u64)>,
+    #[serde(default)]
+    pub data_dir_free_mb: Option<u64>,
+    pub rnode_processes: u64,
+    /// When the snapshot was taken (ms since the Unix epoch) and how old it is now.
+    pub sampled_at_ms: u64,
+    pub sample_age_ms: u64,
+    /// Which readers contributed, e.g. `meminfo+cgroup+disk`.
+    pub source: String,
 }
 
 /// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).
@@ -472,6 +511,8 @@ mod tests {
             propose_on_deploy: true,
             manual_propose: false,
             dev_mode: true,
+            degraded: "normal".to_string(),
+            accepts_deploys: true,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

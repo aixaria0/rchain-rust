@@ -65,7 +65,8 @@ are held to. `endpoint` is for the reader; the check is on the type, which both 
 def envelopeCatalog : List EnvelopeRow :=
   [ { name := "ApiStatus", endpoint := "GET /api/v1/status",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
-        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode"] }
+        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
+        "degraded", "acceptsDeploys"] }
   -- **The operator half, on its own endpoint** (W-N3-01). The row above used to carry every key
   -- below, and served them on a public listener; the split *is* the finding, so the catalog splits
   -- with it. A superset of the row above by construction: `OperatorStatus` flattens `PublicStatus`
@@ -73,6 +74,7 @@ def envelopeCatalog : List EnvelopeRow :=
   , { name := "OperatorStatus", endpoint := "GET /api/v1/status/operator",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
+        "degraded", "acceptsDeploys",
         "adminHttp",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
         "autoproposeTimerHaltEpisodes", "autoproposeHalt", "autoproposeTapSuppressed",
@@ -83,7 +85,7 @@ def envelopeCatalog : List EnvelopeRow :=
         "unrestorableRecords", "unrestorableBlock",
         "tasksPanicked", "tasksPanickedScope", "tasksExited", "tasksExitedScope",
         "undeliveredSends", "undeliveredSendsScope",
-        "shards"] }
+        "shards", "resources"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
       keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet", "faucetRemaining"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",
