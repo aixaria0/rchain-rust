@@ -58,3 +58,18 @@ To diagnose the Nil observation, preserve the exact URI, query term, named block
 6. **Lifecycle:** record submission, execution, block inclusion, finality, and resulting state separately.
 
 Publish source SHA, image digest, RAM, bond set, genesis, block IDs, pre/post-state hashes, rejections, timestamps, raw JSON, and failed attempts. A finite disposable-network pass is not mainnet approval. Deployment of a hard-fork binary requires its own explicit operational authorization.
+
+## Execute the real four-validator campaign in GitHub Actions
+
+A source-pinned disposable-Docker campaign is available through the existing
+devnet fuzz workflow (workflow_dispatch input: mode=issue447-n4). This job
+builds the real node image from the selected branch, starts four validators
+on a uniquely named network, drives the 2+2 split/fork/healing witness,
+captures evidence on failure, and tears down disposable resources.
+
+    gh workflow run devnet-fuzz.yml --repo aixaria0/rchain-rust \
+      --ref verification/issue-447-partition-topology \
+      -f mode=issue447-n4
+
+A failed run is NOT a pass. The runner caps validators at 2 GiB each;
+this is not the 8-16 GiB capacity acceptance required for #447.
