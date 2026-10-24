@@ -244,6 +244,12 @@ jobs:
         # because a number nothing checks is a number that rots.
         run: tools/check-hazop-worksheet.sh --gate
 
+      - name: Resource safety case gate
+        # The resource safety case is a claim about a document: every hazard names a threat, a
+        # barrier, a consequence, a residual and evidence; no row claims a pass. `owed:` is counted
+        # debt until the programme's units land, and `--require-evidence` is the completion gate.
+        run: tools/check-resource-safety-case.sh --gate
+
       - name: Artefact-producing build paths are pin-locked and unparameterised
         # Two wargame rows name a gate rather than a test, and neither existed: `every build path
         # passes --locked` (the lock file is a promise the build has to keep) and `the shipped

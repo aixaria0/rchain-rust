@@ -222,3 +222,12 @@ CPU/RAM needs are modest. Four caveats matter more than raw specs:
    exactly the wrong substrate for LMDB's many-small-writes pattern, and it may not expose the NVMe
    directly. A cheap always-on box running bare Linux is a better validator than a faster laptop in a
    container.
+
+## Ringfencing the node
+
+The numbers above are the sizing; the **boundary** is the operator's. A node cannot set its own cgroup
+limits, choose the kernel's OOM victim or prevent two validators sharing a host. See
+[Ringfencing a node](resource-ringfence.md) for the systemd/Docker memory, CPU, I/O and PID limits, the
+dedicated-NVMe data-directory rule and the cgroup signals to alert on. The node-side preflight,
+memory-aware admission and fallback states are tracked in the
+[resource safety case](../spec/resource-safety-case.md) and HAZOP study node U17.
