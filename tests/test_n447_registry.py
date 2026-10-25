@@ -1,0 +1,38 @@
+"""Pure validation checks for #447 historical registry probe."""
+import importlib.util
+from pathlib import Path
+import unittest
+
+
+FILE = Path(__file__).resolve().parents[1] / "tools/n447-registry-pinned.py"
+SPEC = importlib.util.spec_from_file_location("issue447_registry", FILE)
+mod = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(mod)
+
+
+class RegistryProbeTests(unittest.TestCase):
+    def test_no_arbitrary_expression_acceptance(self):
+        self.assertEqual(mod.classify('{"ExprString":{"data":"42"}}'), "other")
+
+    def test_nil_is_recognized(self):
+        self.assertEqual(mod.classify('[{"ExprNil": {}}]'), "Nil")
+
+    def test_numeric_reply_is_recognized(self):
+        self.assertEqual(mod.classify('[{"ExprInt": {"data": 42}}]'), "42")
+
+    def test_different_value_is_not_passing(self):
+        self.assertEqual(mod.classify('[{"ExprInt": {"data": 41}}]'), "other")
+
+    def test_missing_expr_envelope_fails_closed(self):
+        with self.assertRaises(AssertionError):
+            mod.expr_values({"block": "anything"})
+
+    def test_uri_input_is_validated(self):
+        uri = "rho:id:" + "a" * 46
+        self.assertIn(uri, mod.lookup_term(uri))
+        with self.assertRaises(AssertionError):
+            mod.lookup_term("bad-name")
+
+
+if __name__ == "__main__":
+    unittest.main()
