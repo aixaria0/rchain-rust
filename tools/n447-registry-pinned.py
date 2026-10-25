@@ -124,6 +124,20 @@ def classify(expr):
     return "other"
 
 
+def classify_reply(reply):
+    """Classify both the value and whether the output channel captured a reply."""
+    if not isinstance(reply, dict):
+        raise AssertionError("exploratory response is not an object")
+    expr = reply.get("expr")
+    source = reply.get("replySource")
+    if expr == [] and source == "out":
+        # Nil is an empty RhoExpr list; 'out' records a captured reply.
+        return "Nil"
+    if expr == [] and source == "none":
+        return "no_reply"
+    return classify(expr_values(reply))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
@@ -164,7 +178,7 @@ def main(argv=None):
             "post": explore(query, carrying["blockHash"]),
         }
         report["classification"] = {
-            name: classify(expr_values(reply)) for name, reply in report["reads"].items()}
+            name: classify_reply(reply) for name, reply in report["reads"].items()}
         if report["classification"] != {"ancestor": "Nil", "pre": "Nil", "post": "42"}:
             raise AssertionError(f"registry state mismatch: {report['classification']}")
         report["result"] = "PASS"
