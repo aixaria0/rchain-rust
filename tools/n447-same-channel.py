@@ -654,7 +654,12 @@ def main(argv=None):
             final_attempt += 1
             time.sleep(2)
         if finalized_hash is None:
-            step("finality_failure", {"errors": final_errors[-12:]})
+            step("finality_failure", {"errors": final_errors[-12:],
+                                     "views": final_views,
+                                     "merge_hash": merge_hash,
+                                     "proposals": final_attempt,
+                                     "diagnostics": post_heal_diagnostics(
+                                         target, max(tip_a["blockNumber"], tip_b["blockNumber"]))})
             raise AssertionError("four-validator finalized block/state agreement not observed")
 
         # Re-open the exact same accepted block and application state after a
