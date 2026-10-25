@@ -43,7 +43,7 @@ def find_signed_carrier(node, term, minimum_height):
 
 
 def expr(container, channel, block_hash):
-    term = 'for (@value <- @"' + channel + '") { @"n447_result"!(value) }'
+    term = 'for (@value <- @"' + channel + '") { @"out"!(value) }'
     response = fork.explore(container, term, block_hash, False)
     if not isinstance(response, dict) or not isinstance(response.get("expr"), list):
         raise AssertionError(f"unexpected exploratory response: {response!r}")

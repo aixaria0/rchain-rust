@@ -44,6 +44,14 @@ class VerdictControls(unittest.TestCase):
         with self.assertRaises(AssertionError):
             conflict.classify_effects(True, False, {"a"}, "a", "b")
 
+    def test_reads_use_api_captured_output_channel(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "explore",
+                          return_value={"expr": [{"ExprString": {"data": "A"}}]}) as call:
+            self.assertEqual(conflict.expr("node", "n447_effect_a", "block"),
+                             [{"ExprString": {"data": "A"}}])
+        self.assertIn('@"out"!(value)', call.call_args.args[1])
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
         self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
