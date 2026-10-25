@@ -5,7 +5,7 @@
   "arm": "tools/n457-mature-join-arm.py",
   "files": {
     "mature-join.json": "9e947e6719e3bef4889c532403eefc2d88599470f9e9fa3a6da87cee6870e5e6",
-    "README.md": "8660f40a38b28beb936a9e0d2ee8dcf3a9062da9416cd75ee33d6e7da19a5c28"
+    "README.md": "bc611ac454ac1b9831a8515a4c1d95277ba993943388c86379e1a4fa3af390c9"
   },
   "non_claims": [
     "one local four-validator devnet, one reset: a finite witness",

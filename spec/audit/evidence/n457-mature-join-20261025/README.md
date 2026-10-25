@@ -58,6 +58,7 @@ approved state and enters `NodeRunning`.
 - Convergence to the tip is not asserted. Once the restore returns, the windowed catch-up owns the
   gap, and a fast-producing chain can outrun it.
 - Fringe metadata is checked as far as Law 83 says: the derived `fringe` and the singleton state pin.
-  A multi-member `fringe_state_hash` is still an assumed input (**C339**).
+  The fringe's state hashes (root and per-block) are still assumed inputs (**C339**); a singleton pin
+  against the named block's pre-/post-state was tried and refuted by the restore tests.
 - The live testnet replay remains #421/#429's, and a live re-check of the join is the observation that
   counts.

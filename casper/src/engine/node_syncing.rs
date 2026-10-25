@@ -20,7 +20,6 @@ use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
-use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
@@ -670,14 +669,13 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         .flat_map(|s| s.iter().copied())
         .collect();
     check_ancestry_shape(&fringe.ancestry, &downloaded)?;
-    let finalized_fringe: BTreeSet<BlockHash> = fringe.hashes.iter().copied().collect();
-    check_singleton_state(
-        &block_store,
-        &finalized_fringe,
-        &fringe.state_hash,
-        "the finalized fringe",
-    )
-    .await?;
+    // **The fringe's state hash is not checked here, and that is the finding** (C339). The served
+    // root is the state *at* the fringe — for the ordinary answer the latest member's
+    // `fringe_state_hash`, which is the state one fringe earlier than that block's own pre-state —
+    // so it is not a field the joiner can re-derive from the downloaded blocks. A singleton pin
+    // against the named block's pre- or post-state was attempted and the node tests refuted it: the
+    // genesis-branch claim is neither. The root is trusted, and the first block validated after the
+    // restore is what checks it indirectly through `pre_state_hash`.
 
     log.info(source, "Rholang state received and saved to store.");
     populate_dag(
@@ -767,7 +765,8 @@ fn check_ancestry_shape(
 /// justifications once its parents are in the message map — the same `latest_fringe` a validating node
 /// runs — so a row that disagrees with the derivation is refused instead of written into the DAG. This
 /// is the field the joiner *can* check; `fringe_state_hash` is not derivable this way, which is why
-/// `check_singleton_state` pins it only where it can and C339 records the multi-member residual.
+/// the fringe **state** (the root and each per-block claim) is not, so it is kept and named as the
+/// residual C339 covers.
 fn check_derived_fringe(
     repr: &DagRepresentation,
     block: &BlockMessage,
@@ -817,48 +816,6 @@ fn check_derived_fringe(
             fringe_hex(&derived),
             parent_fringes.join(", "),
             missing.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-/// **The singleton pin.** When the fringe names one block, the claimed state must be that block's
-/// post-state — the check that covers genesis and a one-validator chain. A multi-member fringe's
-/// merged state is not recomputed on the join path (C339), so this returns `Ok` and the caller reports
-/// the residual rather than pretending the claim was verified.
-async fn check_singleton_state(
-    block_store: &BlockStore,
-    fringe: &BTreeSet<BlockHash>,
-    claimed: &StateHash,
-    what: &str,
-) -> Result<(), String> {
-    if fringe.len() != 1 {
-        return Ok(());
-    }
-    // The length check above guarantees one member; the `else` keeps the function total so the
-    // type-system audit sees no panic on a reachable path (AUDIT C97's rule).
-    let Some(&member) = fringe.iter().next() else {
-        return Ok(());
-    };
-    let block = block_store
-        .get(&[member])
-        .await?
-        .into_iter()
-        .flatten()
-        .next()
-        .ok_or_else(|| {
-            format!(
-                "cannot pin {what}: fringe member {} is not downloaded",
-                member.to_hex()
-            )
-        })?;
-    if claimed.as_bytes() != block.post_state_hash.as_bytes() {
-        return Err(format!(
-            "the bootstrap claims state {} for the singleton fringe named by {what}, but block {}'s \
-             post-state is {}; refusing the join",
-            rchain_shared::base16::encode(claimed.as_bytes()),
-            member.to_hex(),
-            rchain_shared::base16::encode(block.post_state_hash.as_bytes())
         ));
     }
     Ok(())
@@ -924,25 +881,19 @@ async fn populate_dag(
                     // **The derivable half is checked; the residual is named** (Law 83, C338/C339).
                     let repr = dag.get_representation().await;
                     check_derived_fringe(&repr, &block, bf)?;
-                    check_singleton_state(
-                        block_store,
-                        &bf.fringe,
-                        &bf.fringe_state_hash,
-                        &format!("block {}'s ancestry", hash.to_hex()),
-                    )
-                    .await?;
-                    if bf.fringe.len() > 1 {
-                        log.warn(
-                            source,
-                            &format!(
-                                "[join-trust] the per-block fringe state for {} names {} members and \
-                                 is not derivable on the join path; keeping the bootstrap's claim \
-                                 (AUDIT C339)",
-                                hash.to_hex(),
-                                bf.fringe.len()
-                            ),
-                        );
-                    }
+                    // The per-block fringe **state** is the same residual as the fringe root: it is
+                    // the state at the block's fringe, not a field of the block, so the joiner keeps
+                    // the bootstrap's claim (C339). The derived `fringe` above is the half that can
+                    // be checked.
+                    log.warn(
+                        source,
+                        &format!(
+                            "[join-trust] keeping the bootstrap's per-block fringe state for {} \
+                             ({} member(s)); it is not derivable on the join path (AUDIT C339)",
+                            hash.to_hex(),
+                            bf.fringe.len()
+                        ),
+                    );
                     BlockMetadata {
                         fringe: bf.fringe.clone(),
                         fringe_state_hash: bf.fringe_state_hash,
@@ -1355,61 +1306,6 @@ mod tests {
         assert!(err.contains("derive"), "{err}");
     }
 
-    /// **The singleton pin**: one named block, so the claimed state must be that block's post-state.
-    #[tokio::test]
-    async fn a_singleton_fringe_state_hash_must_be_the_blocks_post_state() {
-        let mut block = chain_block(0, None);
-        block.post_state_hash = StateHash::new([5u8; 32]);
-        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
-            in_memory(),
-            Arc::new(BlockHashCodec),
-            Arc::new(BlockMessageCodec),
-        ));
-        block_store
-            .put(&[(block.block_hash, block.clone())])
-            .await
-            .unwrap();
-        let fringe: BTreeSet<BlockHash> = [block.block_hash].into_iter().collect();
-
-        let err = check_singleton_state(
-            &block_store,
-            &fringe,
-            &StateHash::new([6u8; 32]),
-            "the test fringe",
-        )
-        .await
-        .expect_err("a state hash that is not the block's post-state must be refused");
-        assert!(err.contains("post-state"), "{err}");
-        check_singleton_state(
-            &block_store,
-            &fringe,
-            &block.post_state_hash,
-            "the test fringe",
-        )
-        .await
-        .expect("the block's own post-state pins the fringe");
-    }
-
-    /// **C339, stated as the residual it is**: a multi-member fringe's merged state is not derivable
-    /// on the join path, so the check deliberately does not pin it. The test says so rather than
-    /// pretending the singleton pin covers the live four-validator fringe.
-    #[tokio::test]
-    async fn a_multi_member_fringe_state_is_left_to_the_bootstrap_c339() {
-        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
-            in_memory(),
-            Arc::new(BlockHashCodec),
-            Arc::new(BlockMessageCodec),
-        ));
-        let fringe: BTreeSet<BlockHash> = [hash(0), hash(1)].into_iter().collect();
-        check_singleton_state(
-            &block_store,
-            &fringe,
-            &StateHash::new([9u8; 32]),
-            "the test fringe",
-        )
-        .await
-        .expect("a multi-member fringe is C339: the join path does not recompute the merge");
-    }
     /// A non-bootstrap peer cannot consume the one-shot latch or poison the next retry target.
     #[tokio::test]
     async fn initial_fringe_signal_requires_an_authorized_nonempty_target() {

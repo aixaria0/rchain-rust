@@ -19,24 +19,26 @@ of this file is to name exactly which parts.
 * **verified** — a downloaded block's content hash; each imported trie page against its key (Law 70);
   an ancestry entry's block-hash membership, duplicate-freedom, and the `fringe` set **derived** from
   the justifications the joiner already has (the same finality gate the validator runs);
-* **residual** — which root the bootstrap calls finalised; the per-block `fringe_state_hash` when the
-  fringe is multi-member (not covered by the block hash and not derivable without recomputing the
-  merge); liveness (the peer must serve the blocks); and wire signatures/quorum finality, which the
-  join path does not check.
+* **residual** — which root the bootstrap calls finalised; the fringe's state hashes (the root and
+  each per-block `fringe_state_hash`), which name the state *at* a fringe rather than a field of a
+  block and are not derivable on the join path; liveness (the peer must serve the blocks); and wire
+  signatures/quorum finality, which the join path does not check.
 
 **The theorem that earns the phrase.** `join_is_content_trustless`: two joiners that verify the same
 block map and obtain the same trie, at the same claimed root, read the same value for every key and
 look up the same block. That is *content* trustlessness — every state byte and block body is checked
 against a hash — and it is deliberately **not** finality trustlessness. `the_residual_is_exactly_named`
 makes the residue a checked enumeration rather than a paragraph, and
-`a_lying_ancestry_state_hash_changes_replay` shows why the multi-member fringe hash cannot be silently
+`a_lying_ancestry_state_hash_changes_replay` shows why the fringe's state hash cannot be silently
 dropped: it is an input to `BlockMetadata`, which `close_block` folds into the epoch seed.
 
-**What the singleton checks buy, and what they do not.** When the fringe names one block, that block's
-post-state is the root and the per-block claim is checked against it
-(`a_singleton_fringe_pins_the_state_hash`) — which covers genesis and one-validator chains. A
-multi-member fringe's merged state is not recomputed on the join path, so the residual stands: that is
-AUDIT C339, and this law does not close it.
+**The fringe's state hash is residual, and a singleton pin was tried and refuted.** The served root is
+the state *at* the fringe — for the ordinary answer the latest member's `fringe_state_hash`, which is
+the state one fringe earlier than that block's own pre-state — not a field of the named block. A pin
+against the named block's pre- or post-state was implemented and the node's restore tests refuted it
+(the genesis-branch claim is neither), so the check was removed rather than kept as false assurance.
+What checks the root is indirect: the first block validated after the restore compares the runtime root
+with its `pre_state_hash`. That is AUDIT C339, and this law does not close it.
 -/
 
 namespace Rchain
@@ -109,10 +111,6 @@ def AncestryDerivable (j : Join) (a : Ancestry) : Prop :=
 def FringeDerivable (j : Join) (f : Fringe) : Prop :=
   ∀ a ∈ f.ancestry, AncestryDerivable derive j a
 
-/-- For a fringe that names one block, the merged state hash must be that block's post-state. -/
-def SingletonPinned (j : Join) (f : Fringe) : Prop :=
-  ∀ h ∈ f.hashes, ∀ b, j.blocks h = some b → f.stateHash = b.postState
-
 /-! ### The input classification -/
 
 /-- Every kind of input the join path consumes. -/
@@ -123,7 +121,7 @@ inductive Input where
   | triePages
   | ancestryFringe
   | claimedRootFinality
-  | multiMemberFringeState
+  | fringeState
   | liveness
   | wireSignatures
   deriving DecidableEq, Repr
@@ -139,15 +137,15 @@ def classOf : Input → InputClass
   | .genesisBlock | .genesisTrustSet => .genesisAnchored
   | .blockContent | .triePages | .ancestryFringe => .verified
   | .liveness => .assumedLiveness
-  | .claimedRootFinality | .multiMemberFringeState | .wireSignatures => .residual
+  | .claimedRootFinality | .fringeState | .wireSignatures => .residual
 
 def allInputs : List Input :=
   [.genesisBlock, .genesisTrustSet, .blockContent, .triePages, .ancestryFringe,
-   .claimedRootFinality, .multiMemberFringeState, .liveness, .wireSignatures]
+   .claimedRootFinality, .fringeState, .liveness, .wireSignatures]
 
 /-- The residual, in the words the trust-model page uses. -/
 def residualNames : List String :=
-  ["finality-of-the-claimed-root", "multi-member-fringe-state", "liveness",
+  ["finality-of-the-claimed-root", "fringe-state", "liveness",
    "wire-signature-and-finality-proofs"]
 
 def isUnverified (i : Input) : Bool :=
@@ -190,14 +188,6 @@ theorem join_is_content_trustless {blocks blocks' : Hash → Option Block} {trie
   refine ⟨?_, rfl⟩
   exact reads_determined reach_set_closed (fun k _ => rfl) r (Reaches.refl r) h1 h2
 
-/-- **A singleton fringe pins the root to a verified block.** When the fringe names one block and the
-    joiner holds it, the merged state hash must be that block's post-state — the check that covers
-    genesis and a one-validator chain. -/
-theorem a_singleton_fringe_pins_the_state_hash (j : Join) (f : Fringe) (m : Block)
-    (h : f.hashes = [m.hash]) (hb : j.blocks m.hash = some m)
-    (hp : SingletonPinned j f) : f.stateHash = m.postState :=
-  hp m.hash (by rw [h]; simp) m hb
-
 /-- **A lying ancestry row is refused.** A row whose `fringe` is not the one its block's justifications
     derive has no derivation, so the join path's check rejects it — this is the field a bootstrap
     *cannot* choose. -/
@@ -221,8 +211,8 @@ theorem the_derivation_is_a_function_of_the_verified_inputs {j j' : Join} {b : B
 
 /-- **The per-block `fringe_state_hash` changes the replay input.** Two ancestry rows with the same block
     and fringe but a different claimed state produce different replay metadata — and `close_block` folds
-    that metadata into the epoch seed, which is why a multi-member fringe's per-block hash is a residual
-    and not something the singleton check can cover. -/
+    that metadata into the epoch seed, which is why the fringe's state hashes are a residual
+    and not something the join path can cover: it is C339. -/
 def replayMetadata (a : Ancestry) : Hash × Hash × List (Validator × Nat) :=
   (a.blockHash, a.fringeStateHash, a.carriedBonds)
 
@@ -258,23 +248,8 @@ theorem a_different_multisig_list_changes_the_anchor (bondKeys m1 m2 : List Vali
     so adding a tenth input without classifying it fails the build. -/
 theorem the_residual_is_exactly_named :
     (allInputs.filter isUnverified) =
-      [Input.claimedRootFinality, Input.multiMemberFringeState, Input.liveness, Input.wireSignatures] := by
+      [Input.claimedRootFinality, Input.fringeState, Input.liveness, Input.wireSignatures] := by
   decide
-
-/-- The non-vacuity of the singleton check: a one-block fringe whose root is the block's post-state
-    passes it. -/
-def exampleJoin (h p : Hash) : Join where
-  blocks := fun k => if k = h then some ⟨h, [], [], p⟩ else none
-  trie := fun _ => none
-
-theorem a_singleton_fringe_can_pass_the_check (h p : Hash) :
-    SingletonPinned (exampleJoin h p) ⟨[h], p, []⟩ := by
-  intro k hk b hb
-  simp [exampleJoin] at hk
-  subst hk
-  simp [exampleJoin] at hb
-  cases hb
-  rfl
 
 end Trust
 end Sync

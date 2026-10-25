@@ -4401,15 +4401,16 @@ def lawsC : List Law := [
     statement := "**The join is content-trustless, not finality-trustless.** Every join input is \
       genesis-anchored (the configured genesis block/state and its `bond keys ∪ pos-multi-sig` trust \
       set), verified (block content hashes, trie pages by Law 70, ancestry membership and the \
-      *derived* `fringe`), or residual (the bootstrap's choice of finalised root, the multi-member \
-      `fringe_state_hash`, liveness, and wire signatures/finality proofs). Two joiners that verify \
-      the same block map and hold the same trie read the same value at the claimed root and answer \
-      the same block lookup; the residual is an exact, checked enumeration",
+      *derived* `fringe`), or residual (the bootstrap's choice of finalised root, the fringe's state \
+      hashes — the root and each per-block `fringe_state_hash` — liveness, and wire \
+      signatures/finality proofs). Two joiners that verify the same block map and hold the same trie \
+      read the same value at the claimed root and answer the same block lookup; the residual is an \
+      exact, checked enumeration",
     status := .provedModel,
     declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.derivedFringe,
       `Rchain.Sync.Trust.join_is_content_trustless,
-      `Rchain.Sync.Trust.a_singleton_fringe_pins_the_state_hash,
       `Rchain.Sync.Trust.a_lying_ancestry_fringe_is_refused,
+      `Rchain.Sync.Trust.the_derivation_is_a_function_of_the_verified_inputs,
       `Rchain.Sync.Trust.the_residual_is_exactly_named],
     axioms := [],
     rust := ["casper/src/engine/node_syncing.rs", "casper/src/engine/lfs_block_requester.rs",
@@ -4417,19 +4418,21 @@ def lawsC : List Law := [
     rustWitness := [
       "casper/src/engine/node_syncing.rs:an_ancestry_entry_for_an_unknown_block_is_refused",
       "casper/src/engine/node_syncing.rs:two_ancestry_entries_for_one_block_are_refused",
-      "casper/src/engine/node_syncing.rs:an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused",
-      "casper/src/engine/node_syncing.rs:a_singleton_fringe_state_hash_must_be_the_blocks_post_state",
-      "casper/src/engine/node_syncing.rs:a_multi_member_fringe_state_is_left_to_the_bootstrap_c339"],
+      "casper/src/engine/node_syncing.rs:an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused"],
     witness := [`Rchain.Sync.Trust.a_lying_ancestry_state_hash_changes_replay,
       `Rchain.Sync.Trust.genesis_trust_anchor,
-      `Rchain.Sync.Trust.a_singleton_fringe_can_pass_the_check],
+      `Rchain.Sync.Trust.a_different_multisig_list_changes_the_anchor,
+      `Rchain.Sync.Trust.the_derivation_is_a_function_of_the_verified_inputs],
     falsifiable := "The peer-chosen field the join path could not check: \
       `a_lying_ancestry_state_hash_changes_replay` shows two ancestry rows with the same block and \
       fringe and a different `fringe_state_hash` produce different replay metadata, which \
-      `close_block` folds into the epoch seed — so the multi-member fringe's claim is a residual, and \
-      pretending the singleton check covered it would be the lie this row prevents. \
+      `close_block` folds into the epoch seed — so the fringe's state hash is a residual. \
       `a_lying_ancestry_fringe_is_refused` is the field that *is* derivable and therefore refused; \
-      `a_different_multisig_list_changes_the_anchor` is the anchor's sensitivity.",
+      `a_different_multisig_list_changes_the_anchor` is the anchor's sensitivity. **A singleton pin \
+      was tried and refuted**: it compared the root with the named block's pre- or post-state, and the \
+      node's restore suite showed the served root is the state *at* the fringe — one fringe earlier \
+      than the block's pre-state — so the check was removed rather than kept as false assurance, and \
+      C339 now covers every fringe-state claim.",
     note := "**The exact wording matters.** The proved claim is *content* trustlessness: every state \
       byte and block body is checked against a hash, so two joiners with the same verified inputs \
       cannot read differently. It is **not** finality trustlessness: the joiner trusts the \
@@ -4437,10 +4440,11 @@ def lawsC : List Law := [
       multi-member fringe, and it checks neither block signatures nor a quorum finality proof. Those \
       are enumerated in `the_residual_is_exactly_named` and on the trust-model page. The Rust fix this \
       row accompanies verifies ancestry block membership, duplicate-freedom and the derived `fringe`, \
-      and pins the root for a singleton fringe; **C339 stays open** — the merged state of a \
-      multi-member fringe is not recomputed on the join path, so the residual stands. The witnesses \
-      are the join path's own tests: membership, duplicate, derived-fringe, singleton-pin, and the \
-      multi-member residual stated as one." },
+      and refuses a derivable fringe that lies; **C339 stays open** — the fringe's state hashes are \
+      not derivable on the join path, so the residual stands. The witnesses are the join path's own \
+      tests: membership, duplicate, derived-fringe, and the state-hash residual stated as one. A \
+      singleton state pin was attempted and the node's restore suite refuted it; the law records the \
+      absence rather than the false check." },
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
