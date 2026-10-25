@@ -413,6 +413,13 @@ branch, and a value that is set must parse as a REV address or startup refuses i
 it (devnets run `--dev-mode`); a node **joining** a chain whose genesis has no allocation must leave it
 empty, because naming an address there makes it derive a different genesis and refuse the block.
 
+**The address is a ceremony input, not an image default.** It is a custody decision taken when the
+genesis is created: set `--dev-tax-address` at the ceremony, record the address beside the produced
+`bonds.txt` and `wallets.txt`, and keep the shipped default empty. Every node that replays the genesis —
+the creator and every joiner — must use the identical value or the post-state differs. An image that
+ships a provisional recipient silently gives every devnet built from it an allocation nobody asked for,
+and a genesis cut with a provisional recipient cannot change without a hard fork.
+
 **`dev-tax-vesting-blocks` is how long that allocation takes to unlock**, in blocks from genesis. The
 allocation is credited to a *vesting account* rather than a spendable vault, and each epoch boundary
 releases the vested part into the recipient's vault — linear, no cliff, and released at boundaries
