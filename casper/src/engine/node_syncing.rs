@@ -16,7 +16,7 @@ use rchain_block_storage::dag::finalizer::{Finalizer, Message};
 use rchain_block_storage::dag::liveness;
 use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_block_storage::syntax::insert_genesis;
-use rchain_comm::peer_node::PeerNode;
+use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
@@ -54,6 +54,12 @@ pub struct NodeSyncing<I: RSpaceImporter> {
     importer: Option<I>,
     incoming_blocks_tx: tokio::sync::mpsc::Sender<BlockMessage>,
     incoming_blocks_rx: Option<tokio::sync::mpsc::Receiver<BlockMessage>>,
+    /// **The peers that answered a block message during the current attempt** (#457). The requester
+    /// broadcasts, and a `BlockMessage` no longer carries its source when it reaches it; `handle`
+    /// does receive the `PeerNode`, so this set is what lets the give-up error name the peers that
+    /// never answered — the reachability shape (a joiner admitting only its bootstrap) that a count
+    /// alone could not distinguish. Cleared at each attempt's start.
+    answered_block_peers: Arc<tokio::sync::Mutex<BTreeSet<NodeIdentifier>>>,
     tuple_space_tx: tokio::sync::mpsc::Sender<StoreItemsMessage>,
     tuple_space_rx: Option<tokio::sync::mpsc::Receiver<StoreItemsMessage>>,
     start_requester: bool,
@@ -183,6 +189,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             importer: Some(importer),
             incoming_blocks_tx,
             incoming_blocks_rx: Some(incoming_blocks_rx),
+            answered_block_peers: Arc::new(tokio::sync::Mutex::new(BTreeSet::new())),
             tuple_space_tx,
             tuple_space_rx: Some(tuple_space_rx),
             start_requester: true,
@@ -245,6 +252,11 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                     self.log_source,
                     &format!("BlockMessage received #{} from {peer}.", b.block_number),
                 );
+                // Record who answered before the payload loses its source (#457's diagnostic).
+                self.answered_block_peers
+                    .lock()
+                    .await
+                    .insert(peer.id.clone());
                 chan::send(&self.incoming_blocks_tx, b.clone()).await;
                 Ok(())
             }
@@ -411,6 +423,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             // The importer and both receivers are moved in here and have no inverse: `handle` holds
             // only the senders, `self` never reaches the task, and `finished` carries no payload.
             // So the loop takes them by `&mut` across attempts instead of re-taking them (AUDIT C181).
+            let answered_block_peers = self.answered_block_peers.clone();
             tokio::spawn(async move {
                 let source = LogSource::new("casper.engine.NodeSyncing");
                 let mut importer = importer;
@@ -440,6 +453,9 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
 
                     started += 1;
                     note_sync_attempt(started);
+                    // A new attempt starts from an empty answer set: the diagnostic names the peers
+                    // that answered *this* walk, not one that helped a previous one.
+                    answered_block_peers.lock().await.clear();
 
                     let outcome = run_approved_state_sync(
                         &target,
@@ -452,6 +468,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                         &mut importer,
                         &mut incoming_blocks_rx,
                         &mut tuple_space_rx,
+                        &answered_block_peers,
                     )
                     .await;
 
@@ -563,6 +580,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     importer: &mut I,
     incoming_blocks_rx: &mut tokio::sync::mpsc::Receiver<BlockMessage>,
     tuple_space_rx: &mut tokio::sync::mpsc::Receiver<StoreItemsMessage>,
+    answered_block_peers: &Arc<tokio::sync::Mutex<BTreeSet<NodeIdentifier>>>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeSyncing");
     let block_fut = request_blocks(
@@ -572,6 +590,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         &block_store,
         comm_util.as_ref(),
         log.as_ref(),
+        answered_block_peers,
     );
     let tuple_fut = request_tuple_space(
         fringe,

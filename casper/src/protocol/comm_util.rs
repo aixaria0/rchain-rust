@@ -73,11 +73,11 @@ impl CommUtil {
         }
     }
 
-    /// How many peers this node is connected to. The block walk broadcasts its requests to this set,
-    /// so a non-zero count with no answers is a diagnostic: it is the shape of a joiner whose inbound
-    /// protocol/discovery ports admit only its bootstrap — peers gossip to it, and cannot answer it.
-    pub async fn connected_peer_count(&self) -> usize {
-        self.connections.read().await.len()
+    /// The peers this node is connected to. The block walk broadcasts its requests to this set, and
+    /// the give-up diagnostic lists the members that never answered — the reachability shape of a
+    /// joiner whose inbound protocol/discovery ports admit only its bootstrap.
+    pub async fn connected_peers(&self) -> Vec<PeerNode> {
+        self.connections.read().await.clone()
     }
 
     /// Broadcast a packet (in one piece) to up to `scope_size` random peers (port of `sendToPeers`).

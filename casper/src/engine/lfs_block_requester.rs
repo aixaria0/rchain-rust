@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rchain_block_storage::block_store::BlockStore;
+use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, FinalizedFringe};
 use rchain_shared::log::{Log, LogSource};
@@ -51,6 +52,18 @@ type St = LfsState<BlockHash>;
 /// same treatment `block-storage/src/dag/liveness.rs`'s `LIVENESS_WINDOW` records for its own
 /// provisional number.
 pub const MAX_IDLE_ROUNDS: u32 = 3;
+
+/// The peers whose block messages never arrived during the attempt — the reachability diagnostic's
+/// list. `asked` is the connection set at give-up, `answered` the peers `NodeSyncing::handle` saw a
+/// `BlockMessage` from. A peer in the first set and not the second is one that could not (or would
+/// not) answer, which is exactly the inbound-reachability shape #457 measured.
+fn unanswered_peers(asked: &[PeerNode], answered: &BTreeSet<NodeIdentifier>) -> Vec<String> {
+    asked
+        .iter()
+        .filter(|p| !answered.contains(&p.id))
+        .map(|p| p.to_string())
+        .collect()
+}
 
 /// Validate a received block and, if accepted, request its justifications. Returns whether the
 /// block was requested and its hash valid (port of `validateReceivedBlock`).
@@ -230,6 +243,7 @@ pub async fn request_blocks(
     block_store: &BlockStore,
     comm_util: &CommUtil,
     log: &dyn Log,
+    answered_block_peers: &Arc<tokio::sync::Mutex<BTreeSet<NodeIdentifier>>>,
 ) -> Result<St, String> {
     let source = LogSource::new("casper.engine.LfsBlockRequester");
 
@@ -278,17 +292,22 @@ pub async fn request_blocks(
                     if finished == last_finished {
                         idle_rounds += 1;
                         if idle_rounds >= MAX_IDLE_ROUNDS {
-                            let peers = comm_util.connected_peer_count().await;
+                            let asked = comm_util.connected_peers().await;
+                            let answered = answered_block_peers.lock().await.clone();
+                            let silent = unanswered_peers(&asked, &answered);
                             return Err(format!(
                                 "no block finished in {idle_rounds} consecutive idle rounds of \
                                  {request_timeout:?} ({finished} block(s) finished; outstanding: \
                                  {init} init, {requested} requested, {received} received; \
-                                 first outstanding: [{}]; {peers} connected peer(s) were asked). \
-                                 The fringe names state no peer is serving, every answer is being \
-                                 refused, or the peers cannot answer this node: a joiner whose \
-                                 protocol and discovery ports admit only its bootstrap gets \
-                                 exactly this — they gossip to it and cannot dial in (#457/#458)",
-                                sample.join(", ")
+                                 first outstanding: [{}]; {} connected peer(s) were asked; no block \
+                                 message from [{}]). The fringe names state no peer is serving, every \
+                                 answer is being refused, or the peers cannot answer this node: a \
+                                 joiner whose protocol and discovery ports admit only its bootstrap \
+                                 gets exactly this — they gossip to it and cannot dial in \
+                                 (#457/#458)",
+                                sample.join(", "),
+                                asked.len(),
+                                silent.join(", ")
                             ));
                         }
                     } else {
@@ -400,6 +419,23 @@ mod tests {
     use crate::engine::ReqStatus;
     use crate::protocol::casper_message_protocol::BlockRequestSerde;
     use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
+
+    fn no_answers() -> Arc<tokio::sync::Mutex<BTreeSet<NodeIdentifier>>> {
+        Arc::new(tokio::sync::Mutex::new(BTreeSet::new()))
+    }
+
+    /// #457's diagnostic: the give-up lists the peers that never sent a block message, not only a
+    /// count. `peer()` builds the identifier from its name, so the answered one must be absent.
+    #[test]
+    fn unanswered_peers_names_the_peers_that_did_not_answer() {
+        let asked = vec![peer("bootstrap"), peer("validator-1"), peer("validator-2")];
+        let answered: BTreeSet<NodeIdentifier> = [peer("validator-1").id].into_iter().collect();
+        let silent = unanswered_peers(&asked, &answered);
+        assert_eq!(silent.len(), 2);
+        assert!(!silent.contains(&peer("validator-1").to_string()));
+        assert!(silent.contains(&peer("bootstrap").to_string()));
+        assert!(silent.contains(&peer("validator-2").to_string()));
+    }
 
     fn source() -> LogSource {
         LogSource::new("casper.engine.LfsBlockRequester.test")
@@ -704,6 +740,7 @@ mod tests {
             &store,
             &comm_util,
             &NopLog,
+            &no_answers(),
         )
         .await
         .expect("a healthy store");
@@ -809,6 +846,7 @@ mod tests {
             &store,
             &comm_util,
             &NopLog,
+            &no_answers(),
         )
         .await
         .expect("a healthy store");
@@ -933,6 +971,7 @@ mod tests {
             &failing,
             &comm_util,
             &NopLog,
+            &no_answers(),
         )
         .await;
 
@@ -986,6 +1025,7 @@ mod tests {
                 &failing,
                 &comm_util,
                 &NopLog,
+                &no_answers(),
             ),
         )
         .await;
@@ -1047,6 +1087,7 @@ mod tests {
             &store,
             &comm_util,
             &NopLog,
+            &no_answers(),
         )
         .await
         .expect("an empty fringe is not an error for this function");
@@ -1178,6 +1219,7 @@ mod tests {
                 &store,
                 &comm_util,
                 &NopLog,
+                &no_answers(),
             ),
         )
         .await;
@@ -1208,6 +1250,10 @@ mod tests {
             err.contains("connected peer(s) were asked"),
             "the failure must name the peer count and the reachability shape (#457/#458): a joiner \
              that admits only its bootstrap receives gossip and no state answers: {err}"
+        );
+        assert!(
+            err.contains("no block message from"),
+            "the failure must name the peers that did not answer, not only how many are connected: {err}"
         );
         assert!(
             transport
@@ -1281,6 +1327,7 @@ mod tests {
                 &store,
                 &comm_util,
                 &NopLog,
+                &no_answers(),
             ),
         )
         .await
@@ -1352,6 +1399,7 @@ mod tests {
                 &store,
                 &comm_util,
                 &NopLog,
+                &no_answers(),
             ),
         )
         .await

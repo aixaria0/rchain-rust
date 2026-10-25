@@ -11678,8 +11678,9 @@ not claim answers arrive.
 **Fix.** `LfsState` gains `known` and `outstanding_breakdown`; `received` accepts any key in `d`, and
 `get_next` selects `Received` on a resend. `validate_received_block` now checks membership and the
 content hash **before writing any state**, and `process_block` resends immediately on a rejection.
-Unknown hashes are still dropped. The give-up error reports `init/requested/received` and the first
-eight outstanding hashes. **The devnet arm** (`spec/audit/evidence/n457-mature-join-20261025/`): four
+Unknown hashes are still dropped. The give-up error reports `init/requested/received`, the first eight outstanding hashes, and —
+from the reachability work — the connected peers the walk asked and the peers that never sent a block
+message, so a joiner whose inbound ports admit only its bootstrap is named rather than counted. **The devnet arm** (`spec/audit/evidence/n457-mature-join-20261025/`): four
 validators to 28+ rounds, validator-3 reset to an empty store, LFS restore complete in 34.9 s with
 `status.sync` cleared, the restored anchor a block the bootstrap holds, and no `LFS state sync
 failed` in its log. That is the mature join the live chain could not do; the live chain itself is
