@@ -449,8 +449,12 @@ Genesis hash `713c0ebb0eb4ce866ae118aa1177a498b4edb2d431dd8b77d28abcdd4da9ea91` 
 `GET /api/status` → `address`.
 
 The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
-content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
-those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, adding B's
+content itself** — not on either node's identity, **provided the ceremony is run by the first bond in
+bonds-file order** (Law 84, #456): that bond is the block's sender, the blessed deploys' signer and the
+governance admin, and a node whose key is not first refuses to create a genesis. Before that rule the
+creator's own key entered both the sender and the deploys' signatures, so two nodes with identical
+inputs produced different blocks — the `rnode-c` fork #456 measured. With the rule, the hash is stable
+across rebuilds but changes when any input changes: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, adding B's
 bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
 produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap of 250 and an active set of
 4 — produced `713c0ebb…`, and the 2026-10-24 rebuild — the shard renamed from `/root` to `/testnet` — produced

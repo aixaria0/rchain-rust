@@ -60,6 +60,7 @@ import Rchain.Attempts
 import Rchain.Stop
 import Rchain.Reset
 import Rchain.Genesis
+import Rchain.GenesisAnchor
 import Rchain.Vesting
 import Rchain.Publication
 import Rchain.Casper.Views

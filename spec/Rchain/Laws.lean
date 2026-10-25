@@ -4445,6 +4445,39 @@ def lawsC : List Law := [
       tests: membership, duplicate, derived-fringe, and the state-hash residual stated as one. A \
       singleton state pin was attempted and the node's restore suite refuted it; the law records the \
       absence rather than the false check." },
+  { number := 84, layer := "Casper",
+    statement := "**The genesis anchor is a function of the genesis inputs, and the ceremony refuses \
+      any other key.** The block's sender, the blessed deploys' signer and the governance admin are \
+      the **first bond in the bonds file** — an input — so identical inputs give identical bytes \
+      (the signing schemes are deterministic) and therefore one genesis hash. A node whose local key \
+      is not that bond must refuse to run the ceremony rather than build a private chain. The old \
+      rule let each node's own key sign, so identical inputs gave different blocks (#456)",
+    status := .provedModel,
+    declarations := [`Rchain.GenesisInputs, `Rchain.genesisCreator, `Rchain.mayCreate,
+      `Rchain.the_genesis_anchor_is_a_function_of_the_inputs,
+      `Rchain.the_genesis_state_is_a_function_of_the_inputs],
+    axioms := [],
+    rust := ["casper/src/engine/node_launch.rs", "casper/src/genesis/mod.rs",
+      "casper/src/bonds_parser.rs"],
+    rustWitness := [
+      "casper/src/engine/node_launch.rs:the_genesis_ceremony_is_the_first_bond_or_refused"],
+    witness := [`Rchain.an_open_ceremony_reaches_two_genesis_hashes,
+      `Rchain.the_first_bond_may_create],
+    falsifiable := "An **open** ceremony — any local key may sign — reaches two genesis hashes from \
+      one bonds file: `an_open_ceremony_reaches_two_genesis_hashes` exhibits it with the smallest \
+      input (one bond, two other keys), and `mayCreate` refuses both under the rule. The measured \
+      live instance is #456: two nodes, identical inputs, sender and post-state both different.",
+    note := "**The rule is the first bond in bonds-file order, and the current network already obeys \
+      it**: #456's table shows the network genesis sender is the first bond's key. So a correctly-run \
+      ceremony produces the same hash as before; the change is the **refusal**, not a new genesis for \
+      nets that followed it. What the model does not restate: that secp256k1 (RFC-6979) and Ed25519 \
+      signatures are deterministic, which is what makes identical signed deploys give identical \
+      bytes — that is `crypto/`'s property and its own tests. The Rust check is at `create_genesis`: \
+      the first bond is read from the file (not the sorted map, which loses file order) and the local \
+      key must equal it. The witness is the two-key ceremony test: the first bond is admitted, the \
+      second refuses with both keys named, and the autogen path's `.sk` supplies the generated first \
+      bond's key for a standalone node." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
