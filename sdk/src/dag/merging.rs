@@ -1028,6 +1028,47 @@ mod tests {
     }
 
     #[test]
+    fn final_constraints_are_invariant_under_rejection_costs() {
+        for forced_cost in 0..8 {
+            for survivor_cost in 0..8 {
+                let ((accepted, rejected), _) = resolve_conflict_set_with_census(
+                    &set([2, 3]),
+                    &set([1]),
+                    &set([]),
+                    |c| if *c == 2 { forced_cost } else { survivor_cost },
+                    &map([(1, set([2])), (2, set([1, 3])), (3, set([2]))]),
+                    &map([]),
+                    &BTreeMap::<i32, BTreeMap<i32, i64>>::new(),
+                    &BTreeMap::<i32, i64>::new(),
+                    SearchBudget::NODE,
+                )
+                .unwrap();
+                assert_eq!((accepted, rejected), (set([3]), set([2])));
+            }
+        }
+    }
+
+    #[test]
+    fn forced_rejection_cannot_trigger_numeric_overflow_rejections() {
+        let ((accepted, rejected), _) = resolve_conflict_set_with_census(
+            &set([2, 3]),
+            &set([1]),
+            &set([]),
+            |_| 1,
+            &map([(1, set([2])), (2, set([1]))]),
+            &map([]),
+            &BTreeMap::from([
+                (2, BTreeMap::from([(7, -100)])),
+                (3, BTreeMap::from([(7, 1)])),
+            ]),
+            &BTreeMap::from([(7, 0)]),
+            SearchBudget::NODE,
+        )
+        .unwrap();
+        assert_eq!((accepted, rejected), (set([3]), set([2])));
+    }
+
+    #[test]
     fn with_dependencies_collects_transitive_closure() {
         let dependents_map = map([
             (1, set([3, 9])),

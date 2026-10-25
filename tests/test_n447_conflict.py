@@ -13,6 +13,47 @@ conflict = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(conflict)
 
 
+class FinalizedAgreementControls(unittest.TestCase):
+    def views(self):
+        return {n: {"blockHash": "final", "preStateHash": "pre",
+                    "postStateHash": "post"} for n in conflict.CONTAINERS}
+
+    def test_missing_validator_fails(self):
+        with self.assertRaisesRegex(AssertionError, "missing validator"):
+            conflict.require_finalized_agreement({}, "merge", {})
+
+    def test_different_finalized_blocks_fail(self):
+        views = self.views()
+        views[conflict.CONTAINERS[-1]]["blockHash"] = "other"
+        with self.assertRaisesRegex(AssertionError, "different finalized"):
+            conflict.require_finalized_agreement(views, "merge", {})
+
+    def test_unrelated_finalized_block_fails(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "merge_state_agreement"), patch.object(
+                conflict, "verify_branch_descends_from_seed",
+                side_effect=AssertionError("unrelated finalized block")):
+            with self.assertRaisesRegex(AssertionError, "unrelated"):
+                conflict.require_finalized_agreement(self.views(), "merge", {})
+
+    def test_finalized_state_mismatch_fails(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "merge_state_agreement"), patch.object(
+                conflict, "verify_branch_descends_from_seed"), patch.object(
+                conflict, "pinned_application_snapshot", return_value={"cell": [0]}):
+            with self.assertRaisesRegex(AssertionError, "application state"):
+                conflict.require_finalized_agreement(self.views(), "merge", {"cell": [2]})
+
+    def test_common_finalized_descendant_with_winner_passes(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "merge_state_agreement"), patch.object(
+                conflict, "verify_branch_descends_from_seed") as ancestry, patch.object(
+                conflict, "pinned_application_snapshot", return_value={"cell": [2]}):
+            self.assertEqual(conflict.require_finalized_agreement(
+                self.views(), "merge", {"cell": [2]}), "final")
+            self.assertEqual(ancestry.call_count, 4)
+
+
 class VerdictControls(unittest.TestCase):
     def test_a_survives_b_rejected(self):
         self.assertEqual(conflict.classify_effects(True, False, {"b"}, "a", "b"), "A")
