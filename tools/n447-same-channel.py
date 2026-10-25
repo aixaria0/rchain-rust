@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import traceback
 
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
@@ -28,13 +29,23 @@ B = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 2) | @"n447_effect_b"!("B"
 
 def find_signed_carrier(node, term, minimum_height):
     """Find the containing block by signed term, not by the current tip."""
-    for block in sorted(fork.blocks(node, 75), key=lambda b: int(b["blockNumber"])):
+    candidates = []
+    for entry in fork.blocks(node, 75):
+        if isinstance(entry, dict):
+            candidates.append(entry)
+        elif isinstance(entry, str) and len(entry) == 64:
+            candidates.append(fork.block_info(node, entry))
+        else:
+            raise AssertionError(f"unexpected block inventory item type: {type(entry).__name__}")
+    for block in sorted(candidates, key=lambda b: int(b["blockNumber"])):
         if (int(block["blockNumber"]) <= minimum_height
                 or int(block.get("deployCount", 0)) < 1):
             continue
         body = fork.request(node, "/api/block/" + block["blockHash"])
-        matches = [d["sig"] for d in body.get("deploys", [])
-                   if d.get("term") == term]
+        if not isinstance(body, dict) or not isinstance(body.get("deploys"), list):
+            raise AssertionError(f"malformed block deploy inventory: {body!r}")
+        matches = [d["sig"] for d in body["deploys"]
+                   if isinstance(d, dict) and d.get("term") == term]
         if len(matches) == 1:
             return block, matches[0]
         if len(matches) > 1:
@@ -216,6 +227,11 @@ def main(argv=None):
         record["result"] = "PASS"
     except Exception as error:
         record["error"] = f"{type(error).__name__}: {error}"
+        record["traceback"] = traceback.format_exc()
+        try:
+            record["last_block_inventory"] = fork.blocks(CONTAINERS[0], 15)
+        except Exception as diagnostic_error:
+            record["inventory_error"] = f"{type(diagnostic_error).__name__}: {diagnostic_error}"
         raise
     finally:
         p.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
@@ -225,6 +241,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:
-        print("FAIL:", error, file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
         sys.exit(1)
