@@ -65,6 +65,7 @@ import Rchain.Casper.Views
 import Rchain.Casper.Bonds
 import Rchain.Casper.Rounds
 import Rchain.Pos
+import Rchain.Casper.Lifecycle
 import Rchain.Bounded
 import Rchain.Namespace
 import Rchain.Charging

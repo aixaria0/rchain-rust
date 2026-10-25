@@ -4325,6 +4325,43 @@ def laws : List Law := [
       through the fringe's ancestry but this module does not prove the DAG finite. **Law 69 is not \
       replaced**: it models the tuple-space page walk, whose validation failure aborts the attempt and \
       so has no silent stranded key. `rustWitness` is owed until the block-requester tests land." },
+
+  { number := 82, layer := "PoS",
+    statement := "**A validator's lifecycle has six transitions, and trust is the admission one.** \
+      `observer → trusted → bonded → active → withdrawing → claimable`, with `removed` as the model's \
+      reading of the Rust's absence: `trust`/`untrust` move the admission list (a trusted caller, \
+      never a self-revocation), `bond` is self-only and requires trust and leaves the active set \
+      alone, `withdraw` stages without moving a coin, the epoch boundary is the only step that can \
+      *add* to the active set, and a slash needs evidence. Revocation is not confiscation: `untrust` \
+      changes no stake ledger, so an untrusted-but-bonded validator stays in consensus",
+    status := .provedModel,
+    declarations := [`Rchain.Lifecycle, `Rchain.LifecycleStep, `Rchain.phaseOf,
+      `Rchain.trust_only_from_a_trusted_key, `Rchain.untrust_leaves_the_bond_alone,
+      `Rchain.the_trusted_set_never_empties, `Rchain.bond_is_self_only,
+      `Rchain.activation_only_at_a_boundary],
+    axioms := [],
+    rust := ["rholang/src/native_state.rs", "rholang/src/system_processes.rs",
+      "casper/src/genesis/mod.rs"],
+    rustWitness := [],
+    witness := [`Rchain.untrust_does_not_deactivate, `Rchain.the_bond_step_does_not_activate,
+      `Rchain.a_justified_slash_is_a_step, `Rchain.a_bond_reaches_the_bonded_phase],
+    falsifiable := "The rule this replaces is C111's: `untrust` called `slash` on a bonded target, so \
+      one trusted signature moved another validator's entire stake to the Coop vault. In the model that \
+      rule would be a second `doUntrust` writing `pos`, and `untrust_leaves_the_bond_alone` would be \
+      unprovable by `rfl` — the theorem is the state equality itself, not a description of it. \
+      `the_trusted_set_never_empties` excludes the other shape: a caller revoking itself out of the \
+      admission list. `activation_only_at_a_boundary` excludes activation by `bond`.",
+    note := "**The audit found the code matches the law, with one contradiction that is a comment.** \
+      `trust`/`untrust` bind the caller to the unforgeable `deployerId` (`system_processes.rs:2043-2063`), \
+      `bond`/`withdraw` bind the actor to the deployer (`:1852-1901`), `untrust` does not confiscate \
+      (C111), and activation is `select_active` at a boundary. The stale module header at \
+      `rholang/src/native_state.rs:25` says `slash`/`untrust` 'remove the validator and confiscate the \
+      stake', which the code and C111 contradict; the comment is fixed, the semantics are not. \
+      **What the model does not claim**: `Validator` is an id and the vault is one total, so the \
+      per-vault debit of a bond is the Rust's property and not a theorem here; the Rust's min/max bond \
+      bounds are policy outside the state machine; and `retired` is model-only — the Rust observes \
+      removal as absence. `untrust` leaving an active validator active is deliberate and is named as a \
+      non-claim of Law 83's trust model. `rustWitness` is owed until the lifecycle tests land." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
