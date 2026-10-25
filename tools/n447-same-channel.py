@@ -113,6 +113,47 @@ def wait_for_block_on_all(block_hash, seconds=120):
     raise AssertionError("four-validator merged-block/state agreement not observed")
 
 
+def brief_block_evidence(info, fork_tips):
+    """Keep justifications and rejection IDs without repeating bond tables."""
+    justifications = set(info.get("justifications") or [])
+    return {
+        "height": info.get("blockNumber"),
+        "hash": info.get("blockHash"),
+        "parents": len(justifications),
+        "fork_tips_directly_justified": sorted(justifications & set(fork_tips)),
+        "rejected_deploys": info.get("rejectedDeploys", [])[:12],
+        "post_state_hash": info.get("postStateHash"),
+    }
+
+
+def post_heal_diagnostics(fork_tips, minimum_height):
+    """A missing direct merge needs node-level evidence, not a generic timeout."""
+    result = {}
+    for node in CONTAINERS:
+        try:
+            inventory = [
+                brief_block_evidence(item, fork_tips)
+                for item in fork.blocks(node, 50)
+                if isinstance(item, dict)
+                and int(item.get("blockNumber", -1)) > minimum_height
+            ]
+            inventory.sort(key=lambda item: (item["height"], item["hash"] or ""))
+            result[node] = {
+                "observed_block_count": len(inventory),
+                "direct_justification_count": sum(
+                    len(item["fork_tips_directly_justified"]) == 2 for item in inventory
+                ),
+                "recent_blocks": inventory[-20:],
+                "status": {
+                    key: fork.status(node).get(key)
+                    for key in ("latestBlockNumber", "peers", "acceptsDeploys")
+                },
+            }
+        except Exception as error:
+            result[node] = {"diagnostic_error": f"{type(error).__name__}: {error}"}
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
@@ -227,14 +268,33 @@ def main(argv=None):
             raise AssertionError("disconnected groups did not exchange their tips after healing")
         step("gossip", views)
 
+        # A single favored proposer can extend only its own selected branch.
+        # Give every bonded validator a bounded opportunity to propose and
+        # inspect each node for a block that directly justifies both tips.
         end = time.monotonic() + args.timeout
         merge = None
+        proposals = []
         while time.monotonic() < end and merge is None:
-            fork.propose(CONTAINERS[0])
-            merge = fork.find_merge(CONTAINERS[0], tip_a["blockNumber"], target,
-                                    time.time() + 15)
+            actor = CONTAINERS[len(proposals) % len(CONTAINERS)]
+            response = fork.propose(actor)
+            proposals.append({"validator": actor, "exit": response.returncode})
+            for observer in CONTAINERS:
+                merge = fork.find_merge(
+                    observer, tip_a["blockNumber"], target, time.time() + 1
+                )
+                if merge is not None:
+                    break
+            if merge is None:
+                time.sleep(2)
+        step("post_heal_proposals", {
+            "attempts": len(proposals), "by_validator": proposals[-24:],
+        })
         if merge is None:
-            raise AssertionError("no multi-parent block justified both conflicting fork tips")
+            step("merge_not_observed", post_heal_diagnostics(
+                target, tip_a["blockNumber"]))
+            raise AssertionError(
+                "no direct two-tip merge block after source-pinned, four-validator proposal rounds"
+            )
         merge_hash = merge["blockHash"]
         views = wait_for_block_on_all(merge_hash)
         step("merge", {"hash": merge_hash, "views": views})

@@ -110,6 +110,14 @@ class VerdictControls(unittest.TestCase):
         with self.assertRaises(AssertionError):
             conflict.require_single_cell_value([{"ExprInt": {"data": True}}], "A")
 
+    def test_dag_diagnostic_preserves_direct_parents_and_rejections(self):
+        sample = {"blockNumber": 4, "blockHash": "block", "justifications": ["A", "B"],
+                  "rejectedDeploys": ["r1"], "postStateHash": "state", "bonds": ["private"]}
+        item = conflict.brief_block_evidence(sample, ["A", "B"])
+        self.assertEqual(item["fork_tips_directly_justified"], ["A", "B"])
+        self.assertEqual(item["rejected_deploys"], ["r1"])
+        self.assertNotIn("bonds", item)
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
         self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
