@@ -212,10 +212,12 @@ structure Law where
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
--- **The budget is raised for this one literal, measured.** The register is a single list of 86 rows,
--- and elaborating it is a unification problem over the rows' field types rather than a proof: it fits
--- the default 200 000 heartbeats at 58 laws and not at 59, so the budget is raised here rather than the
--- register split into chunks an accidental duplicate could hide between.
+-- **The budget is raised for these literals, measured.** Elaborating a register chunk is a unification
+-- problem over the rows' field types rather than a proof: one list fit the default 200 000 heartbeats at
+-- 58 laws and not at 59, so the budget is raised here. The chunks are `lawsA`/`lawsB`/`lawsC` for a
+-- *memory* reason recorded above them (19.1 GB as one literal against the 16 GB CI runner); the duplicate
+-- they were once feared to hide is caught by the numbering and entry-ceiling checks, which is why the
+-- reason to keep one literal retired with the measurement.
 set_option maxHeartbeats 4000000
 
 /-- Every law in the catalog, the orphaned ones and the open ones included, because a register
@@ -224,7 +226,13 @@ that lists only the formalized laws cannot notice a law that was dropped.
 Statements are the one-line form; `spec/INVENTORY.md` carries the long form and the Rust realization.
 `falsifiable` is `none` where the witness is owed, which is most of the non-corpus laws: naming that gap
 is the purpose, not a defect of this file. -/
-def laws : List Law := [
+-- **Three chunks, not one literal.** The whole register elaborated at 19.1 GB peak
+-- (measured 2026-10-25, rchain-laws build), over the 16 GB CI runner — the SIGTERM of
+-- #417, now deterministic. Each chunk is elaborated on its own; the concatenation is a
+-- value. A duplicate cannot hide between chunks: the numbering check requires every number
+-- 1..`lawCeiling`, and `entryCeiling` pins the row count, so a repeated row leaves a
+-- number missing (the reason to keep one literal retired with that argument).
+def lawsA : List Law := [
   -- ── Rholang: the language (Laws 1–6) ────────────────────────────────────────────────────────────
   { number := 1, clause := "a", layer := "Rholang",
     rustWitness := [
@@ -1952,6 +1960,9 @@ def laws : List Law := [
       `txnCommit_fixes`; the row is `owed` no longer" },
 
   -- ── Laws 30–43: the surface the ten silent defects live in ──────────────────────────────────────
+]
+
+def lawsB : List Law := [
   { number := 30, layer := "Rholang",
     statement := "Every term the parser accepts is in the BNFC grammar (`rholang_mercury.cf`) — \
       **modulo the deviations law 31 names**, and checked as a `decide`d corpus with the soundness \
@@ -3543,6 +3554,9 @@ def laws : List Law := [
       domain, so a loss is a violation rather than a note. The leaf is `exprToSy_wireable` over the \
       expression constructors — every one the encoder refuses is refused by the definition's own \
       fall-through, so the proof is a case per constructor rather than an argument." },
+]
+
+def lawsC : List Law := [
   { number := 60, clause := "a", layer := "RSpace",
     statement := "**An install is total on a channel.** An install that would replace a *different* \
       installed continuation is **refused**, and an idempotent re-install of the same one changes \
@@ -4428,6 +4442,8 @@ def laws : List Law := [
       are the join path's own tests: membership, duplicate, derived-fringe, singleton-pin, and the \
       multi-member residual stated as one." },
 ]
+
+def laws : List Law := lawsA ++ lawsB ++ lawsC
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
 def numbers : List Nat := laws.map (·.number)
