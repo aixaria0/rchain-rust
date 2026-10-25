@@ -89,6 +89,23 @@ def expr(container, channel, block_hash):
     return response["expr"]
 
 
+def require_finalized_agreement(views, merge_hash, expected_state):
+    if set(views) != set(CONTAINERS):
+        raise AssertionError("missing validator finalized observation")
+    hashes = {v.get("blockHash") for v in views.values()}
+    if len(hashes) != 1 or None in hashes:
+        raise AssertionError("validators have different finalized blocks")
+    block_hash = next(iter(hashes))
+    fork.merge_state_agreement(views, CONTAINERS, block_hash)
+    for node in CONTAINERS:
+        if block_hash != merge_hash:
+            verify_branch_descends_from_seed(
+                lambda h: fork.block_info(node, h), block_hash, merge_hash)
+        if pinned_application_snapshot(node, block_hash) != expected_state:
+            raise AssertionError("finalized application state differs from accepted winner")
+    return block_hash
+
+
 def contains_marker(expressions, marker):
     """A surviving effect must be exactly one marker, with no extra produces."""
     if not isinstance(expressions, list):
@@ -565,6 +582,29 @@ def main(argv=None):
         cell_value = require_single_cell_value(first["cell"], survived)
         step("winner", {"survivor": survived, "cell_value": cell_value})
 
+        final_deadline = time.monotonic() + args.timeout
+        final_errors = []
+        finalized_hash = None
+        final_attempt = 0
+        while time.monotonic() < final_deadline:
+            try:
+                final_views = {}
+                for node in CONTAINERS:
+                    response = fork.request(node, "/api/last-finalized-block")
+                    final_views[node] = response.get("blockInfo", response)
+                finalized_hash = require_finalized_agreement(final_views, merge_hash, first)
+                step("finalized_agreement", {"hash": finalized_hash, "views": final_views,
+                                            "readback": first})
+                break
+            except Exception as error:
+                final_errors.append(f"{type(error).__name__}: {error}")
+            fork.propose(CONTAINERS[final_attempt % len(CONTAINERS)])
+            final_attempt += 1
+            time.sleep(2)
+        if finalized_hash is None:
+            step("finality_failure", {"errors": final_errors[-12:]})
+            raise AssertionError("four-validator finalized block/state agreement not observed")
+
         # Re-open the exact same accepted block and application state after a
         # hard validator container restart. The block hash is pinned: reading
         # an unrelated new tip would not demonstrate durable recovery.
@@ -588,9 +628,15 @@ def main(argv=None):
                 }
                 if replay != first:
                     raise AssertionError("restart changed the pinned application state")
+                recovered_final = fork.block_info(restarted, finalized_hash)
+                fork.merge_state_agreement(
+                    {**final_views, restarted: recovered_final}, CONTAINERS, finalized_hash)
+                if pinned_application_snapshot(restarted, finalized_hash) != first:
+                    raise AssertionError("restart changed the finalized application state")
                 recovered = True
                 step("durable_restart", {
                     "validator": restarted, "block_hash": merge_hash,
+                    "finalized_block_hash": finalized_hash,
                     "pre_state_hash": observed["preStateHash"],
                     "post_state_hash": observed["postStateHash"],
                     "readback": replay,
