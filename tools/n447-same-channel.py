@@ -89,6 +89,18 @@ def classify_effects(a, b, rejected, id_a, id_b):
     return kept
 
 
+def require_single_cell_value(expressions, survivor):
+    """Prove the surviving update, not just the presence of one marker."""
+    expected = {"A": 1, "B": 2}.get(survivor)
+    if expected is None or not isinstance(expressions, list) or len(expressions) != 1:
+        raise AssertionError("the conflict left a missing or non-single cell value")
+    item = expressions[0]
+    actual = item.get("ExprInt", {}).get("data") if isinstance(item, dict) else None
+    if type(actual) is not int or actual != expected:
+        raise AssertionError(f"linear cell value {actual!r} differs from expected {expected}")
+    return actual
+
+
 def wait_for_block_on_all(block_hash, seconds=120):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -245,7 +257,8 @@ def main(argv=None):
             contains_marker(first["b"], "B"),
             rejected, sig_a, sig_b,
         )
-        step("winner", survived)
+        cell_value = require_single_cell_value(first["cell"], survived)
+        step("winner", {"survivor": survived, "cell_value": cell_value})
         record["result"] = "PASS"
     except Exception as error:
         record["error"] = f"{type(error).__name__}: {error}"

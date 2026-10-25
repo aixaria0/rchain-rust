@@ -91,6 +91,25 @@ class VerdictControls(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "block-list API"):
                 conflict.find_signed_carrier("n", "signed-cell", 0)
 
+    def test_winning_update_has_the_expected_linear_cell(self):
+        self.assertEqual(conflict.require_single_cell_value(
+            [{"ExprInt": {"data": 1}}], "A"), 1)
+        self.assertEqual(conflict.require_single_cell_value(
+            [{"ExprInt": {"data": 2}}], "B"), 2)
+
+    def test_wrong_or_partial_cell_cannot_pass(self):
+        with self.assertRaises(AssertionError):
+            conflict.require_single_cell_value([{"ExprInt": {"data": 3}}], "A")
+        with self.assertRaises(AssertionError):
+            conflict.require_single_cell_value([{"ExprInt": {"data": 1}},
+                                                {"ExprInt": {"data": 2}}], "A")
+        with self.assertRaises(AssertionError):
+            conflict.require_single_cell_value([], "B")
+
+    def test_bool_cannot_masquerade_as_numeric_value(self):
+        with self.assertRaises(AssertionError):
+            conflict.require_single_cell_value([{"ExprInt": {"data": True}}], "A")
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
         self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
