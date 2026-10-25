@@ -68,6 +68,7 @@ import Rchain.Casper.Bonds
 import Rchain.Casper.Rounds
 import Rchain.Pos
 import Rchain.Casper.Lifecycle
+import Rchain.Casper.FringeState
 import Rchain.Bounded
 import Rchain.Namespace
 import Rchain.Charging
