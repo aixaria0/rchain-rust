@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 370** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 371** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  165 of 371 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  166 of 372 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 371 are settled: **307 name the evidence that holds them** and **64 do not** — the
+All 372 are settled: **308 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -130,7 +130,7 @@ defects this register had not recorded (C164, C165).
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 
-### DONE (370)
+### DONE (371)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -418,6 +418,7 @@ defects this register had not recorded (C164, C165).
 | `C334` | LFS bootstrap admission compared the whole PeerNode and rejected the same authenticated key after a host or port change (#386). It now compares node ids, warns with the received/expected identity, and refuses other keys before either sync latch or retry target changes. The endpoint-change witness failed on the old gate and passes on the new one; hostname/IP, TCP, UDP, outsider replacement and missing-bootstrap cases are covered. The unreachable empty-fringe wording and vacuous importer assertion from #387 are removed. | casper/src/engine/node_syncing.rs::on_finalized_fringe_message/casper/src/engine/node_syncing.rs::a_bootstrap_endpoint_change_does_not_block_lfs_sync/casper/src/engine/node_syncing.rs::a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync/casper/src/engine/node_syncing.rs::a_fringe_without_a_configured_bootstrap_is_refused/casper/src/engine/node_syncing.rs::a_non_bootstrap_empty_fringe_is_not_a_genesis_announcement | §6 |
 | `C335` | The first LFS fringe request stopped at successful send even when its separately streamed reply was lost. Startup now routes packets while retrying the unchanged anchored request; only authenticated nonempty admission stops solicitation. Ten send/reply intervals bound the initial wait, and exhaustion returns an error without signaling restore. CBC finality, bootstrap authority and the restore-completion gate are unchanged. Six regressions and a reintroduced send-only fault cover this bounded startup obligation; broader active-validator recovery remains independent. | spec/audit/evidence/lfs-initial-fringe-retry.md/casper/src/protocol/comm_util.rs::request_initial_fringe/casper/src/engine/node_syncing.rs::initial_fringe_signal_requires_an_authorized_nonempty_target | §6 |
 | `C336` | A merged consume-and-replace duplicates the produced datum on its channel. `StateChange::apply` computes one pre->post diff per channel, but it collected `produces_affected` (a set keyed by produce hash) into a Vec and applied the diff once per entry; a consume-and-replace logs the consumed datum (the Comm) and the produced datum (the Produce) on the same channel with different hashes, so the merged state held two identical values. The consume loop had the same shape for two continuations on one channel set. Both collectors now dedupe by the diff key (the channel/channel set, one trie leaf). The source-pinned Scala at 1b7583649 (`legacy/.../StateChange.scala:apply`) has the same duplicate, so this is a deliberate deviation and a hard fork (passes.md section 6, section 140). Merged state hashes move; `rejected_deploys` does not. | rspace/src/merger/state_change.rs::a_consume_and_replace_diffs_its_channel_once/rspace/src/merger/state_change.rs::two_continuations_on_one_channel_set_are_diffed_once/casper/tests/n420_boundary_merge.rs::merging_a_tuple_space_rmw_block_duplicates_its_produce/casper/tests/n420_boundary_merge.rs::accepted_effects_preserved_across_a_sequential_hot_cell_merge/casper/tests/n420_boundary_merge.rs::accepted_effects_preserved_across_parallel_register_rmws_merge/casper/tests/n420_rcash_replay.rs::the_live_pre_state_boundary_merge_replays | §140 |
+| `C337` | The LFS block walk consumed a key before verifying the block's content hash and never re-requested a received key. validate_received_block called LfsState::received first, which moved a Requested key to Received; a body that failed validate::block_hash left it there, and get_next(resend) selected only Init/Requested, so the key was in neither the request set nor the finished set and is_finished could never hold. The live shape was 3 finished of 28. The walk now checks known and the content hash before writing state, leaves a rejected key untouched and resends immediately, and re-requests Received on a resend. The give-up error reports init/requested/received counts and the first outstanding hashes. | casper/src/engine/lfs_block_requester.rs::a_mature_chain_join_completes/casper/src/engine/mod.rs::resend_re_requests_a_received_key/casper/src/engine/lfs_block_requester.rs::a_forged_body_does_not_consume_the_key_and_is_re_requested/block-storage/src/dag/codecs.rs::a_decoded_block_still_hashes_to_its_hash | §141 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
