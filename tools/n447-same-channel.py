@@ -431,6 +431,33 @@ def main(argv=None):
             raise AssertionError("pre-fork seed already contains a conflicting effect")
         step("seed_state", {"cell": seed_cell, "effects": seed_markers})
 
+        # Observing a seed block is not the same as adopting it: concurrent
+        # seed carriers can leave a pair on another causal history. Finalize
+        # the shared seed before partitioning, retaining the ancestry gate.
+        seed_expected = {"cell": seed_cell, **seed_markers}
+        seed_deadline = time.monotonic() + min(args.timeout, 180)
+        seed_errors = []
+        seed_round = 0
+        while time.monotonic() < seed_deadline:
+            try:
+                seed_final_views = {}
+                for node in CONTAINERS:
+                    response = fork.request(node, "/api/last-finalized-block")
+                    seed_final_views[node] = response.get("blockInfo", response)
+                seed_final_hash = require_finalized_agreement(
+                    seed_final_views, seed["blockHash"], seed_expected)
+                step("seed_finalized", {"hash": seed_final_hash,
+                                        "views": seed_final_views, "readback": seed_expected})
+                break
+            except Exception as error:
+                seed_errors.append(f"{type(error).__name__}: {error}")
+            fork.propose(CONTAINERS[seed_round % len(CONTAINERS)])
+            seed_round += 1
+            time.sleep(2)
+        else:
+            step("seed_finality_failure", {"errors": seed_errors[-12:]})
+            raise AssertionError("common seed was not finalized before partition")
+
         with SplitNetwork(DockerBackend(), prefix=fork.PREFIX, main=fork.NETWORK) as topology:
             pair_reachability = [
                 fork.probe_transport(CONTAINERS[0], CONTAINERS[1]),
