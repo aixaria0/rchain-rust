@@ -47,3 +47,25 @@ Run on hosted Docker using:
 All containers and volumes are disposable, limited to 2 GiB each on the
 hosted CI runner; memory admission at 8-16 GiB remains a separate gate.
 No public testnet, bonded validator or production wallet is touched.
+
+
+## False-positive controls added before merge
+
+The first conflict witness used a read-only exploratory deploy that
+consumed and returned one cell value. That cannot establish cardinality:
+if a faulty merge leaves both the original zero and the accepted writer's
+new value, an exploratory read can return only the new value and conceal
+the duplicate. The harness now uses the pinned data-at-name-by-block-hash
+API for the linear cell and both marker channels, and requires the reply's
+block hash to match the requested block. Duplicate values, malformed
+values and error envelopes fail closed.
+
+An additional DAG check independently traces each signed branch to the
+actual included seed hash before healing. Greater block heights alone
+do not establish a common causal ancestor. The original strict checks
+for branch-local values, merged-root rejection and four-node readbacks
+remain mandatory.
+
+These tests do not constitute a passing real-N4 verdict. The exact source
+commit must pass a fresh disposable 2+2 campaign with raw witness before
+this pull request is eligible for merge.

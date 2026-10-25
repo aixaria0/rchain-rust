@@ -44,13 +44,43 @@ class VerdictControls(unittest.TestCase):
         with self.assertRaises(AssertionError):
             conflict.classify_effects(True, False, {"a"}, "a", "b")
 
-    def test_reads_use_api_captured_output_channel(self):
+    def test_raw_pinned_reads_return_all_values_without_consumption(self):
         from unittest.mock import patch
-        with patch.object(conflict.fork, "explore",
-                          return_value={"expr": [{"ExprString": {"data": "A"}}]}) as call:
-            self.assertEqual(conflict.expr("node", "n447_effect_a", "block"),
-                             [{"ExprString": {"data": "A"}}])
-        self.assertIn('@"out"!(value)', call.call_args.args[1])
+        values = [{"ExprInt": {"data": 0}}, {"ExprInt": {"data": 1}}]
+        with patch.object(conflict.fork, "request",
+                          return_value={"expr": values,
+                                        "block": {"blockHash": "pinned"}}) as call:
+            self.assertEqual(conflict.expr("node", "n447_linear_cell", "pinned"),
+                             values)
+        self.assertEqual(call.call_args.args[1], "/api/v1/data-at-name-by-block-hash")
+        self.assertEqual(call.call_args.args[2], {
+            "name": {"ExprString": {"data": "n447_linear_cell"}},
+            "blockHash": "pinned", "usePreStateHash": False,
+        })
+        with self.assertRaises(AssertionError):
+            conflict.require_single_cell_value(values, "A")
+
+    def test_raw_state_cannot_substitute_another_block(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "request",
+                          return_value={"expr": [{"ExprInt": {"data": 1}}],
+                                        "block": {"blockHash": "wrong"}}):
+            with self.assertRaisesRegex(AssertionError, "requested block"):
+                conflict.expr("node", "n447_linear_cell", "pinned")
+
+    def test_raw_read_rejects_http_error_and_invalid_envelope(self):
+        from unittest.mock import patch
+        for envelope in ({"error": "block not found"},
+                         {"expr": "not-an-array", "block": {"blockHash": "pinned"}},
+                         {"expr": [], "block": None}):
+            with self.subTest(envelope=envelope):
+                with patch.object(conflict.fork, "request", return_value=envelope):
+                    with self.assertRaises(AssertionError):
+                        conflict.expr("node", "n447_linear_cell", "pinned")
+
+    def test_unexpected_channel_is_not_probed(self):
+        with self.assertRaisesRegex(AssertionError, "unexpected application channel"):
+            conflict.expr("node", "other", "pinned")
 
     def test_transient_non_block_inventory_is_not_inclusion(self):
         from unittest.mock import patch
@@ -109,6 +139,32 @@ class VerdictControls(unittest.TestCase):
     def test_bool_cannot_masquerade_as_numeric_value(self):
         with self.assertRaises(AssertionError):
             conflict.require_single_cell_value([{"ExprInt": {"data": True}}], "A")
+
+    def test_both_branches_have_provable_seed_ancestry(self):
+        dag = {"seed": [], "tipA": ["seed"], "tipB": ["right", "seed"],
+               "right": ["seed"]}
+        blocks = {h: {"blockHash": h, "justifications": parents}
+                  for h, parents in dag.items()}
+        self.assertEqual(
+            conflict.verify_branch_descends_from_seed(
+                blocks.__getitem__, "tipA", "seed"), ["tipA", "seed"])
+        self.assertEqual(
+            conflict.verify_branch_descends_from_seed(
+                blocks.__getitem__, "tipB", "seed"), ["tipB", "seed"])
+
+    def test_height_advance_without_seed_ancestry_is_rejected(self):
+        dag = {"tipA": ["unrelated"], "unrelated": []}
+        blocks = {h: {"blockHash": h, "justifications": parents}
+                  for h, parents in dag.items()}
+        with self.assertRaisesRegex(AssertionError, "does not descend"):
+            conflict.verify_branch_descends_from_seed(
+                blocks.__getitem__, "tipA", "seed")
+
+    def test_forged_ancestry_response_fails_closed(self):
+        with self.assertRaisesRegex(AssertionError, "invalid block"):
+            conflict.verify_branch_descends_from_seed(
+                lambda h: {"blockHash": "wrong", "justifications": ["seed"]},
+                "tipA", "seed")
 
     def test_partition_forks_need_not_be_at_identical_height(self):
         a = {"blockNumber": 3, "blockHash": "fork-A", "preStateHash": "seed"}

@@ -64,10 +64,28 @@ def find_signed_carrier(node, term, minimum_height):
 
 
 def expr(container, channel, block_hash):
-    term = 'for (@value <- @"' + channel + '") { @"out"!(value) }'
-    response = fork.explore(container, term, block_hash, False)
+    """Read all tuple-space data at the pinned name, not one consumed value.
+
+    An exploratory Rholang for consumes one arbitrary datum and exposes
+    just that one reply. It cannot prove cell cardinality: a merged state
+    containing both 0 and 1 could appear to contain just 1.
+    The named-data API returns the entire collection at the exact block
+    post-state, including duplicate produces, without consuming anything.
+    """
+    if channel not in ("n447_linear_cell", "n447_effect_a", "n447_effect_b"):
+        raise AssertionError(f"unexpected application channel: {channel!r}")
+    response = fork.request(container, "/api/v1/data-at-name-by-block-hash", {
+        "name": {"ExprString": {"data": channel}},
+        "blockHash": block_hash,
+        "usePreStateHash": False,
+    })
     if not isinstance(response, dict) or not isinstance(response.get("expr"), list):
-        raise AssertionError(f"unexpected exploratory response: {response!r}")
+        raise AssertionError(f"invalid pinned name read: {response!r}")
+    if not isinstance(response.get("block"), dict) or (
+            response["block"].get("blockHash") != block_hash):
+        raise AssertionError(
+            f"pinned name read did not return the requested block {block_hash}"
+        )
     return response["expr"]
 
 
@@ -130,6 +148,40 @@ def require_divergent_signed_tips(tip_a, tip_b, seed_height, sig_a, sig_b):
     return {"same_height": tip_a["blockNumber"] == tip_b["blockNumber"],
             "heights": {"A": tip_a["blockNumber"], "B": tip_b["blockNumber"]},
             "pre_roots_equal": tip_a.get("preStateHash") == tip_b.get("preStateHash")}
+
+
+def verify_branch_descends_from_seed(fetch_block, branch, seed, max_blocks=400):
+    """An independent signed fork must descend from the actual seeded block.
+
+    Numeric height > seed height is not proof of common ancestry. Check the
+    exact block-hash justification graph before claiming a shared cell was
+    consumed on both sides of a split.
+    """
+    from collections import deque
+    if not branch or not seed or branch == seed:
+        raise AssertionError("invalid branch/seed ancestry target")
+    queue = deque([(branch, [branch])])
+    visited = set()
+    while queue:
+        block_hash, path = queue.popleft()
+        if block_hash in visited:
+            continue
+        if len(visited) >= max_blocks:
+            raise AssertionError("seed ancestry exceeds bounded block traversal")
+        visited.add(block_hash)
+        block = fetch_block(block_hash)
+        if not isinstance(block, dict) or block.get("blockHash") != block_hash:
+            raise AssertionError(f"invalid block in common-seed ancestry: {block_hash}")
+        parents = block.get("justifications")
+        if not isinstance(parents, list) or any(
+                not isinstance(h, str) or not h for h in parents):
+            raise AssertionError("invalid justification set in common-seed ancestry")
+        if block_hash == seed:
+            return path
+        for parent in parents:
+            if parent not in visited and parent not in path:
+                queue.append((parent, path + [parent]))
+    raise AssertionError("signed fork does not descend from the common seed")
 
 
 def pinned_application_snapshot(node, block_hash):
@@ -406,6 +458,18 @@ def main(argv=None):
             step("tips", {"a": tip_a, "b": tip_b,
                           "id_a": sig_a, "id_b": sig_b,
                           "fork_distinction": fork_distinction})
+            # Prove that both supposedly independent branches actually
+            # descend from the same seeded state. An unequal block height
+            # cannot substitute for a DAG ancestry witness.
+            branch_parents = {
+                "A": verify_branch_descends_from_seed(
+                    lambda h: fork.block_info(CONTAINERS[0], h),
+                    tip_a["blockHash"], seed["blockHash"]),
+                "B": verify_branch_descends_from_seed(
+                    lambda h: fork.block_info(CONTAINERS[2], h),
+                    tip_b["blockHash"], seed["blockHash"]),
+            }
+            step("branch_common_seed_ancestry", branch_parents)
             # An executed marker alone is insufficient: capture the *cell*
             # produced by each signed branch before restoring gossip.
             # The previously observed inconsistency was A-marker present
