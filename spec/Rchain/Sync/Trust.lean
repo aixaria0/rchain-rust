@@ -49,6 +49,13 @@ namespace Trust
 structure Block where
   hash : Hash
   justifications : List Hash
+  /-- The block's **own** fringe, as the validator derived it when it inserted the block — the field
+      `message_map::latest_fringe` reads off the parent it selects. -/
+  fringe : List Hash
+  /-- The derived fringe's height (`fringe_height` in the Rust): the largest height among the
+      messages in `fringe`. The model carries it, rather than recomputing it from a height map, so
+      the selection rule it mirrors is visible. -/
+  fringeHeight : Nat
   postState : Hash
   carriedBonds : List (Validator × Nat)
 
@@ -73,18 +80,24 @@ structure Join where
 
 /-! ### The derivable fringe -/
 
-/-- Whether one of `hs` justifies `h` — `message_map`'s lookup of a message's justifications. -/
-def justifiedBySome (msg : Hash → Option Block) (hs : List Hash) (h : Hash) : Bool :=
-  hs.any (fun j =>
-    match msg j with
-    | some b => b.justifications.elem h
-    | none => false)
+/-- The justification with the greatest fringe height — `max_by_key(fringe_height)` in
+    `message_map::latest_fringe`. The tie-break is the Rust's: `max_by_key` keeps the **last**
+    maximum, which the fold models by preferring the accumulator on a tie. -/
+def pickLatest : List Block → Option Block
+  | [] => none
+  | b :: rest =>
+      match pickLatest rest with
+      | none => some b
+      | some m => some (if b.fringeHeight > m.fringeHeight then b else m)
 
-/-- **The fringe a set of justifications derives**: the messages in the set that no other message in it
-    justifies — `message_map::latest_fringe`, whose output a bootstrap cannot choose. This is the field
-    the join can recompute from blocks it has already verified. -/
-def derivedFringe (msg : Hash → Option Block) (hs : List Hash) : List Hash :=
-  hs.eraseDups.filter (fun h => !justifiedBySome msg hs h)
+/-- **The fringe a block's justifications derive**: the selected parent's own fringe —
+    `message_map::latest_fringe` (`block-storage/src/dag/message_map.rs:70-89`), whose output a
+    bootstrap cannot choose once the joiner holds the parents. This is the field the join recomputes
+    from blocks it has already verified; the Rust's tie-break is mirrored in `pickLatest`. -/
+def latestFringe (msg : Hash → Option Block) (hs : List Hash) : List Hash :=
+  match pickLatest (hs.filterMap msg) with
+  | none => []
+  | some b => b.fringe
 
 /-! ### The predicates the join path checks -/
 
@@ -100,7 +113,7 @@ def Downloaded (j : Join) (hs : List Hash) : Prop :=
     one the block's own justifications derive. -/
 def AncestryDerivable (j : Join) (a : Ancestry) : Prop :=
   ∃ b, j.blocks a.blockHash = some b ∧
-    derivedFringe j.blocks b.justifications = a.fringe
+    latestFringe j.blocks b.justifications = a.fringe
 
 /-- Every ancestry row in a fringe is derivable. -/
 def FringeDerivable (j : Join) (f : Fringe) : Prop :=
@@ -200,7 +213,7 @@ theorem a_singleton_fringe_pins_the_state_hash (j : Join) (f : Fringe) (m : Bloc
     *cannot* choose. -/
 theorem a_lying_ancestry_fringe_is_refused (j : Join) (a : Ancestry) (b : Block)
     (hb : j.blocks a.blockHash = some b)
-    (hnot : derivedFringe j.blocks b.justifications ≠ a.fringe) :
+    (hnot : latestFringe j.blocks b.justifications ≠ a.fringe) :
     ¬ AncestryDerivable j a := by
   rintro ⟨b', hb', hf⟩
   rw [hb] at hb'
@@ -252,7 +265,7 @@ theorem the_residual_is_exactly_named :
 /-- The non-vacuity of the singleton check: a one-block fringe whose root is the block's post-state
     passes it. -/
 def exampleJoin (h p : Hash) : Join where
-  blocks := fun k => if k = h then some ⟨h, [], p, []⟩ else none
+  blocks := fun k => if k = h then some ⟨h, [], [], 0, p, []⟩ else none
   trie := fun _ => none
 
 theorem a_singleton_fringe_can_pass_the_check (h p : Hash) :

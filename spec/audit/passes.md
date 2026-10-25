@@ -11684,3 +11684,16 @@ eight outstanding hashes.
 mismatch). **Non-claims:** these are in-process witnesses; the devnet reset arm is the separate
 evidence record, and the live join is not claimed fixed until it passes. The fringe metadata the join
 trusts is Law 83's subject, not this fix's.
+
+**The metadata the join cannot derive was trusted (C338/C339).** `populate_dag` wrote each
+`BlockFringe` — the per-block `fringe` set and `fringe_state_hash` — straight into `BlockMetadata`,
+and `dag.insert` then uses `fringe` for `member_of_fringe`/`fringe_diff` while `close_block` folds
+`fringe_state_hash` into the epoch seed. Nothing checked either field against the blocks the walk had
+verified. The join now (a) refuses an ancestry row for a block the walk did not download, and refuses
+duplicate rows; (b) recomputes the field that **is** derivable — `fringe` must equal
+`message_map::latest_fringe` of the block's justifications, with the same max-fringe-parent tie-break,
+using the parents already inserted in height order; (c) pins the state hash to the block's post-state
+when the fringe names one block, for the finalized fringe and for each ancestry row; and (d) keeps but
+logs a **multi-member** fringe state, which is not derivable on this path — that is C339 and it stays
+open. A peer that sends no ancestry rows keeps the existing per-block WARN fallback, so the check does
+not refuse older implementations. Law 83 is the trust model this is an instance of.

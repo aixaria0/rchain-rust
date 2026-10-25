@@ -4381,7 +4381,7 @@ def laws : List Law := [
       the same block map and hold the same trie read the same value at the claimed root and answer \
       the same block lookup; the residual is an exact, checked enumeration",
     status := .provedModel,
-    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.derivedFringe,
+    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.latestFringe,
       `Rchain.Sync.Trust.join_is_content_trustless,
       `Rchain.Sync.Trust.a_singleton_fringe_pins_the_state_hash,
       `Rchain.Sync.Trust.a_lying_ancestry_fringe_is_refused,
@@ -4389,7 +4389,12 @@ def laws : List Law := [
     axioms := [],
     rust := ["casper/src/engine/node_syncing.rs", "casper/src/engine/lfs_block_requester.rs",
       "casper/src/genesis/mod.rs"],
-    rustWitness := [],
+    rustWitness := [
+      "casper/src/engine/node_syncing.rs:an_ancestry_entry_for_an_unknown_block_is_refused",
+      "casper/src/engine/node_syncing.rs:two_ancestry_entries_for_one_block_are_refused",
+      "casper/src/engine/node_syncing.rs:an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused",
+      "casper/src/engine/node_syncing.rs:a_singleton_fringe_state_hash_must_be_the_blocks_post_state",
+      "casper/src/engine/node_syncing.rs:a_multi_member_fringe_state_is_left_to_the_bootstrap_c339"],
     witness := [`Rchain.Sync.Trust.a_lying_ancestry_state_hash_changes_replay,
       `Rchain.Sync.Trust.genesis_trust_anchor,
       `Rchain.Sync.Trust.a_singleton_fringe_can_pass_the_check],
@@ -4408,8 +4413,9 @@ def laws : List Law := [
       are enumerated in `the_residual_is_exactly_named` and on the trust-model page. The Rust fix this \
       row accompanies verifies ancestry block membership, duplicate-freedom and the derived `fringe`, \
       and pins the root for a singleton fringe; **C339 stays open** — the merged state of a \
-      multi-member fringe is not recomputed on the join path, so the residual stands. `rustWitness` is \
-      owed until the lying-bootstrap tests land." },
+      multi-member fringe is not recomputed on the join path, so the residual stands. The witnesses \
+      are the join path's own tests: membership, duplicate, derived-fringe, singleton-pin, and the \
+      multi-member residual stated as one." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

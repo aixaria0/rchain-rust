@@ -12,16 +12,21 @@ use std::time::Duration;
 use rchain_block_storage::approved_store::{ApprovedStore, FINALIZED_FRINGE_KEY};
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::finalizer::Message;
+use rchain_block_storage::dag::message_map;
+use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_block_storage::syntax::insert_genesis;
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
     BlockFringe, BlockMessage, CasperMessage, FinalizedFringe, StoreItemsMessage,
 };
+use rchain_models::validator::Validator;
 use rchain_rspace::state::RSpaceImporter;
 use rchain_shared::lock::Unpoison;
 use rchain_shared::log::{Log, LogSource};
@@ -656,6 +661,24 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         .map_err(|e| e.to_string())?;
     }
 
+    // **What the joiner can check before it writes anything** (Law 83, C338). The ancestry's shape is
+    // checked against the downloaded set, and the finalized fringe's state is pinned to its block when
+    // it names one block; a multi-member fringe is the residual C339 records.
+    let downloaded: BTreeSet<BlockHash> = block_st
+        .height_map
+        .values()
+        .flat_map(|s| s.iter().copied())
+        .collect();
+    check_ancestry_shape(&fringe.ancestry, &downloaded)?;
+    let finalized_fringe: BTreeSet<BlockHash> = fringe.hashes.iter().copied().collect();
+    check_singleton_state(
+        &block_store,
+        &finalized_fringe,
+        &fringe.state_hash,
+        "the finalized fringe",
+    )
+    .await?;
+
     log.info(source, "Rholang state received and saved to store.");
     populate_dag(
         dag.as_ref(),
@@ -693,6 +716,116 @@ async fn collect_block_state_roots(
     }
 
     Ok(roots)
+}
+
+/// The hex of a fringe set, for errors that name both sides.
+fn fringe_hex(fringe: &BTreeSet<BlockHash>) -> String {
+    fringe
+        .iter()
+        .map(|h| h.to_hex())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// **The ancestry's shape** (Law 83, C338): one entry per downloaded block and no duplicates. A
+/// missing entry stays legal — an older peer cannot send it, and `populate_dag` warns per block — but
+/// an entry naming a block the walk did not download is a claim the joiner cannot check at all.
+fn check_ancestry_shape(
+    ancestry: &[BlockFringe],
+    downloaded: &BTreeSet<BlockHash>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for bf in ancestry {
+        if !downloaded.contains(&bf.block_hash) {
+            return Err(format!(
+                "the bootstrap sent fringe metadata for block {}, which the walk did not download",
+                bf.block_hash.to_hex()
+            ));
+        }
+        if !seen.insert(bf.block_hash) {
+            return Err(format!(
+                "the bootstrap sent two ancestry entries for block {}",
+                bf.block_hash.to_hex()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// **A bootstrap cannot choose the per-block `fringe`.** The field is derivable from the block's
+/// justifications once its parents are in the message map — the same `latest_fringe` a validating node
+/// runs — so a row that disagrees with the derivation is refused instead of written into the DAG. This
+/// is the field the joiner *can* check; `fringe_state_hash` is not derivable this way, which is why
+/// `check_singleton_state` pins it only where it can and C339 records the multi-member residual.
+fn check_derived_fringe(
+    repr: &DagRepresentation,
+    block: &BlockMessage,
+    bf: &BlockFringe,
+) -> Result<(), String> {
+    let msg_map = &repr.dag_message_state.msg_map;
+    let mut parents: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
+    for h in &block.justifications {
+        let parent = msg_map.get(h).cloned().ok_or_else(|| {
+            format!(
+                "cannot derive the fringe for {}: its justification {} is not in the message map",
+                block.block_hash.to_hex(),
+                h.to_hex()
+            )
+        })?;
+        parents.insert(parent);
+    }
+    let derived: BTreeSet<BlockHash> = message_map::latest_fringe(msg_map, &parents)
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    if derived != bf.fringe {
+        return Err(format!(
+            "the bootstrap's ancestry for block {} claims fringe [{}], but its justifications derive \
+             [{}]; refusing the join's metadata rather than writing a fringe the block does not have",
+            block.block_hash.to_hex(),
+            fringe_hex(&bf.fringe),
+            fringe_hex(&derived)
+        ));
+    }
+    Ok(())
+}
+
+/// **The singleton pin.** When the fringe names one block, the claimed state must be that block's
+/// post-state — the check that covers genesis and a one-validator chain. A multi-member fringe's
+/// merged state is not recomputed on the join path (C339), so this returns `Ok` and the caller reports
+/// the residual rather than pretending the claim was verified.
+async fn check_singleton_state(
+    block_store: &BlockStore,
+    fringe: &BTreeSet<BlockHash>,
+    claimed: &StateHash,
+    what: &str,
+) -> Result<(), String> {
+    if fringe.len() != 1 {
+        return Ok(());
+    }
+    let member = *fringe.iter().next().expect("one element");
+    let block = block_store
+        .get(&[member])
+        .await?
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| {
+            format!(
+                "cannot pin {what}: fringe member {} is not downloaded",
+                member.to_hex()
+            )
+        })?;
+    if claimed.as_bytes() != block.post_state_hash.as_bytes() {
+        return Err(format!(
+            "the bootstrap claims state {} for the singleton fringe named by {what}, but block {}'s \
+             post-state is {}; refusing the join",
+            rchain_shared::base16::encode(claimed.as_bytes()),
+            member.to_hex(),
+            rchain_shared::base16::encode(block.post_state_hash.as_bytes())
+        ));
+    }
+    Ok(())
 }
 
 /// Insert the received blocks into the DAG (port of `populateDag`, minus the Scala `minHeight`
@@ -751,11 +884,35 @@ async fn populate_dag(
             // recomputation and are not block fields, so a restored node otherwise carries an empty
             // fringe for every block it restores and replays boundary blocks from a zero seed.
             let bmd = match fringe_of.get(&hash) {
-                Some(bf) => BlockMetadata {
-                    fringe: bf.fringe.clone(),
-                    fringe_state_hash: bf.fringe_state_hash,
-                    ..BlockMetadata::from_block(&block)
-                },
+                Some(bf) => {
+                    // **The derivable half is checked; the residual is named** (Law 83, C338/C339).
+                    let repr = dag.get_representation().await;
+                    check_derived_fringe(&repr, &block, bf)?;
+                    check_singleton_state(
+                        block_store,
+                        &bf.fringe,
+                        &bf.fringe_state_hash,
+                        &format!("block {}'s ancestry", hash.to_hex()),
+                    )
+                    .await?;
+                    if bf.fringe.len() > 1 {
+                        log.warn(
+                            source,
+                            &format!(
+                                "[join-trust] the per-block fringe state for {} names {} members and \
+                                 is not derivable on the join path; keeping the bootstrap's claim \
+                                 (AUDIT C339)",
+                                hash.to_hex(),
+                                bf.fringe.len()
+                            ),
+                        );
+                    }
+                    BlockMetadata {
+                        fringe: bf.fringe.clone(),
+                        fringe_state_hash: bf.fringe_state_hash,
+                        ..BlockMetadata::from_block(&block)
+                    }
+                }
                 None => {
                     log.warn(
                         source,
@@ -1092,6 +1249,130 @@ mod tests {
 
         // The whole chain is in the DAG, so the latest block number equals the chain length.
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
+    }
+
+    /// **Law 83, C338: a fringe row for a block the walk did not download** is a claim the joiner
+    /// cannot check at all, so it is refused before anything is written.
+    #[test]
+    fn an_ancestry_entry_for_an_unknown_block_is_refused() {
+        let downloaded: BTreeSet<BlockHash> = [hash(0)].into_iter().collect();
+        let entry = BlockFringe {
+            block_hash: hash(9),
+            fringe: BTreeSet::new(),
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        };
+        let err = check_ancestry_shape(&[entry], &downloaded)
+            .expect_err("an entry for an undownloaded block must be refused");
+        assert!(err.contains("did not download"), "{err}");
+    }
+
+    #[test]
+    fn two_ancestry_entries_for_one_block_are_refused() {
+        let downloaded: BTreeSet<BlockHash> = [hash(0)].into_iter().collect();
+        let entry = BlockFringe {
+            block_hash: hash(0),
+            fringe: BTreeSet::new(),
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        };
+        let err = check_ancestry_shape(&[entry.clone(), entry], &downloaded)
+            .expect_err("duplicate ancestry rows must be refused");
+        assert!(err.contains("two ancestry entries"), "{err}");
+    }
+
+    /// **The derivable field is refused when it lies**: a block's `fringe` is recomputed from its
+    /// justifications (`latest_fringe`), so a bootstrap cannot choose it.
+    #[tokio::test]
+    async fn an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused() {
+        let n = 3i64;
+        let blocks: Vec<BlockMessage> = (0..n)
+            .map(|i| chain_block(i, (i > 0).then(|| hash(i as u8 - 1))))
+            .collect();
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        for b in &blocks {
+            block_store.put(&[(b.block_hash, b.clone())]).await.unwrap();
+        }
+        let dag = build_dag().await;
+        let mut height_map: BTreeMap<i64, BTreeSet<BlockHash>> = BTreeMap::new();
+        for b in &blocks {
+            height_map
+                .entry(i64::from(b.block_number))
+                .or_default()
+                .insert(b.block_hash);
+        }
+        // Block 1 justifies genesis, whose own fringe is empty, so the derived fringe is empty.
+        // Claiming genesis as the fringe is a lie the joiner can see.
+        let mut lying = BTreeSet::new();
+        lying.insert(blocks[0].block_hash);
+        let ancestry = vec![BlockFringe {
+            block_hash: blocks[1].block_hash,
+            fringe: lying,
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        }];
+
+        let err = populate_dag(dag.as_ref(), &block_store, &NopLog, &height_map, &ancestry)
+            .await
+            .expect_err("a fringe the block's justifications do not derive must be refused");
+        assert!(err.contains("derive"), "{err}");
+    }
+
+    /// **The singleton pin**: one named block, so the claimed state must be that block's post-state.
+    #[tokio::test]
+    async fn a_singleton_fringe_state_hash_must_be_the_blocks_post_state() {
+        let mut block = chain_block(0, None);
+        block.post_state_hash = StateHash::new([5u8; 32]);
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        block_store
+            .put(&[(block.block_hash, block.clone())])
+            .await
+            .unwrap();
+        let fringe: BTreeSet<BlockHash> = [block.block_hash].into_iter().collect();
+
+        let err = check_singleton_state(
+            &block_store,
+            &fringe,
+            &StateHash::new([6u8; 32]),
+            "the test fringe",
+        )
+        .await
+        .expect_err("a state hash that is not the block's post-state must be refused");
+        assert!(err.contains("post-state"), "{err}");
+        check_singleton_state(
+            &block_store,
+            &fringe,
+            &block.post_state_hash,
+            "the test fringe",
+        )
+        .await
+        .expect("the block's own post-state pins the fringe");
+    }
+
+    /// **C339, stated as the residual it is**: a multi-member fringe's merged state is not derivable
+    /// on the join path, so the check deliberately does not pin it. The test says so rather than
+    /// pretending the singleton pin covers the live four-validator fringe.
+    #[tokio::test]
+    async fn a_multi_member_fringe_state_is_left_to_the_bootstrap_c339() {
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let fringe: BTreeSet<BlockHash> = [hash(0), hash(1)].into_iter().collect();
+        check_singleton_state(
+            &block_store,
+            &fringe,
+            &StateHash::new([9u8; 32]),
+            "the test fringe",
+        )
+        .await
+        .expect("a multi-member fringe is C339: the join path does not recompute the merge");
     }
     /// A non-bootstrap peer cannot consume the one-shot latch or poison the next retry target.
     #[tokio::test]
