@@ -4288,6 +4288,43 @@ def laws : List Law := [
       insert and the publish is narrowed, not closed — there is no WAL — and a crash there is repaired \
       at boot, best-effort if the root is unknown. `rustWitness` is owed until the deferred-publish \
       tests land." },
+
+  { number := 81, layer := "Sync",
+    statement := "**A join walk accepts a verified answer for any known key, and re-asks every \
+      outstanding key.** The block walk's key can reach `Received` without being finished — an answer \
+      that arrived before its request turn is dropped, and a body that fails its content check has \
+      already consumed the key. As written, no request selects `Received` and no answer is accepted \
+      for it, so the key is stranded and `is_finished` can never hold. The repair accepts an answer \
+      for a known key whatever the request slot, validates before consuming, and re-requests `Init`, \
+      `Requested` and `Received` on a resend; one accepted answer per round raises the finished \
+      measure, which is bounded by the walk's key universe",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.Join.accepted_answer_is_verified,
+      `Rchain.Sync.Join.every_outstanding_key_is_requested_on_a_resend,
+      `Rchain.Sync.Join.a_round_makes_progress,
+      `Rchain.Sync.Join.the_written_walk_cannot_finish_from_a_stranded_key],
+    axioms := [],
+    rust := ["casper/src/engine/mod.rs", "casper/src/engine/lfs_block_requester.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Sync.Join.the_written_walk_strands_a_received_key,
+      `Rchain.Sync.Join.the_fixed_walk_can_finish_from_a_stranded_key,
+      `Rchain.Sync.Join.a_rejected_body_leaves_the_walk_where_it_was],
+    falsifiable := "A walk state with one `Received` key still in `latest`: \
+      `the_written_walk_cannot_finish_from_a_stranded_key` shows every `WrittenStep` leaves it \
+      `Received`, so no run reaches `isFinished` — the live `(3 finished, 25 outstanding)` stall. The \
+      same state reaches the goal in two turns of the repaired machine \
+      (`the_fixed_walk_can_finish_from_a_stranded_key`), so the falsifier is not vacuous and the \
+      repair is not a widening of the accepted set to unknown keys: `Step.unknown` still drops them.",
+    note := "**Why the missing transition was not the whole defect.** The Rust consumes before it \
+      validates (`lfs_block_requester.rs:73-108` calls `received` and only then checks the hash), so a \
+      body that fails the check leaves the key `Received`; and `get_next` re-requests only `Init`, or \
+      `Requested` on a resend (`mod.rs:102-114`). The model keeps both facts as `WrittenStep`, which is \
+      what makes the falsifier the code's own shape rather than an invented one. The repaired machine's \
+      fairness hypothesis is explicit: `a_round_makes_progress` needs a verified answer to exist \
+      (`hanswer`) and the key universe to be finite and closed (`hK`); the Rust supplies the closure \
+      through the fringe's ancestry but this module does not prove the DAG finite. **Law 69 is not \
+      replaced**: it models the tuple-space page walk, whose validation failure aborts the attempt and \
+      so has no silent stranded key. `rustWitness` is owed until the block-requester tests land." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

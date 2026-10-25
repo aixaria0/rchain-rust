@@ -40,6 +40,7 @@ import Rchain.RSpace.Merge
 import Rchain.RSpace.Merkle
 import Rchain.Sync.Progress
 import Rchain.Sync.Walk
+import Rchain.Sync.Join
 import Rchain.Sync.Transfer
 import Rchain.Casper.Stake
 import Rchain.Proto
