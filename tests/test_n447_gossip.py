@@ -55,5 +55,41 @@ class GossipGateTests(unittest.TestCase):
             self.assertFalse(fork.probe_transport("a", "b"))
 
 
+    def test_all_four_merge_roots_and_block_hash_agree(self):
+        block = {
+            "blockHash": "merged",
+            "preStateHash": "pre",
+            "postStateHash": "post",
+        }
+        views = {node: dict(block) for node in self.nodes}
+        self.assertEqual(fork.merge_state_agreement(views, self.nodes, "merged"), ("pre", "post"))
+
+    def test_missing_merge_replica_is_not_consensus_agreement(self):
+        block = {"blockHash": "merged", "preStateHash": "pre", "postStateHash": "post"}
+        views = {node: dict(block) for node in self.nodes[:3]}
+        with self.assertRaisesRegex(AssertionError, "all four"):
+            fork.merge_state_agreement(views, self.nodes, "merged")
+
+    def test_disagreeing_post_state_hash_is_rejected(self):
+        block = {"blockHash": "merged", "preStateHash": "pre", "postStateHash": "post"}
+        views = {node: dict(block) for node in self.nodes}
+        views[self.nodes[-1]]["postStateHash"] = "not-post"
+        with self.assertRaisesRegex(AssertionError, "disagreement"):
+            fork.merge_state_agreement(views, self.nodes, "merged")
+
+    def test_wrong_merge_block_hash_is_rejected(self):
+        block = {"blockHash": "merged", "preStateHash": "pre", "postStateHash": "post"}
+        views = {node: dict(block) for node in self.nodes}
+        views[self.nodes[-1]]["blockHash"] = "alternate"
+        with self.assertRaisesRegex(AssertionError, "disagreement"):
+            fork.merge_state_agreement(views, self.nodes, "merged")
+
+    def test_missing_state_hash_is_not_a_pass(self):
+        block = {"blockHash": "merged", "preStateHash": "pre", "postStateHash": None}
+        views = {node: dict(block) for node in self.nodes}
+        with self.assertRaisesRegex(AssertionError, "disagreement"):
+            fork.merge_state_agreement(views, self.nodes, "merged")
+
+
 if __name__ == "__main__":
     unittest.main()

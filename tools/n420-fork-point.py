@@ -195,7 +195,22 @@ def observe_cross_tip_gossip(containers, tips):
 
 
 def all_tips_visible(observed):
-    return all(all(visibilities.values()) for visibilities in observed.values())
+    return bool(observed) and all(all(visibilities.values()) for visibilities in observed.values())
+
+
+def merge_state_agreement(infos, nodes, merge_hash):
+    """All validators must serve the exact same merge block and state hashes."""
+    if set(infos) != set(nodes):
+        raise AssertionError("merge block has not reached all four validators")
+    hashes = {info.get("blockHash") for info in infos.values()}
+    pre = {info.get("preStateHash") for info in infos.values()}
+    post = {info.get("postStateHash") for info in infos.values()}
+    if hashes != {merge_hash} or len(pre) != 1 or None in pre or len(post) != 1 or None in post:
+        raise AssertionError(
+            f"validator disagreement on merge block/pre/post state: "
+            f"hashes={hashes} pre={pre} post={post}"
+        )
+    return next(iter(pre)), next(iter(post))
 
 
 def main():
@@ -350,13 +365,33 @@ def main():
     merge_hash = merge["blockHash"]
     step("merge", merge_hash)
 
-    infos = {c: block_info(c, merge_hash) for c in CONTAINERS[:2]}
+    # Wait for the actual merged block to become readable from all FOUR
+    # validators, not just the two on the first side of the earlier split.
+    # Separate absent replication from divergent state-hash observations.
+    replication_deadline = time.time() + min(args.timeout, 120)
+    infos = {}
+    errors = {}
+    while True:
+        for node in CONTAINERS:
+            try:
+                infos[node] = block_info(node, merge_hash)
+                errors.pop(node, None)
+            except Exception as error:
+                errors[node] = f"{type(error).__name__}: {error}"
+        if len(infos) == len(CONTAINERS):
+            break
+        if time.time() >= replication_deadline:
+            step("merge_replication_missing", {
+                "available": infos,
+                "errors": errors,
+                "target": merge_hash,
+            })
+            raise SystemExit("merge block did not propagate to all four validators")
+        time.sleep(2)
     step("merge_views", infos)
 
-    # (a) every node agrees on the merge and its post-state.
-    post_states = {info.get("postStateHash") for info in infos.values()}
-    assert len(post_states) == 1, f"nodes disagree on the merge post-state: {post_states}"
-    pre_state = next(iter(infos.values())).get("preStateHash")
+    # (a) all FOUR validators agree on the exact block and pre/post state.
+    pre_state, merged_post = merge_state_agreement(infos, CONTAINERS, merge_hash)
 
     # (b) two divergent writers: the merge is neither parent's post-state.
     parent_posts = {tip_a["postStateHash"], tip_b["postStateHash"]}
@@ -370,18 +405,22 @@ def main():
 
     # (d) the merged state carries both writers; the common base carries neither.
     read = r'for (@x <- @"forkA"; @y <- @"forkB") { @"out"!((x, y)) }'
-    merged_post = post_states.pop()
     # The endpoint takes a **block hash** and reads the state the block declares (`usePreStateHash`
     # selects pre vs post), not a state hash.
-    at_post = explore(CONTAINERS[0], read, merge_hash, False)
+    per_node_reads = {
+        node: json.dumps(explore(node, read, merge_hash, False).get("expr", []))
+        for node in CONTAINERS
+    }
     at_base = explore(CONTAINERS[0], read, base["blockHash"], False)
-    post_expr = json.dumps(at_post.get("expr", []))
+    post_results = set(per_node_reads.values())
     base_expr = json.dumps(at_base.get("expr", []))
+    assert len(post_results) == 1, f"application state differs across validators: {per_node_reads}"
+    post_expr = next(iter(post_results))
     assert '"A"' in post_expr and '"B"' in post_expr, f"the merged state lost a writer: {post_expr}"
     assert '"A"' not in base_expr and '"B"' not in base_expr, (
         f"the common base already carried a child value: {base_expr}"
     )
-    step("reads", {"post": post_expr, "base": base_expr})
+    step("reads", {"by_validator": per_node_reads, "base": base_expr})
 
     # (e) a restart re-derives the same state.
     docker("restart", CONTAINERS[1])
