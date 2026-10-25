@@ -29,12 +29,15 @@ B = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 2) | @"n447_effect_b"!("B"
 
 def find_signed_carrier(node, term, minimum_height):
     """Find the containing block by signed term, not by the current tip."""
-    # Block inventory can temporarily be a node-status string while sync is
-    # rebuilding. Such a response is NOT a carrying block, but should not
-    # abort the bounded inclusion polling loop before it sees the real block.
-    inventory = fork.blocks(node, 75)
+    # The block-list API rejects depths > 50 with HTTP 400. The generic
+    # fork.blocks helper would turn its error envelope into an empty list,
+    # falsely reporting that a signed deploy had not entered any block.
+    # Keep the request in range and reject error envelopes explicitly.
+    inventory = fork.request(node, "/api/blocks/25")
+    if isinstance(inventory, dict):
+        inventory = inventory.get("blocks") if "error" not in inventory else None
     if not isinstance(inventory, list):
-        return None, None
+        raise AssertionError("block-list API returned an error or invalid inventory")
     candidates = []
     for entry in inventory:
         if isinstance(entry, dict) and "blockHash" in entry:

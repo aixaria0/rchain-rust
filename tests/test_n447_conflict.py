@@ -54,7 +54,7 @@ class VerdictControls(unittest.TestCase):
 
     def test_transient_non_block_inventory_is_not_inclusion(self):
         from unittest.mock import patch
-        with patch.object(conflict.fork, "blocks", return_value=["syncing"]):
+        with patch.object(conflict.fork, "request", return_value=["syncing"]):
             self.assertEqual(
                 conflict.find_signed_carrier("node", "signed-term", 0),
                 (None, None))
@@ -63,13 +63,33 @@ class VerdictControls(unittest.TestCase):
         from unittest.mock import patch
         sample = [{"blockHash": "a" * 64, "blockNumber": 1,
                    "deployCount": 1}]
-        with (patch.object(conflict.fork, "blocks", return_value=sample),
-              patch.object(conflict.fork, "request",
-                           return_value={"deploys": [{"term": "signed-term",
-                                                      "sig": "signature"}]})):
+        with patch.object(
+            conflict.fork, "request", side_effect=[
+                sample, {"deploys": [{"term": "signed-term", "sig": "signature"}]}
+            ]
+        ):
             block, sig = conflict.find_signed_carrier("node", "signed-term", 0)
         self.assertEqual(block["blockHash"], "a" * 64)
         self.assertEqual(sig, "signature")
+
+    def test_carrier_queries_supported_depth_and_finds_signed_term(self):
+        from unittest.mock import patch
+        items = [{"blockHash": "h0", "blockNumber": 0, "deployCount": 16},
+                 {"blockHash": "h1", "blockNumber": 1, "deployCount": 1}]
+        with patch.object(conflict.fork, "request", side_effect=[
+            items, {"deploys": [{"term": "signed-cell", "sig": "s1"}]}
+        ]) as req:
+            block, signature = conflict.find_signed_carrier("n", "signed-cell", 0)
+        self.assertEqual(block["blockHash"], "h1")
+        self.assertEqual(signature, "s1")
+        self.assertEqual(req.call_args_list[0].args[1], "/api/blocks/25")
+
+    def test_block_list_error_does_not_become_no_inclusion(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "request",
+                          return_value={"error": "depth limit is 50"}):
+            with self.assertRaisesRegex(AssertionError, "block-list API"):
+                conflict.find_signed_carrier("n", "signed-cell", 0)
 
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
