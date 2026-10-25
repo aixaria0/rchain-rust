@@ -52,6 +52,25 @@ class VerdictControls(unittest.TestCase):
                              [{"ExprString": {"data": "A"}}])
         self.assertIn('@"out"!(value)', call.call_args.args[1])
 
+    def test_transient_non_block_inventory_is_not_inclusion(self):
+        from unittest.mock import patch
+        with patch.object(conflict.fork, "blocks", return_value=["syncing"]):
+            self.assertEqual(
+                conflict.find_signed_carrier("node", "signed-term", 0),
+                (None, None))
+
+    def test_inclusion_from_verified_block_inventory(self):
+        from unittest.mock import patch
+        sample = [{"blockHash": "a" * 64, "blockNumber": 1,
+                   "deployCount": 1}]
+        with (patch.object(conflict.fork, "blocks", return_value=sample),
+              patch.object(conflict.fork, "request",
+                           return_value={"deploys": [{"term": "signed-term",
+                                                      "sig": "signature"}]})):
+            block, sig = conflict.find_signed_carrier("node", "signed-term", 0)
+        self.assertEqual(block["blockHash"], "a" * 64)
+        self.assertEqual(sig, "signature")
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
         self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
