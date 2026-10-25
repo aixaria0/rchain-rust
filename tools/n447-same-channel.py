@@ -290,10 +290,26 @@ def main(argv=None):
             "attempts": len(proposals), "by_validator": proposals[-24:],
         })
         if merge is None:
-            step("merge_not_observed", post_heal_diagnostics(
-                target, tip_a["blockNumber"]))
+            diagnostics = post_heal_diagnostics(target, tip_a["blockNumber"])
+            step("merge_not_observed", diagnostics)
+            # A DAG merge can reject a conflicting deploy in a later block
+            # whose direct parents are descendants of the original fork tips.
+            # Record such candidates, but do not silently accept them without
+            # an ancestry witness and a pinned, four-node state check.
+            candidates = {}
+            for node, detail in diagnostics.items():
+                for block in detail.get("recent_blocks", []):
+                    rejected_ids = set(block.get("rejected_deploys") or [])
+                    if rejected_ids & {sig_a, sig_b}:
+                        candidates.setdefault(block["hash"], []).append({
+                            "node": node, "height": block["height"],
+                            "matched_rejections": sorted(rejected_ids & {sig_a, sig_b}),
+                            "post_state_hash": block.get("post_state_hash"),
+                        })
+            step("indirect_rejection_candidates", candidates)
             raise AssertionError(
-                "no direct two-tip merge block after source-pinned, four-validator proposal rounds"
+                "direct two-tip merge not observed; indirect rejected-deploy "
+                "candidates retained, ancestry and pinned state unverified"
             )
         merge_hash = merge["blockHash"]
         views = wait_for_block_on_all(merge_hash)
