@@ -110,6 +110,28 @@ class VerdictControls(unittest.TestCase):
         with self.assertRaises(AssertionError):
             conflict.require_single_cell_value([{"ExprInt": {"data": True}}], "A")
 
+    def test_each_signed_branch_persists_its_own_linear_update(self):
+        for side, number in (("A", 1), ("B", 2)):
+            snapshot = {
+                "cell": [{"ExprInt": {"data": number}}],
+                "a": [{"ExprString": {"data": "A"}}] if side == "A" else [],
+                "b": [{"ExprString": {"data": "B"}}] if side == "B" else [],
+            }
+            self.assertTrue(conflict.require_branch_tip_state(snapshot, side))
+
+    def test_marker_without_committed_update_fails_before_merge(self):
+        snapshot = {"cell": [{"ExprInt": {"data": 0}}],
+                    "a": [{"ExprString": {"data": "A"}}], "b": []}
+        with self.assertRaisesRegex(AssertionError, "linear cell value"):
+            conflict.require_branch_tip_state(snapshot, "A")
+
+    def test_wrong_branch_marker_fails(self):
+        snapshot = {"cell": [{"ExprInt": {"data": 1}}],
+                    "a": [{"ExprString": {"data": "A"}}],
+                    "b": [{"ExprString": {"data": "B"}}]}
+        with self.assertRaisesRegex(AssertionError, "competing marker"):
+            conflict.require_branch_tip_state(snapshot, "A")
+
     def test_dag_diagnostic_preserves_direct_parents_and_rejections(self):
         sample = {"blockNumber": 4, "blockHash": "block", "justifications": ["A", "B"],
                   "rejectedDeploys": ["r1"], "postStateHash": "state", "bonds": ["private"]}

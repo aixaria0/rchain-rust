@@ -110,6 +110,29 @@ def require_single_cell_value(expressions, survivor):
     return actual
 
 
+def pinned_application_snapshot(node, block_hash):
+    """Capture the actual committed cell and both markers at one block root."""
+    return {
+        "cell": expr(node, "n447_linear_cell", block_hash),
+        "a": expr(node, "n447_effect_a", block_hash),
+        "b": expr(node, "n447_effect_b", block_hash),
+    }
+
+
+def require_branch_tip_state(snapshot, side):
+    """A merge cannot be blamed if a branch never executed its own write."""
+    if side not in ("A", "B"):
+        raise AssertionError("invalid branch label")
+    require_single_cell_value(snapshot["cell"], side)
+    expected = side
+    wrong = "B" if side == "A" else "A"
+    if not contains_marker(snapshot[side.lower()], expected):
+        raise AssertionError("branch missing its own application marker")
+    if contains_marker(snapshot[wrong.lower()], wrong):
+        raise AssertionError("branch already contains competing marker")
+    return True
+
+
 def wait_for_block_on_all(block_hash, seconds=120):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -356,6 +379,21 @@ def main(argv=None):
                 raise AssertionError("branch deploy IDs are not distinct")
             step("tips", {"a": tip_a, "b": tip_b,
                           "id_a": sig_a, "id_b": sig_b})
+            # An executed marker alone is insufficient: capture the *cell*
+            # produced by each signed branch before restoring gossip.
+            # The previously observed inconsistency was A-marker present
+            # while merged cell retained the seed value zero.
+            branch_state = {
+                "A": pinned_application_snapshot(CONTAINERS[0], tip_a["blockHash"]),
+                "B": pinned_application_snapshot(CONTAINERS[2], tip_b["blockHash"]),
+            }
+            step("branch_tip_state", {
+                "tips": {"A": tip_a["blockHash"], "B": tip_b["blockHash"]},
+                "states": branch_state,
+            })
+            for branch, snapshot in branch_state.items():
+                require_branch_tip_state(snapshot, branch)
+            step("branch_tip_assertions", {"A": True, "B": True})
 
         step("healed", {node: sorted(DockerBackend().members(node)) for node in CONTAINERS})
         target = [tip_a["blockHash"], tip_b["blockHash"]]
