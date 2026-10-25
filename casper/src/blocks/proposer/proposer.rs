@@ -2387,15 +2387,6 @@ fn block_needs_finalization(
 /// and the fringe stopped one layer short of the deploy: measured live (#214, criterion 1: 693 samples,
 /// finality `none` throughout) and in-process. A deploy-bearing block needs every bonded sender to speak
 /// for a few rounds after it, not one, and this is what licenses that.
-fn block_needs_finalization(
-    block: &BlockMessage,
-    finalized_rejections: &BTreeSet<Vec<u8>>,
-) -> bool {
-    !block.state.system_deploys.is_empty()
-        || !block.state.deploys.is_empty()
-        || !block.rejected_deploys.is_subset(finalized_rejections)
-}
-
 fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight) -> (bool, bool) {
     match oldest_unfinalized {
         None => (true, false),
