@@ -1137,13 +1137,32 @@ where
     // decides the attestation horizon below.
     conflict_set.sort();
 
-    let has_deploys =
-        |b: &BlockMessage| !b.state.system_deploys.is_empty() || !b.state.deploys.is_empty();
+    // A merge can publish a rejection without executing a new deploy. Keep
+    // attesting until that decision is covered by the published fringe.
+    // Subtract decisions already in its causal past so repeated rejection
+    // ledgers on empty attestations cannot keep a quiet chain running.
+    let mut finalized_rejections = None;
 
     let mut oldest_unfinalized: Option<BlockHeight> = None;
     for (height, h) in &conflict_set {
         if let Some(b) = get_block(block_store, h).await? {
-            if has_deploys(&b) {
+            if b.state.system_deploys.is_empty()
+                && b.state.deploys.is_empty()
+                && !b.rejected_deploys.is_empty()
+                && finalized_rejections.is_none()
+            {
+                let mut covered = BTreeSet::new();
+                for h in fringe_seen.iter().chain(pre_state.prev_fringe.iter()) {
+                    if let Some(finalized) = get_block(block_store, h).await? {
+                        covered.extend(finalized.rejected_deploys);
+                    }
+                }
+                finalized_rejections = Some(covered);
+            }
+            if block_needs_finalization(
+                &b,
+                finalized_rejections.as_ref().unwrap_or(&BTreeSet::new()),
+            ) {
                 oldest_unfinalized = Some(*height);
                 break;
             }
@@ -2344,7 +2363,18 @@ fn cadence_due(
 /// this many heights after the deploy, instead of every validator attesting at every height for ever.
 const ATTESTATION_HORIZON: i64 = 3 * liveness::LIVENESS_WINDOW;
 
-/// The guard's two inputs, from the **oldest deploy-bearing block this node has seen that the fringe it is
+/// Whether a block carries execution work or a rejection decision not yet
+/// covered by the published fringe. A merge-only decision also needs finality.
+fn block_needs_finalization(
+    block: &BlockMessage,
+    finalized_rejections: &BTreeSet<Vec<u8>>,
+) -> bool {
+    !block.state.system_deploys.is_empty()
+        || !block.state.deploys.is_empty()
+        || !block.rejected_deploys.is_subset(finalized_rejections)
+}
+
+/// The guard's two inputs, from the **oldest work-bearing block this node has seen that the fringe it is
 /// building on does not yet cover** (`None`: there is none).
 ///
 /// - `nothing_to_finalize`: there is no such block.
@@ -2862,6 +2892,36 @@ mod equivocation_injection_tests {
             timestamp: 1_700_000_000_000,
         };
         id.sign_block(&base).expect("signing with a real key")
+    }
+
+    #[test]
+    fn merge_only_rejections_need_finality_until_the_fringe_covers_them() {
+        let mut merged = block(&identity());
+        let a = vec![0xa1];
+        let b = vec![0xb2];
+        merged.rejected_deploys = [a.clone(), b.clone()].into_iter().collect();
+        // Differential witness for the former deploy-only guard.
+        assert!(merged.state.deploys.is_empty() && merged.state.system_deploys.is_empty());
+        assert!(super::block_needs_finalization(
+            &merged,
+            &Default::default()
+        ));
+        for covered in [a.clone(), b.clone()] {
+            let partial = [covered].into_iter().collect();
+            assert!(super::block_needs_finalization(&merged, &partial));
+        }
+        // A repeated ledger is not fresh work after finalization.
+        assert!(!super::block_needs_finalization(
+            &merged,
+            &merged.rejected_deploys
+        ));
+        let superset = [a, b, vec![0xc3]].into_iter().collect();
+        assert!(!super::block_needs_finalization(&merged, &superset));
+        merged.rejected_deploys.clear();
+        assert!(!super::block_needs_finalization(
+            &merged,
+            &Default::default()
+        ));
     }
 
     /// **The twin is the same block in every way the protocol reads, and a different block in the one

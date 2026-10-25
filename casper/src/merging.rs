@@ -279,9 +279,9 @@ pub struct MergeReport {
     pub kept_chains: usize,
     pub rejected_chains: usize,
     /// **The final scope's rejections — the ledger's missing row** (C260). A chain of a *finalised*
-    /// block whose block's derived rejection set names its first deploy: the event is a fringe's own
-    /// finalisers having recorded a rejection reaching a block they finalised, which honest siblings
-    /// cannot produce (measured: `two_honest_siblings_contribute_one_value_to_the_fringe_they_share`).
+    /// block whose derived rejection set names its first deploy. This records a historical
+    /// rejection decision, which is expected when finalizing deliberately conflicting branches.
+    /// It is not by itself evidence of final-state disagreement or an unexplained rejection.
     ///
     /// **It was visible nowhere.** Not in `rejected_chains` (conflict scope), not in the merge's
     /// `rejected_deploys` (`rejected_ids` is built from the conflict scope), not in `describe()`, and
@@ -315,11 +315,9 @@ pub struct MergeReport {
 impl MergeReport {
     /// Whether there is anything here an operator should see.
     ///
-    /// **The final scope's rejections are part of the answer** (C260). They are reachable only from a
-    /// fringe's own finalisers recording a rejection of a block they finalised — honest siblings cannot
-    /// produce one — so this does not make ordinary merges loud; it makes *this* merge loud, which is
-    /// the whole point: the counter beside this (`nonQuietMergeReports`) is what an operator's surface
-    /// reads, and it could not see a final-scope rejection at all.
+    /// Final-scope rejection decisions remain visible (C260), including expected decisions
+    /// from a conflicting-branch campaign. The I1/I2 fields distinguish unexplained
+    /// rejections and lost writes from this historical rejection ledger.
     pub fn is_quiet(&self) -> bool {
         self.rejected_chains == 0
             && self.final_scope_rejected_chains == 0
@@ -338,12 +336,12 @@ impl MergeReport {
             self.rejected_cost_accounted_chains
         );
         // Named where a reader of the line meets it, and named as what it is: not a lost write — the
-        // finalised chain's effects are in the base state — but a rejection only a divergent finaliser
-        // could have put there (C260).
+        // finalized state's decisions are retained in the base. This ledger remains visible
+        // without claiming that a recorded rejection alone proves divergent finality (C260).
         if self.final_scope_rejected_chains > 0 {
             line.push_str(&format!(
-                "; **{} chain(s) of the final scope rejected**: a rejection the fringe's own finalisers \
-                 recorded reaching a block they finalised, which honest siblings cannot produce (C260)",
+                "; **{} chain(s) of the final scope rejected**: recorded final-scope rejection \
+                 decisions retained in the merge base (C260)",
                 self.final_scope_rejected_chains
             ));
         }
@@ -398,6 +396,8 @@ fn rejection_has_a_reason<D: Ord>(
     rejected: &BTreeSet<D>,
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
     dependency_map: &BTreeMap<D, BTreeSet<D>>,
+    accepted_finally: &BTreeSet<D>,
+    rejected_finally: &BTreeSet<D>,
 ) -> bool {
     let conflicts = |a: &D, b: &D| {
         conflicts_map.get(a).is_some_and(|s| s.contains(b))
@@ -405,14 +405,14 @@ fn rejection_has_a_reason<D: Ord>(
     };
 
     // Direct conflict with a chain that survives is a reason to reject this chain.
-    if kept.iter().any(|k| conflicts(chain, k)) {
+    if kept.union(accepted_finally).any(|k| conflicts(chain, k)) {
         return true;
     }
 
     // `dependency_map` is keyed by the dependency and points to its dependents.  The resolver's
     // `with_dependencies` walks exactly this edge when a rejection cascades, so a rejected chain is
     // justified when some other rejected chain has this chain among its dependents.
-    rejected.iter().any(|r| {
+    rejected.union(rejected_finally).any(|r| {
         r != chain
             && dependency_map
                 .get(r)
@@ -2037,8 +2037,8 @@ impl MergeScope {
                 .filter(|c| !c.cost_moves.is_empty())
                 .count(),
             // I1: a rejected chain must have a reason — a conflict with a kept chain, or a dependency
-            // on another rejected one. Chains the final scope forced out are exempt: they were never
-            // in the resolution's hands.
+            // on another rejected one. Include finalized decisions as reasons: a conflict-scope
+            // chain forced out by those decisions is not an unexplained rejection.
             rejections_without_a_conflict: rejected
                 .iter()
                 .filter(|c| conflict_set.contains(*c))
@@ -2049,6 +2049,8 @@ impl MergeScope {
                         &rejected,
                         &conflicts_map,
                         &dependency_map,
+                        &accepted_finally,
+                        &rejected_finally,
                     )
                 })
                 .flat_map(|c| c.deploys_with_cost.iter().map(|d| d.id.clone()))
@@ -3500,6 +3502,39 @@ mod rejection_reason_tests {
     }
 
     #[test]
+    fn i1_includes_finalized_conflicts_and_rejected_dependencies() {
+        let conflicts = BTreeMap::from([(1, set([10]))]);
+        let dependencies = BTreeMap::from([(20, set([2]))]);
+        assert!(rejection_has_a_reason(
+            &1,
+            &set([]),
+            &set([1]),
+            &conflicts,
+            &dependencies,
+            &set([10]),
+            &set([20]),
+        ));
+        assert!(rejection_has_a_reason(
+            &2,
+            &set([]),
+            &set([2]),
+            &conflicts,
+            &dependencies,
+            &set([10]),
+            &set([20]),
+        ));
+        assert!(!rejection_has_a_reason(
+            &3,
+            &set([]),
+            &set([3]),
+            &conflicts,
+            &dependencies,
+            &set([10]),
+            &set([20]),
+        ));
+    }
+
+    #[test]
     fn i1_accepts_a_dependency_cascade_and_rejects_self_justification() {
         let kept = set([10]);
         let rejected = set([1, 2, 3]);
@@ -3515,21 +3550,27 @@ mod rejection_reason_tests {
             &kept,
             &rejected,
             &conflicts,
-            &dependencies
+            &dependencies,
+            &set([]),
+            &set([])
         ));
         assert!(rejection_has_a_reason(
             &2,
             &kept,
             &rejected,
             &conflicts,
-            &dependencies
+            &dependencies,
+            &set([]),
+            &set([])
         ));
         assert!(rejection_has_a_reason(
             &3,
             &kept,
             &rejected,
             &conflicts,
-            &dependencies
+            &dependencies,
+            &set([]),
+            &set([])
         ));
 
         // A conflict only with another rejected chain is not a reason by itself.
@@ -3540,6 +3581,8 @@ mod rejection_reason_tests {
             &set([2, 3]),
             &conflicts,
             &no_dependencies,
+            &set([]),
+            &set([]),
         ));
     }
 }

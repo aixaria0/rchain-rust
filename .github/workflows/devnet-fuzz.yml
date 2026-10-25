@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-rcash' && github.event.inputs.mode != 'issue447-registry' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-conflict' && github.event.inputs.mode != 'issue447-registry' && github.event.inputs.mode != 'issue447-rcash' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -216,6 +216,99 @@ jobs:
       - name: Tear down isolated devnet only
         if: always()
         run: tools/devnet.sh down -v || true
+
+  issue447-conflict:
+    if: ${{ github.event.inputs.mode == 'issue447-conflict' }}
+    name: Issue 447 real four-validator same-channel conflict
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_PREFIX: n447conflict
+      DEVNET_NETWORK: n447-conflict-disposable
+      DEVNET_NODE_MEMORY: 3g
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_WAIT_TRIES: "180"
+    steps:
+      - name: Checkout exact merge source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Source provenance and negative verdict controls
+        run: |
+          mkdir -p target/issue447-conflict
+          git rev-parse HEAD | tee target/issue447-conflict/source.sha
+          python3 -m unittest discover -s tests -p 'test_n447_conflict.py' -v             2>&1 | tee target/issue447-conflict/regressions.log
+      - name: Build real Docker node
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build 2>&1 | tee target/issue447-conflict/build.log
+          docker image inspect rnode:local --format '{{.Id}}' > target/issue447-conflict/image-id.txt
+      - name: Start isolated four-validator genesis
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 4 --fresh --no-autopropose --no-propose-on-deploy --epoch-length 10 2>&1 | tee target/issue447-conflict/startup.log
+      - name: Execute conflicting linear-cell updates across 2+2
+        run: |
+          set -euo pipefail
+          verdict=0
+          seen=""
+          for trial in 1 2 3 4 5 6 7 8; do
+            case_dir="target/issue447-conflict/trial-$trial"
+            mkdir -p "$case_dir"
+            if [[ "$trial" != 1 ]]; then
+              tools/devnet.sh down -v
+              tools/devnet.sh up --validators 4 --fresh --no-autopropose --no-propose-on-deploy --epoch-length 10 2>&1 | tee "$case_dir/startup.log"
+            fi
+            options=(--costlier-writer A)
+            if (( trial % 2 == 0 )); then options=(--costlier-writer B --swap-writers); fi
+            if timeout --preserve-status 1800s python3 tools/n447-same-channel.py "${options[@]}" --out "$case_dir/conflict.json" --timeout 420 2>&1 | tee "$case_dir/conflict.log"; then
+              :
+            else
+              verdict=1
+            fi
+            for node in n447conflict-bootstrap n447conflict-validator-1 n447conflict-validator-2 n447conflict-validator-3; do
+              docker logs "$node" > "$case_dir/$node.log" 2>&1 || true
+            done
+            if (( verdict != 0 )); then break; fi
+            winner=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(s["value"]["survivor"] for s in d["steps"] if s["stage"] == "winner"))' "$case_dir/conflict.json")
+            seen="$seen$winner"
+            if [[ "$seen" == *A* && "$seen" == *B* ]]; then break; fi
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/issue447-conflict")
+          observed = set()
+          files = sorted(root.glob("trial-*/conflict.json"))
+          assert files, "no completed trial evidence"
+          for path in files:
+              result = json.loads(path.read_text())
+              assert result["result"] == "PASS", path
+              observed.add(next(s["value"]["survivor"] for s in result["steps"] if s["stage"] == "winner"))
+              for log in path.parent.glob("n447conflict-*.log"):
+                  content = log.read_text(errors="replace")
+                  assert not any(s in content for s in ("I1 VIOLATED", "I2 VIOLATED", "panicked at")), log
+          assert observed == {"A", "B"}, "bounded campaign did not cover both winners"
+          (root / "coverage.json").write_text(json.dumps({"result": "PASS", "trials": len(files), "winners": sorted(observed)}, indent=2))
+          PY
+          exit "$verdict"
+      - name: Capture node diagnostics
+        if: always()
+        run: |
+          docker ps -a --filter "name=n447conflict" > target/issue447-conflict/containers.txt || true
+          for node in n447conflict-bootstrap n447conflict-validator-1 n447conflict-validator-2 n447conflict-validator-3; do
+            docker logs --tail 450 "$node" > "target/issue447-conflict/$node.log" 2>&1 || true
+          done
+      - name: Preserve raw conflict verdict
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue447-conflict-${{ github.run_id }}
+          path: target/issue447-conflict/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Teardown disposable conflict network
+        if: always()
+        run: |
+          DEVNET_PREFIX=n447conflict DEVNET_NETWORK=n447-conflict-disposable tools/devnet.sh down -v || true
 
   issue447-rcash:
     if: ${{ github.event.inputs.mode == 'issue447-rcash' }}
