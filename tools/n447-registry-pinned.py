@@ -112,7 +112,7 @@ def lookup_term(uri):
     return (
         "new rl(" + BT + "rho:registry:lookup" + BT
         + "), ack in { rl!(" + BT + uri + BT
-        + ', *ack) | for (@value <- ack) { @"n447_out"!(value) } }'
+        + ', *ack) | for (@value <- ack) { @"out"!(value) } }'
     )
 
 
@@ -148,7 +148,7 @@ def main(argv=None):
             raise AssertionError("the carrying block does not prove inclusion")
         if carrying.get("postStateHash") == carrying.get("preStateHash"):
             raise AssertionError("the registration block left state unchanged")
-        uri_reply = explore('for (@uri <- @"n447_reg_uri") { @"n447_out"!(uri) }',
+        uri_reply = explore('for (@uri <- @"n447_reg_uri") { @"out"!(uri) }',
                             carrying["blockHash"])
         report["uri_reply"] = uri_reply
         found = set(URI_PATTERN.findall(json.dumps(uri_reply)))

@@ -30,6 +30,7 @@ class RegistryProbeTests(unittest.TestCase):
     def test_uri_input_is_validated(self):
         uri = "rho:id:" + "a" * 46
         self.assertIn(uri, mod.lookup_term(uri))
+        self.assertIn('@"out"!(value)', mod.lookup_term(uri))
         with self.assertRaises(AssertionError):
             mod.lookup_term("bad-name")
 
