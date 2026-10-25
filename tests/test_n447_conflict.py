@@ -215,9 +215,24 @@ class VerdictControls(unittest.TestCase):
         self.assertEqual(conflict.causal_ancestor_paths(
             cycle.__getitem__, "x", {"tipA", "tipB"}), {})
 
+    def test_duplicate_or_unexpected_marker_cannot_pass(self):
+        marker = {"ExprString": {"data": "A"}}
+        with self.assertRaisesRegex(AssertionError, "duplicate"):
+            conflict.contains_marker([marker, marker], "A")
+        with self.assertRaisesRegex(AssertionError, "unexpected"):
+            conflict.contains_marker([marker, {"ExprInt": {"data": 99}}], "A")
+        with self.assertRaisesRegex(AssertionError, "malformed"):
+            conflict.contains_marker([{"ExprString": {}}], "A")
+
+    def test_missing_marker_is_exactly_empty_list(self):
+        self.assertFalse(conflict.contains_marker([], "B"))
+        with self.assertRaisesRegex(AssertionError, "invalid effect"):
+            conflict.contains_marker(None, "B")
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
-        self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
+        with self.assertRaisesRegex(AssertionError, "unexpected"):
+            conflict.contains_marker([{"ExprString": {"data": "B"}}], "A")
 
 
 if __name__ == "__main__":

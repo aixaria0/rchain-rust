@@ -72,8 +72,17 @@ def expr(container, channel, block_hash):
 
 
 def contains_marker(expressions, marker):
-    return any(item.get("ExprString", {}).get("data") == marker
-               for item in expressions if isinstance(item, dict))
+    """A surviving effect must be exactly one marker, with no extra produces."""
+    if not isinstance(expressions, list):
+        raise AssertionError("invalid effect readback")
+    if not expressions:
+        return False
+    expected = [{"ExprString": {"data": marker}}]
+    if expressions != expected:
+        raise AssertionError(
+            f"effect channel has duplicate, unexpected, or malformed values: {expressions!r}"
+        )
+    return True
 
 
 def classify_effects(a, b, rejected, id_a, id_b):
@@ -372,7 +381,12 @@ def main(argv=None):
         while time.monotonic() < end and merge is None:
             actor = CONTAINERS[len(attempts) % len(CONTAINERS)]
             proposed = fork.propose(actor)
-            attempts.append({"validator": actor, "exit": proposed.returncode})
+            attempts.append({
+                "validator": actor,
+                "exit": proposed.returncode,
+                "stdout_tail": proposed.stdout[-240:],
+                "stderr_tail": proposed.stderr[-240:],
+            })
             merge, ancestry, rejected_hints = scan_causal_conflict(
                 CONTAINERS[0], tip_a["blockNumber"], target, [sig_a, sig_b])
             if merge is None:
