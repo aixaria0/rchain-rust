@@ -110,6 +110,25 @@ class VerdictControls(unittest.TestCase):
         with self.assertRaises(AssertionError):
             conflict.require_single_cell_value([{"ExprInt": {"data": True}}], "A")
 
+    def test_partition_forks_need_not_be_at_identical_height(self):
+        a = {"blockNumber": 3, "blockHash": "fork-A", "preStateHash": "seed"}
+        b = {"blockNumber": 5, "blockHash": "fork-B", "preStateHash": "seed"}
+        fact = conflict.require_divergent_signed_tips(a, b, 2, "sigA", "sigB")
+        self.assertFalse(fact["same_height"])
+        self.assertTrue(fact["pre_roots_equal"])
+
+    def test_partition_fork_must_not_claim_duplicate_signed_identity(self):
+        a = {"blockNumber": 3, "blockHash": "fork-A"}
+        b = {"blockNumber": 4, "blockHash": "fork-B"}
+        with self.assertRaises(AssertionError):
+            conflict.require_divergent_signed_tips(a, b, 2, "same", "same")
+
+    def test_partition_fork_rejects_no_advance_past_seed(self):
+        a = {"blockNumber": 2, "blockHash": "fork-A"}
+        b = {"blockNumber": 4, "blockHash": "fork-B"}
+        with self.assertRaises(AssertionError):
+            conflict.require_divergent_signed_tips(a, b, 2, "A", "B")
+
     def test_each_signed_branch_persists_its_own_linear_update(self):
         for side, number in (("A", 1), ("B", 2)):
             snapshot = {

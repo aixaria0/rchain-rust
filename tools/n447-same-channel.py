@@ -110,6 +110,28 @@ def require_single_cell_value(expressions, survivor):
     return actual
 
 
+def require_divergent_signed_tips(tip_a, tip_b, seed_height, sig_a, sig_b):
+    """A real partition can advance groups at different local block heights.
+
+    Height equality is not a requirement for two causally independent forks.
+    The signed blocks must both follow a common seed, be different blocks,
+    and carry different signed deploy identities; partition checks separately
+    ensure no route between the two groups.
+    """
+    if not all(isinstance(tip, dict) for tip in (tip_a, tip_b)):
+        raise AssertionError("missing signed fork tip")
+    if not (int(tip_a["blockNumber"]) > int(seed_height) and
+            int(tip_b["blockNumber"]) > int(seed_height)):
+        raise AssertionError("conflicting signed tips did not advance beyond common seed")
+    if tip_a["blockHash"] == tip_b["blockHash"]:
+        raise AssertionError("conflicting deploys unexpectedly shared one block")
+    if not sig_a or not sig_b or sig_a == sig_b:
+        raise AssertionError("fork signatures missing or duplicated")
+    return {"same_height": tip_a["blockNumber"] == tip_b["blockNumber"],
+            "heights": {"A": tip_a["blockNumber"], "B": tip_b["blockNumber"]},
+            "pre_roots_equal": tip_a.get("preStateHash") == tip_b.get("preStateHash")}
+
+
 def pinned_application_snapshot(node, block_hash):
     """Capture the actual committed cell and both markers at one block root."""
     return {
@@ -366,19 +388,24 @@ def main(argv=None):
                     CONTAINERS[0], A, seed["blockNumber"])
                 tip_b, sig_b = find_signed_carrier(
                     CONTAINERS[2], B, seed["blockNumber"])
-                if (tip_a and tip_b
-                    and tip_a["blockNumber"] == tip_b["blockNumber"]
-                    and tip_a["blockHash"] != tip_b["blockHash"]):
+                if tip_a and tip_b and tip_a["blockHash"] != tip_b["blockHash"]:
                     break
                 fork.propose(CONTAINERS[0])
                 fork.propose(CONTAINERS[2])
                 time.sleep(2)
             else:
-                raise AssertionError("both conflicting signed deploys did not produce same-height fork tips")
-            if sig_a == sig_b:
-                raise AssertionError("branch deploy IDs are not distinct")
+                step("signed_fork_not_observed", {
+                    "last_A": tip_a, "last_B": tip_b,
+                    "latest_A": fork.tip(CONTAINERS[0]),
+                    "latest_B": fork.tip(CONTAINERS[2]),
+                })
+                raise AssertionError("both conflicting signed deploys did not produce independent fork tips")
+            fork_distinction = require_divergent_signed_tips(
+                tip_a, tip_b, seed["blockNumber"], sig_a, sig_b
+            )
             step("tips", {"a": tip_a, "b": tip_b,
-                          "id_a": sig_a, "id_b": sig_b})
+                          "id_a": sig_a, "id_b": sig_b,
+                          "fork_distinction": fork_distinction})
             # An executed marker alone is insufficient: capture the *cell*
             # produced by each signed branch before restoring gossip.
             # The previously observed inconsistency was A-marker present
@@ -426,14 +453,15 @@ def main(argv=None):
                 "stderr_tail": proposed.stderr[-240:],
             })
             merge, ancestry, rejected_hints = scan_causal_conflict(
-                CONTAINERS[0], tip_a["blockNumber"], target, [sig_a, sig_b])
+                CONTAINERS[0], max(tip_a["blockNumber"], tip_b["blockNumber"]),
+                target, [sig_a, sig_b])
             if merge is None:
                 time.sleep(2)
         step("post_heal_proposals", {
             "attempts": len(attempts), "by_validator": attempts[-24:],
         })
         if merge is None:
-            diagnostics = post_heal_diagnostics(target, tip_a["blockNumber"])
+            diagnostics = post_heal_diagnostics(target, max(tip_a["blockNumber"], tip_b["blockNumber"]))
             step("merge_not_observed", diagnostics)
             step("rejection_hints_without_full_ancestry", rejected_hints[-30:])
             raise AssertionError(
