@@ -54,5 +54,16 @@ class RegistryProbeTests(unittest.TestCase):
             (None, None))
 
 
+    def test_empty_expr_with_captured_out_means_nil(self):
+        self.assertEqual(mod.classify_reply({"expr": [], "replySource": "out"}), "Nil")
+
+    def test_no_output_does_not_count_as_nil(self):
+        self.assertEqual(mod.classify_reply({"expr": [], "replySource": "none"}), "no_reply")
+
+    def test_same_root_post_state_returns_number(self):
+        self.assertEqual(mod.classify_reply(
+            {"expr": [{"ExprInt": {"data": 42}}], "replySource": "out"}), "42")
+
+
 if __name__ == "__main__":
     unittest.main()
