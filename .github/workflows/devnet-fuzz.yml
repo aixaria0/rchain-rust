@@ -225,7 +225,7 @@ jobs:
     env:
       DEVNET_PREFIX: n447conflict
       DEVNET_NETWORK: n447-conflict-disposable
-      DEVNET_NODE_MEMORY: 2g
+      DEVNET_NODE_MEMORY: 3g
       DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
       DEVNET_WAIT_TRIES: "180"
     steps:
