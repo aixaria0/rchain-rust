@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-rcash' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-rcash' && github.event.inputs.mode != 'issue447-registry' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -169,6 +169,53 @@ jobs:
         if: always()
         run: |
           DEVNET_PREFIX=n420fork DEVNET_NETWORK=n447-disposable tools/devnet.sh down -v || true
+  issue447-registry:
+    if: ${{ github.event.inputs.mode == 'issue447-registry' }}
+    name: Issue 447 registry pinned-state read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_PREFIX: n447registry
+      DEVNET_NETWORK: n447-registry-disposable
+      DEVNET_NODE_MEMORY: 2g
+      DEVNET_WAIT_TRIES: "180"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Source and probe regressions
+        run: |
+          mkdir -p target/issue447-registry
+          git rev-parse HEAD > target/issue447-registry/source.sha
+          python3 -m unittest discover -s tests -p 'test_n447_registry.py' -v             2>&1 | tee target/issue447-registry/unit.log
+      - name: Build exact source node image
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build 2>&1 | tee target/issue447-registry/build.log
+          docker image inspect rnode:local --format '{{.Id}}' > target/issue447-registry/image-id.txt
+      - name: Start fresh disposable registry chain
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 1 --fresh --no-autopropose             --epoch-length 10 2>&1 | tee target/issue447-registry/startup.log
+      - name: Probe native registry at identical pinned block roots
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 240s python3 tools/n447-registry-pinned.py             --out target/issue447-registry/registry.json --timeout 150             2>&1 | tee target/issue447-registry/registry.log
+      - name: Capture local node diagnostics
+        if: always()
+        run: |
+          docker ps -a --filter "name=n447registry" > target/issue447-registry/containers.txt || true
+          docker logs --tail 550 n447registry-bootstrap             > target/issue447-registry/node.log 2>&1 || true
+      - name: Preserve pinned read evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue447-registry-${{ github.run_id }}
+          path: target/issue447-registry/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Tear down isolated devnet only
+        if: always()
+        run: tools/devnet.sh down -v || true
 
   issue447-rcash:
     if: ${{ github.event.inputs.mode == 'issue447-rcash' }}
