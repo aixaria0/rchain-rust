@@ -29,6 +29,8 @@ Usage: tools/n420-fork-point.py [--out DIR] [--timeout 600]
 """
 
 import argparse
+
+from n447_partition import DockerBackend, SplitNetwork
 import base64
 import json
 import os
@@ -167,16 +169,77 @@ def find_merge(container, height, tips, deadline):
     return None
 
 
+def probe_transport(source, target):
+    """An actual HTTP/TCP connection, not merely common Docker membership."""
+    result = run([
+        "docker", "exec", source, "curl", "-fsS",
+        "--connect-timeout", "2", "--max-time", "4",
+        f"http://{target}:40403/api/status",
+    ], check=False)
+    return result.returncode == 0
+
+
+def observe_cross_tip_gossip(containers, tips):
+    """Report whether both independently proposed blocks reached every node."""
+    observed = {}
+    for node in containers:
+        found = {}
+        for block_hash in tips:
+            try:
+                info = block_info(node, block_hash)
+                found[block_hash] = (info.get("blockHash") == block_hash)
+            except Exception:
+                found[block_hash] = False
+        observed[node] = found
+    return observed
+
+
+def all_tips_visible(observed):
+    return bool(observed) and all(all(visibilities.values()) for visibilities in observed.values())
+
+
+def merge_state_agreement(infos, nodes, merge_hash):
+    """All validators must serve the exact same merge block and state hashes."""
+    if set(infos) != set(nodes):
+        raise AssertionError("merge block has not reached all four validators")
+    hashes = {info.get("blockHash") for info in infos.values()}
+    pre = {info.get("preStateHash") for info in infos.values()}
+    post = {info.get("postStateHash") for info in infos.values()}
+    if hashes != {merge_hash} or len(pre) != 1 or None in pre or len(post) != 1 or None in post:
+        raise AssertionError(
+            f"validator disagreement on merge block/pre/post state: "
+            f"hashes={hashes} pre={pre} post={post}"
+        )
+    return next(iter(pre)), next(iter(post))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="target/issue420-evidence/fork-point")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--gossip-timeout", type=int, default=120)
     args = parser.parse_args()
 
-    record = {"boundary": "finite devnet witness; no universal safety theorem", "steps": []}
+    record = {
+        "boundary": "finite devnet witness; no universal safety theorem",
+        "result": "INCOMPLETE",
+        "steps": [],
+    }
+
+    def persist():
+        # A failed/disconnected test must leave its actual observations behind.
+        # Write atomically so a terminated run cannot leave malformed JSON.
+        os.makedirs(args.out, exist_ok=True)
+        destination = os.path.join(args.out, "fork-point.json")
+        temporary = destination + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump(record, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, destination)
 
     def step(name, value):
         record["steps"].append({"step": name, "value": value})
+        persist()
         print(f"== {name}: {value}", flush=True)
 
     missing = [c for c in CONTAINERS if docker("inspect", c, check=False).returncode != 0]
@@ -197,51 +260,87 @@ def main():
     height = base["blockNumber"]
     step("base", {"blockNumber": height, "hash": base["blockHash"]})
 
-    # The partition: bootstrap + validator-1 on the network; validator-2 isolated. Each side has its
-    # own DAG and can propose; the deployer is funded on both.
-    for isolated in (CONTAINERS[2], CONTAINERS[3]):
-        docker("network", "disconnect", NETWORK, isolated)
-    step("partition", {"group_a": CONTAINERS[:2], "group_b": CONTAINERS[2:4]})
+    # A 2+2 split requires TWO live internal bridges. Merely disconnecting
+    # validators 2 and 3 from the only bridge also disconnects them from each other.
+    # SplitNetwork audits actual Docker membership and always restores it.
+    with SplitNetwork(DockerBackend(), prefix=PREFIX, main=NETWORK) as topology:
+        step("partition", {
+            "group_a": topology.left,
+            "group_b": topology.right,
+            "networks": topology.require_partition(),
+        })
+        # A shared bridge is not proof that the peers can communicate. Require
+        # actual HTTP reachability within each pair and no route between pairs.
+        checks = {
+            "left_0_to_1": probe_transport(CONTAINERS[0], CONTAINERS[1]),
+            "left_1_to_0": probe_transport(CONTAINERS[1], CONTAINERS[0]),
+            "right_2_to_3": probe_transport(CONTAINERS[2], CONTAINERS[3]),
+            "right_3_to_2": probe_transport(CONTAINERS[3], CONTAINERS[2]),
+            "cross_0_to_2": probe_transport(CONTAINERS[0], CONTAINERS[2]),
+            "cross_2_to_0": probe_transport(CONTAINERS[2], CONTAINERS[0]),
+        }
+        step("partition_transport", checks)
+        if not all(checks[k] for k in (
+            "left_0_to_1", "left_1_to_0", "right_2_to_3", "right_3_to_2"
+        )):
+            raise SystemExit("invalid 2+2 partition: intra-group HTTP connectivity failed")
+        if checks["cross_0_to_2"] or checks["cross_2_to_0"]:
+            raise SystemExit("invalid 2+2 partition: cross-group route is still reachable")
 
-    # **Distinct channels on purpose.** Two linear produces on one channel are a conflict the merge
-    # resolves by keeping one; the property this arm checks is that two *accepted, non-conflicting*
-    # writers both survive a multi-parent merge.
-    deploy(CONTAINERS[0], r'@"forkA"!("A")', height)
-    deploy(CONTAINERS[2], r'@"forkB"!("B")', height)
-    propose(CONTAINERS[0])
-    propose(CONTAINERS[2])
-
-    deadline = time.time() + args.timeout
-    tip_a = tip_b = None
-    while time.time() < deadline:
-        tip_a = tip(CONTAINERS[0])
-        tip_b = tip(CONTAINERS[2])
-        advanced = (
-            tip_a is not None
-            and tip_b is not None
-            and tip_a["blockNumber"] > height
-            and tip_b["blockNumber"] > height
-            and tip_a["blockNumber"] == tip_b["blockNumber"]
-        )
-        if advanced:
-            break
+        # **Distinct channels on purpose.** Two linear produces on one channel are a conflict the merge
+        # resolves by keeping one; the property this arm checks is that two *accepted, non-conflicting*
+        # writers both survive a multi-parent merge.
+        deploy(CONTAINERS[0], r'@"forkA"!("A")', height)
+        deploy(CONTAINERS[2], r'@"forkB"!("B")', height)
         propose(CONTAINERS[0])
         propose(CONTAINERS[2])
+
+        deadline = time.time() + args.timeout
+        tip_a = tip_b = None
+        while time.time() < deadline:
+            tip_a = tip(CONTAINERS[0])
+            tip_b = tip(CONTAINERS[2])
+            advanced = (
+                tip_a is not None
+                and tip_b is not None
+                and tip_a["blockNumber"] > height
+                and tip_b["blockNumber"] > height
+                and tip_a["blockNumber"] == tip_b["blockNumber"]
+            )
+            if advanced:
+                break
+            propose(CONTAINERS[0])
+            propose(CONTAINERS[2])
+            time.sleep(2)
+        if (tip_a is None or tip_b is None or tip_a["blockNumber"] <= height
+                or tip_b["blockNumber"] <= height):
+            raise SystemExit("the partition did not produce a tip on each side; no fork to merge")
+        if tip_a["blockHash"] == tip_b["blockHash"]:
+            raise SystemExit("both sides produced the same block: no fork")
+        if tip_a["blockNumber"] != tip_b["blockNumber"]:
+            raise SystemExit("the partition produced unequal tip heights; same-height merge arm unproven")
+
+        tips = [tip_a["blockHash"], tip_b["blockHash"]]
+        step(
+            "tips",
+            {"height": tip_a["blockNumber"], "a": tip_a["blockHash"], "b": tip_b["blockHash"]},
+        )
+
+    step("healed", {node: sorted(topology.backend.members(node)) for node in CONTAINERS})
+
+    # A missing merge is not a merge-state failure when the validators have
+    # not even received both fork tips. Diagnose gossip before proposal gates.
+    gossip_deadline = time.time() + args.gossip_timeout
+    visibility = observe_cross_tip_gossip(CONTAINERS, tips)
+    while not all_tips_visible(visibility) and time.time() < gossip_deadline:
         time.sleep(2)
-    if tip_a is None or tip_b is None or tip_a["blockNumber"] <= height:
-        raise SystemExit("the partition did not produce a tip on each side; no fork to merge")
-    if tip_a["blockHash"] == tip_b["blockHash"]:
-        raise SystemExit("both sides produced the same block: no fork")
-
-    tips = [tip_a["blockHash"], tip_b["blockHash"]]
-    step(
-        "tips",
-        {"height": tip_a["blockNumber"], "a": tip_a["blockHash"], "b": tip_b["blockHash"]},
-    )
-
-    for isolated in (CONTAINERS[2], CONTAINERS[3]):
-        docker("network", "connect", NETWORK, isolated)
-    step("healed", True)
+        visibility = observe_cross_tip_gossip(CONTAINERS, tips)
+    step("healed_tip_gossip", visibility)
+    if not all_tips_visible(visibility):
+        raise SystemExit(
+            "healed network did not exchange both fork tips; "
+            "gossip recovery failed before multi-parent merge validation"
+        )
 
     deadline = time.time() + args.timeout
     merge = None
@@ -249,17 +348,50 @@ def main():
         propose(CONTAINERS[0])
         merge = find_merge(CONTAINERS[0], tip_a["blockNumber"], tips, time.time() + 20)
     if merge is None:
-        raise SystemExit("no multi-parent merge appeared; the round/attestation gate may have withheld it")
+        observations = {}
+        for node in CONTAINERS:
+            try:
+                observations[node] = status(node)
+            except Exception as error:
+                observations[node] = {"read_error": f"{type(error).__name__}: {error}"}
+        step("merge_not_observed", {
+            "expected_tips": tips,
+            "per_node_status": observations,
+            "timeout_seconds": args.timeout,
+        })
+        raise SystemExit(
+            "no multi-parent merge appeared; inspect merge_not_observed in fork-point.json"
+        )
     merge_hash = merge["blockHash"]
     step("merge", merge_hash)
 
-    infos = {c: block_info(c, merge_hash) for c in CONTAINERS[:2]}
+    # Wait for the actual merged block to become readable from all FOUR
+    # validators, not just the two on the first side of the earlier split.
+    # Separate absent replication from divergent state-hash observations.
+    replication_deadline = time.time() + min(args.timeout, 120)
+    infos = {}
+    errors = {}
+    while True:
+        for node in CONTAINERS:
+            try:
+                infos[node] = block_info(node, merge_hash)
+                errors.pop(node, None)
+            except Exception as error:
+                errors[node] = f"{type(error).__name__}: {error}"
+        if len(infos) == len(CONTAINERS):
+            break
+        if time.time() >= replication_deadline:
+            step("merge_replication_missing", {
+                "available": infos,
+                "errors": errors,
+                "target": merge_hash,
+            })
+            raise SystemExit("merge block did not propagate to all four validators")
+        time.sleep(2)
     step("merge_views", infos)
 
-    # (a) every node agrees on the merge and its post-state.
-    post_states = {info.get("postStateHash") for info in infos.values()}
-    assert len(post_states) == 1, f"nodes disagree on the merge post-state: {post_states}"
-    pre_state = next(iter(infos.values())).get("preStateHash")
+    # (a) all FOUR validators agree on the exact block and pre/post state.
+    pre_state, merged_post = merge_state_agreement(infos, CONTAINERS, merge_hash)
 
     # (b) two divergent writers: the merge is neither parent's post-state.
     parent_posts = {tip_a["postStateHash"], tip_b["postStateHash"]}
@@ -273,18 +405,22 @@ def main():
 
     # (d) the merged state carries both writers; the common base carries neither.
     read = r'for (@x <- @"forkA"; @y <- @"forkB") { @"out"!((x, y)) }'
-    merged_post = post_states.pop()
     # The endpoint takes a **block hash** and reads the state the block declares (`usePreStateHash`
     # selects pre vs post), not a state hash.
-    at_post = explore(CONTAINERS[0], read, merge_hash, False)
+    per_node_reads = {
+        node: json.dumps(explore(node, read, merge_hash, False).get("expr", []))
+        for node in CONTAINERS
+    }
     at_base = explore(CONTAINERS[0], read, base["blockHash"], False)
-    post_expr = json.dumps(at_post.get("expr", []))
+    post_results = set(per_node_reads.values())
     base_expr = json.dumps(at_base.get("expr", []))
+    assert len(post_results) == 1, f"application state differs across validators: {per_node_reads}"
+    post_expr = next(iter(post_results))
     assert '"A"' in post_expr and '"B"' in post_expr, f"the merged state lost a writer: {post_expr}"
     assert '"A"' not in base_expr and '"B"' not in base_expr, (
         f"the common base already carried a child value: {base_expr}"
     )
-    step("reads", {"post": post_expr, "base": base_expr})
+    step("reads", {"by_validator": per_node_reads, "base": base_expr})
 
     # (e) a restart re-derives the same state.
     docker("restart", CONTAINERS[1])
@@ -298,9 +434,8 @@ def main():
     assert '"A"' in re_expr and '"B"' in re_expr, f"the restarted validator reads differently: {re_expr}"
     step("restart", {"postStateHash": again.get("postStateHash"), "reads": re_expr})
 
-    os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, "fork-point.json"), "w") as handle:
-        json.dump(record, handle, indent=2)
+    record["result"] = "PASS"
+    persist()
     print(f"ok: evidence at {args.out}/fork-point.json")
 
 

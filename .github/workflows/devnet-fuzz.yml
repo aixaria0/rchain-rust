@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -112,6 +112,63 @@ jobs:
       - name: Tear the devnet down
         if: always()
         run: tools/devnet.sh down -v || true
+
+  issue447-n4:
+    if: ${{ github.event.inputs.mode == 'issue447-n4' }}
+    name: Issue 447 four-validator divergent-tip merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_PREFIX: n420fork
+      DEVNET_NETWORK: n447-disposable
+      DEVNET_NODE_MEMORY: 2g
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_WAIT_TRIES: "180"
+    steps:
+      - name: Checkout exact acceptance source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Source and runner inventory
+        run: |
+          mkdir -p target/issue447
+          git rev-parse HEAD | tee target/issue447/source.sha
+          free -m | tee target/issue447/runner-memory.txt
+          docker info --format '{{.ServerVersion}}' | tee target/issue447/docker-version.txt
+          python3 -m unittest discover -s tests -p 'test_n447_*.py' -v 2>&1 | tee target/issue447/unit-tests.log
+      - name: Build source-pinned real node image
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build 2>&1 | tee target/issue447/build.log
+          docker image inspect rnode:local --format '{{.Id}}' | tee target/issue447/image-id.txt
+      - name: Start a fresh isolated four-validator network
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 4 --fresh --no-autopropose --epoch-length 10 2>&1 | tee target/issue447/startup.log
+      - name: Verify divergent-tip gossip and application-state merge
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 1000s python3 tools/n420-fork-point.py             --out target/issue447/fork-point --timeout 480 --gossip-timeout 120             2>&1 | tee target/issue447/fork-point.log
+      - name: Preserve verdict and diagnostics
+        if: always()
+        run: |
+          mkdir -p target/issue447
+          echo "source=$(git rev-parse HEAD)" | tee target/issue447/verdict.txt
+          docker ps -a --no-trunc --filter "name=n420fork" 2>&1 | tee target/issue447/containers.txt || true
+          docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}' 2>&1             | tee target/issue447/docker-stats.txt || true
+          for name in n420fork-bootstrap n420fork-validator-1 n420fork-validator-2 n420fork-validator-3; do
+            docker logs --tail 600 "$name" > "target/issue447/${name}-stdout.log" 2>&1 || true
+          done
+      - name: Upload raw four-node acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue447-n4-${{ github.run_id }}
+          path: target/issue447/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Teardown only the disposable campaign
+        if: always()
+        run: |
+          DEVNET_PREFIX=n420fork DEVNET_NETWORK=n447-disposable tools/devnet.sh down -v || true
 
   source-and-regressions:
     if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
