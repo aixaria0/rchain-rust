@@ -40,7 +40,9 @@ import Rchain.RSpace.Merge
 import Rchain.RSpace.Merkle
 import Rchain.Sync.Progress
 import Rchain.Sync.Walk
+import Rchain.Sync.Join
 import Rchain.Sync.Transfer
+import Rchain.Sync.Trust
 import Rchain.Casper.Stake
 import Rchain.Proto
 import Rchain.Casper.Dag
@@ -64,6 +66,7 @@ import Rchain.Casper.Views
 import Rchain.Casper.Bonds
 import Rchain.Casper.Rounds
 import Rchain.Pos
+import Rchain.Casper.Lifecycle
 import Rchain.Bounded
 import Rchain.Namespace
 import Rchain.Charging

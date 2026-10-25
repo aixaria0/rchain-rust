@@ -212,10 +212,12 @@ structure Law where
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
--- **The budget is raised for this one literal, measured.** The register is a single list of 86 rows,
--- and elaborating it is a unification problem over the rows' field types rather than a proof: it fits
--- the default 200 000 heartbeats at 58 laws and not at 59, so the budget is raised here rather than the
--- register split into chunks an accidental duplicate could hide between.
+-- **The budget is raised for these literals, measured.** Elaborating a register chunk is a unification
+-- problem over the rows' field types rather than a proof: one list fit the default 200 000 heartbeats at
+-- 58 laws and not at 59, so the budget is raised here. The chunks are `lawsA`/`lawsB`/`lawsC` for a
+-- *memory* reason recorded above them (19.1 GB as one literal against the 16 GB CI runner); the duplicate
+-- they were once feared to hide is caught by the numbering and entry-ceiling checks, which is why the
+-- reason to keep one literal retired with the measurement.
 set_option maxHeartbeats 4000000
 
 /-- Every law in the catalog, the orphaned ones and the open ones included, because a register
@@ -224,7 +226,13 @@ that lists only the formalized laws cannot notice a law that was dropped.
 Statements are the one-line form; `spec/INVENTORY.md` carries the long form and the Rust realization.
 `falsifiable` is `none` where the witness is owed, which is most of the non-corpus laws: naming that gap
 is the purpose, not a defect of this file. -/
-def laws : List Law := [
+-- **Three chunks, not one literal.** The whole register elaborated at 19.1 GB peak
+-- (measured 2026-10-25, rchain-laws build), over the 16 GB CI runner — the SIGTERM of
+-- #417, now deterministic. Each chunk is elaborated on its own; the concatenation is a
+-- value. A duplicate cannot hide between chunks: the numbering check requires every number
+-- 1..`lawCeiling`, and `entryCeiling` pins the row count, so a repeated row leaves a
+-- number missing (the reason to keep one literal retired with that argument).
+def lawsA : List Law := [
   -- ── Rholang: the language (Laws 1–6) ────────────────────────────────────────────────────────────
   { number := 1, clause := "a", layer := "Rholang",
     rustWitness := [
@@ -1952,6 +1960,9 @@ def laws : List Law := [
       `txnCommit_fixes`; the row is `owed` no longer" },
 
   -- ── Laws 30–43: the surface the ten silent defects live in ──────────────────────────────────────
+]
+
+def lawsB : List Law := [
   { number := 30, layer := "Rholang",
     statement := "Every term the parser accepts is in the BNFC grammar (`rholang_mercury.cf`) — \
       **modulo the deviations law 31 names**, and checked as a `decide`d corpus with the soundness \
@@ -3543,6 +3554,9 @@ def laws : List Law := [
       domain, so a loss is a violation rather than a note. The leaf is `exprToSy_wireable` over the \
       expression constructors — every one the encoder refuses is refused by the definition's own \
       fall-through, so the proof is a case per constructor rather than an argument." },
+]
+
+def lawsC : List Law := [
   { number := 60, clause := "a", layer := "RSpace",
     statement := "**An install is total on a channel.** An install that would replace a *different* \
       installed continuation is **refused**, and an idempotent re-install of the same one changes \
@@ -4288,7 +4302,152 @@ def laws : List Law := [
       insert and the publish is narrowed, not closed — there is no WAL — and a crash there is repaired \
       at boot, best-effort if the root is unknown. `rustWitness` is owed until the deferred-publish \
       tests land." },
+
+  { number := 81, layer := "Sync",
+    statement := "**A join walk accepts a verified answer for any known key, and re-asks every \
+      outstanding key.** The block walk's key can reach `Received` without being finished — an answer \
+      that arrived before its request turn is dropped, and a body that fails its content check has \
+      already consumed the key. As written, no request selects `Received` and no answer is accepted \
+      for it, so the key is stranded and `is_finished` can never hold. The repair accepts an answer \
+      for a known key whatever the request slot, validates before consuming, and re-requests `Init`, \
+      `Requested` and `Received` on a resend; one accepted answer per round raises the finished \
+      measure, which is bounded by the walk's key universe",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.Join.accepted_answer_is_verified,
+      `Rchain.Sync.Join.every_outstanding_key_is_requested_on_a_resend,
+      `Rchain.Sync.Join.a_round_makes_progress,
+      `Rchain.Sync.Join.the_written_walk_cannot_finish_from_a_stranded_key],
+    axioms := [],
+    rust := ["casper/src/engine/mod.rs", "casper/src/engine/lfs_block_requester.rs"],
+    rustWitness := [
+      "casper/src/engine/mod.rs:resend_re_requests_a_received_key",
+      "casper/src/engine/mod.rs:received_accepts_a_known_key_before_its_request_turn",
+      "casper/src/engine/mod.rs:received_still_rejects_an_unknown_key",
+      "casper/src/engine/lfs_block_requester.rs:a_forged_body_does_not_consume_the_key_and_is_re_requested",
+      "casper/src/engine/lfs_block_requester.rs:a_known_needed_block_is_accepted_before_its_request_is_sent",
+      "casper/src/engine/lfs_block_requester.rs:a_mature_chain_join_completes",
+      "block-storage/src/dag/codecs.rs:a_decoded_block_still_hashes_to_its_hash"],
+    witness := [`Rchain.Sync.Join.the_written_walk_strands_a_received_key,
+      `Rchain.Sync.Join.the_fixed_walk_can_finish_from_a_stranded_key,
+      `Rchain.Sync.Join.a_rejected_body_leaves_the_walk_where_it_was],
+    falsifiable := "A walk state with one `Received` key still in `latest`: \
+      `the_written_walk_cannot_finish_from_a_stranded_key` shows every `WrittenStep` leaves it \
+      `Received`, so no run reaches `isFinished` — the `(3 finished, 25 outstanding)` shape. The same \
+      counts appeared in the live join, but a controlled A/B (2026-10-25) found that instance was inbound \
+      reachability, not this defect; the stranded key is what the code admits and what this row fixes. \
+      The same state reaches the goal in two turns of the repaired machine \
+      (`the_fixed_walk_can_finish_from_a_stranded_key`), so the falsifier is not vacuous and the \
+      repair is not a widening of the accepted set to unknown keys: `Step.unknown` still drops them.",
+    note := "**Why the missing transition was not the whole defect.** The Rust consumes before it \
+      validates (`lfs_block_requester.rs:73-108` calls `received` and only then checks the hash), so a \
+      body that fails the check leaves the key `Received`; and `get_next` re-requests only `Init`, or \
+      `Requested` on a resend (`mod.rs:102-114`). The model keeps both facts as `WrittenStep`, which is \
+      what makes the falsifier the code's own shape rather than an invented one. The repaired machine's \
+      fairness hypothesis is explicit: `a_round_makes_progress` needs a verified answer to exist \
+      (`hanswer`) and the key universe to be finite and closed (`hK`); the Rust supplies the closure \
+      through the fringe's ancestry but this module does not prove the DAG finite. **Law 69 is not \
+      replaced**: it models the tuple-space page walk, whose validation failure aborts the attempt and \
+      so has no silent stranded key. The witnesses are the 28-block `request_blocks` test and the \
+      requester's rejection/early-answer tests; the codec round-trip witness rules out a wire cause \
+      of a systematic hash mismatch." },
+
+  { number := 82, layer := "PoS",
+    statement := "**A validator's lifecycle has six transitions, and trust is the admission one.** \
+      `observer → trusted → bonded → active → withdrawing → claimable`, with `removed` as the model's \
+      reading of the Rust's absence: `trust`/`untrust` move the admission list (a trusted caller, \
+      never a self-revocation), `bond` is self-only and requires trust and leaves the active set \
+      alone, `withdraw` stages without moving a coin, the epoch boundary is the only step that can \
+      *add* to the active set, and a slash needs evidence. Revocation is not confiscation: `untrust` \
+      changes no stake ledger, so an untrusted-but-bonded validator stays in consensus",
+    status := .provedModel,
+    declarations := [`Rchain.Lifecycle, `Rchain.LifecycleStep, `Rchain.phaseOf,
+      `Rchain.trust_only_from_a_trusted_key, `Rchain.untrust_leaves_the_bond_alone,
+      `Rchain.the_trusted_set_never_empties, `Rchain.bond_is_self_only,
+      `Rchain.activation_only_at_a_boundary],
+    axioms := [],
+    rust := ["rholang/src/native_state.rs", "rholang/src/system_processes.rs",
+      "casper/src/genesis/mod.rs"],
+    rustWitness := [
+      "rholang/src/native_state.rs:trust_requires_a_trusted_caller",
+      "rholang/src/native_state.rs:untrust_removes_trust_and_leaves_the_bond_alone",
+      "rholang/src/native_state.rs:untrust_does_not_change_the_active_set",
+      "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
+      "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
+      "rholang/src/native_state.rs:a_validator_with_delegations_cannot_withdraw",
+      "rholang/src/native_state.rs:the_boundary_pays_on_the_participation_it_is_handed"],
+    witness := [`Rchain.untrust_does_not_deactivate, `Rchain.the_bond_step_does_not_activate,
+      `Rchain.a_justified_slash_is_a_step, `Rchain.a_bond_reaches_the_bonded_phase],
+    falsifiable := "The rule this replaces is C111's: `untrust` called `slash` on a bonded target, so \
+      one trusted signature moved another validator's entire stake to the Coop vault. In the model that \
+      rule would be a second `doUntrust` writing `pos`, and `untrust_leaves_the_bond_alone` would be \
+      unprovable by `rfl` — the theorem is the state equality itself, not a description of it. \
+      `the_trusted_set_never_empties` excludes the other shape: a caller revoking itself out of the \
+      admission list. `activation_only_at_a_boundary` excludes activation by `bond`.",
+    note := "**The audit found the code matches the law, with one contradiction that is a comment.** \
+      `trust`/`untrust` bind the caller to the unforgeable `deployerId` (`system_processes.rs:2043-2063`), \
+      `bond`/`withdraw` bind the actor to the deployer (`:1852-1901`), `untrust` does not confiscate \
+      (C111), and activation is `select_active` at a boundary. The stale module header at \
+      `rholang/src/native_state.rs:25` says `slash`/`untrust` 'remove the validator and confiscate the \
+      stake', which the code and C111 contradict; the comment is fixed, the semantics are not. \
+      **What the model does not claim**: `Validator` is an id and the vault is one total, so the \
+      per-vault debit of a bond is the Rust's property and not a theorem here; the Rust's min/max bond \
+      bounds are policy outside the state machine; and `retired` is model-only — the Rust observes \
+      removal as absence. `untrust` leaving an active validator active is deliberate and is named as a \
+      non-claim of Law 83's trust model. The witnesses are the lifecycle's own tests: the caller \
+      gate, revocation without confiscation, revocation without deactivation, the bond/boundary \
+      split, the epoch gate, the delegation guard and the boundary payout." },
+
+  { number := 83, layer := "Sync",
+    statement := "**The join is content-trustless, not finality-trustless.** Every join input is \
+      genesis-anchored (the configured genesis block/state and its `bond keys ∪ pos-multi-sig` trust \
+      set), verified (block content hashes, trie pages by Law 70, ancestry membership and the \
+      *derived* `fringe`), or residual (the bootstrap's choice of finalised root, the fringe's state \
+      hashes — the root and each per-block `fringe_state_hash` — liveness, and wire \
+      signatures/finality proofs). Two joiners that verify the same block map and hold the same trie \
+      read the same value at the claimed root and answer the same block lookup; the residual is an \
+      exact, checked enumeration",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.derivedFringe,
+      `Rchain.Sync.Trust.join_is_content_trustless,
+      `Rchain.Sync.Trust.a_lying_ancestry_fringe_is_refused,
+      `Rchain.Sync.Trust.the_derivation_is_a_function_of_the_verified_inputs,
+      `Rchain.Sync.Trust.the_residual_is_exactly_named],
+    axioms := [],
+    rust := ["casper/src/engine/node_syncing.rs", "casper/src/engine/lfs_block_requester.rs",
+      "casper/src/genesis/mod.rs"],
+    rustWitness := [
+      "casper/src/engine/node_syncing.rs:an_ancestry_entry_for_an_unknown_block_is_refused",
+      "casper/src/engine/node_syncing.rs:two_ancestry_entries_for_one_block_are_refused",
+      "casper/src/engine/node_syncing.rs:an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused"],
+    witness := [`Rchain.Sync.Trust.a_lying_ancestry_state_hash_changes_replay,
+      `Rchain.Sync.Trust.genesis_trust_anchor,
+      `Rchain.Sync.Trust.a_different_multisig_list_changes_the_anchor,
+      `Rchain.Sync.Trust.the_derivation_is_a_function_of_the_verified_inputs],
+    falsifiable := "The peer-chosen field the join path could not check: \
+      `a_lying_ancestry_state_hash_changes_replay` shows two ancestry rows with the same block and \
+      fringe and a different `fringe_state_hash` produce different replay metadata, which \
+      `close_block` folds into the epoch seed — so the fringe's state hash is a residual. \
+      `a_lying_ancestry_fringe_is_refused` is the field that *is* derivable and therefore refused; \
+      `a_different_multisig_list_changes_the_anchor` is the anchor's sensitivity. **A singleton pin \
+      was tried and refuted**: it compared the root with the named block's pre- or post-state, and the \
+      node's restore suite showed the served root is the state *at* the fringe — one fringe earlier \
+      than the block's pre-state — so the check was removed rather than kept as false assurance, and \
+      C339 now covers every fringe-state claim.",
+    note := "**The exact wording matters.** The proved claim is *content* trustlessness: every state \
+      byte and block body is checked against a hash, so two joiners with the same verified inputs \
+      cannot read differently. It is **not** finality trustlessness: the joiner trusts the \
+      bootstrap's choice of finalised root, its liveness, the per-block `fringe_state_hash` for a \
+      multi-member fringe, and it checks neither block signatures nor a quorum finality proof. Those \
+      are enumerated in `the_residual_is_exactly_named` and on the trust-model page. The Rust fix this \
+      row accompanies verifies ancestry block membership, duplicate-freedom and the derived `fringe`, \
+      and refuses a derivable fringe that lies; **C339 stays open** — the fringe's state hashes are \
+      not derivable on the join path, so the residual stands. The witnesses are the join path's own \
+      tests: membership, duplicate, derived-fringe, and the state-hash residual stated as one. A \
+      singleton state pin was attempted and the node's restore suite refuted it; the law records the \
+      absence rather than the false check." },
 ]
+
+def laws : List Law := lawsA ++ lawsB ++ lawsC
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
 def numbers : List Nat := laws.map (·.number)

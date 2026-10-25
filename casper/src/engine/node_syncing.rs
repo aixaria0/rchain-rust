@@ -12,6 +12,9 @@ use std::time::Duration;
 use rchain_block_storage::approved_store::{ApprovedStore, FINALIZED_FRINGE_KEY};
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::finalizer::{Finalizer, Message};
+use rchain_block_storage::dag::liveness;
+use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_block_storage::syntax::insert_genesis;
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
@@ -22,6 +25,7 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
     BlockFringe, BlockMessage, CasperMessage, FinalizedFringe, StoreItemsMessage,
 };
+use rchain_models::validator::Validator;
 use rchain_rspace::state::RSpaceImporter;
 use rchain_shared::lock::Unpoison;
 use rchain_shared::log::{Log, LogSource};
@@ -656,6 +660,23 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         .map_err(|e| e.to_string())?;
     }
 
+    // **What the joiner can check before it writes anything** (Law 83, C338). The ancestry's shape is
+    // checked against the downloaded set, and the finalized fringe's state is pinned to its block when
+    // it names one block; a multi-member fringe is the residual C339 records.
+    let downloaded: BTreeSet<BlockHash> = block_st
+        .height_map
+        .values()
+        .flat_map(|s| s.iter().copied())
+        .collect();
+    check_ancestry_shape(&fringe.ancestry, &downloaded)?;
+    // **The fringe's state hash is not checked here, and that is the finding** (C339). The served
+    // root is the state *at* the fringe — for the ordinary answer the latest member's
+    // `fringe_state_hash`, which is the state one fringe earlier than that block's own pre-state —
+    // so it is not a field the joiner can re-derive from the downloaded blocks. A singleton pin
+    // against the named block's pre- or post-state was attempted and the node tests refuted it: the
+    // genesis-branch claim is neither. The root is trusted, and the first block validated after the
+    // restore is what checks it indirectly through `pre_state_hash`.
+
     log.info(source, "Rholang state received and saved to store.");
     populate_dag(
         dag.as_ref(),
@@ -693,6 +714,111 @@ async fn collect_block_state_roots(
     }
 
     Ok(roots)
+}
+
+/// The hex of a fringe set, for errors that name both sides.
+fn fringe_hex(fringe: &BTreeSet<BlockHash>) -> String {
+    fringe
+        .iter()
+        .map(|h| h.to_hex())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// **The ancestry's shape** (Law 83, C338): one entry per downloaded block and no duplicates. A
+/// missing entry stays legal — an older peer cannot send it, and `populate_dag` warns per block — but
+/// an entry naming a block the walk did not download is a claim the joiner cannot check at all.
+fn check_ancestry_shape(
+    ancestry: &[BlockFringe],
+    downloaded: &BTreeSet<BlockHash>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for bf in ancestry {
+        if !downloaded.contains(&bf.block_hash) {
+            return Err(format!(
+                "the bootstrap sent fringe metadata for block {}, which the walk did not download",
+                bf.block_hash.to_hex()
+            ));
+        }
+        if !seen.insert(bf.block_hash) {
+            return Err(format!(
+                "the bootstrap sent two ancestry entries for block {}",
+                bf.block_hash.to_hex()
+            ));
+        }
+        for h in &bf.fringe {
+            if !downloaded.contains(h) {
+                return Err(format!(
+                    "the ancestry for block {} names fringe member {}, which the walk did not \
+                     download; a fringe names ancestors, so this is not a history the joiner can \
+                     check",
+                    bf.block_hash.to_hex(),
+                    h.to_hex()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// **A bootstrap cannot choose the per-block `fringe`.** The field is derivable from the block's
+/// justifications once its parents are in the message map — the same `latest_fringe` a validating node
+/// runs — so a row that disagrees with the derivation is refused instead of written into the DAG. This
+/// is the field the joiner *can* check; `fringe_state_hash` is not derivable this way, which is why
+/// the fringe **state** (the root and each per-block claim) is not, so it is kept and named as the
+/// residual C339 covers.
+fn check_derived_fringe(
+    repr: &DagRepresentation,
+    block: &BlockMessage,
+    bf: &BlockFringe,
+) -> Result<(), String> {
+    let msg_map = &repr.dag_message_state.msg_map;
+    let mut parents: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
+    for h in &block.justifications {
+        let parent = msg_map.get(h).cloned().ok_or_else(|| {
+            format!(
+                "cannot derive the fringe for {}: its justification {} is not in the message map",
+                block.block_hash.to_hex(),
+                h.to_hex()
+            )
+        })?;
+        parents.insert(parent);
+    }
+    // **The validator's own derivation**, not its first half: the block's fringe is what
+    // `calculate_finalization` returns — the parent fringe when the gate does not advance, and the
+    // next layer when it does — computed from the justifications and the block's own bonds. Running
+    // the same gate here is what lets a correct bootstrap's row pass; comparing against the parent
+    // fringe alone would reject every block whose fringe advanced.
+    let (parent_fringe, advanced) =
+        liveness::calculate_finalization(&Finalizer::new(msg_map), &parents, &block.bonds);
+    let derived: BTreeSet<BlockHash> = advanced
+        .unwrap_or(parent_fringe)
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    if derived != bf.fringe {
+        let parent_fringes: Vec<String> = parents
+            .iter()
+            .map(|p| format!("{}:{}", p.id.to_hex(), p.fringe.len()))
+            .collect();
+        let missing: Vec<String> = bf
+            .fringe
+            .iter()
+            .filter(|h| !msg_map.contains_key(*h))
+            .map(|h| h.to_hex())
+            .collect();
+        return Err(format!(
+            "the bootstrap's ancestry for block {} claims fringe [{}], but its justifications derive \
+             [{}]; parents (id:fringe-size) [{}], claimed members absent from the map [{}]; \
+             refusing the join's metadata rather than writing a fringe the block does not have",
+            block.block_hash.to_hex(),
+            fringe_hex(&bf.fringe),
+            fringe_hex(&derived),
+            parent_fringes.join(", "),
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// Insert the received blocks into the DAG (port of `populateDag`, minus the Scala `minHeight`
@@ -751,11 +877,29 @@ async fn populate_dag(
             // recomputation and are not block fields, so a restored node otherwise carries an empty
             // fringe for every block it restores and replays boundary blocks from a zero seed.
             let bmd = match fringe_of.get(&hash) {
-                Some(bf) => BlockMetadata {
-                    fringe: bf.fringe.clone(),
-                    fringe_state_hash: bf.fringe_state_hash,
-                    ..BlockMetadata::from_block(&block)
-                },
+                Some(bf) => {
+                    // **The derivable half is checked; the residual is named** (Law 83, C338/C339).
+                    let repr = dag.get_representation().await;
+                    check_derived_fringe(&repr, &block, bf)?;
+                    // The per-block fringe **state** is the same residual as the fringe root: it is
+                    // the state at the block's fringe, not a field of the block, so the joiner keeps
+                    // the bootstrap's claim (C339). The derived `fringe` above is the half that can
+                    // be checked.
+                    log.warn(
+                        source,
+                        &format!(
+                            "[join-trust] keeping the bootstrap's per-block fringe state for {} \
+                             ({} member(s)); it is not derivable on the join path (AUDIT C339)",
+                            hash.to_hex(),
+                            bf.fringe.len()
+                        ),
+                    );
+                    BlockMetadata {
+                        fringe: bf.fringe.clone(),
+                        fringe_state_hash: bf.fringe_state_hash,
+                        ..BlockMetadata::from_block(&block)
+                    }
+                }
                 None => {
                     log.warn(
                         source,
@@ -1093,6 +1237,75 @@ mod tests {
         // The whole chain is in the DAG, so the latest block number equals the chain length.
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
     }
+
+    /// **Law 83, C338: a fringe row for a block the walk did not download** is a claim the joiner
+    /// cannot check at all, so it is refused before anything is written.
+    #[test]
+    fn an_ancestry_entry_for_an_unknown_block_is_refused() {
+        let downloaded: BTreeSet<BlockHash> = [hash(0)].into_iter().collect();
+        let entry = BlockFringe {
+            block_hash: hash(9),
+            fringe: BTreeSet::new(),
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        };
+        let err = check_ancestry_shape(&[entry], &downloaded)
+            .expect_err("an entry for an undownloaded block must be refused");
+        assert!(err.contains("did not download"), "{err}");
+    }
+
+    #[test]
+    fn two_ancestry_entries_for_one_block_are_refused() {
+        let downloaded: BTreeSet<BlockHash> = [hash(0)].into_iter().collect();
+        let entry = BlockFringe {
+            block_hash: hash(0),
+            fringe: BTreeSet::new(),
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        };
+        let err = check_ancestry_shape(&[entry.clone(), entry], &downloaded)
+            .expect_err("duplicate ancestry rows must be refused");
+        assert!(err.contains("two ancestry entries"), "{err}");
+    }
+
+    /// **The derivable field is refused when it lies**: a block's `fringe` is recomputed from its
+    /// justifications (`latest_fringe`), so a bootstrap cannot choose it.
+    #[tokio::test]
+    async fn an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused() {
+        let n = 3i64;
+        let blocks: Vec<BlockMessage> = (0..n)
+            .map(|i| chain_block(i, (i > 0).then(|| hash(i as u8 - 1))))
+            .collect();
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        for b in &blocks {
+            block_store.put(&[(b.block_hash, b.clone())]).await.unwrap();
+        }
+        let dag = build_dag().await;
+        let mut height_map: BTreeMap<i64, BTreeSet<BlockHash>> = BTreeMap::new();
+        for b in &blocks {
+            height_map
+                .entry(i64::from(b.block_number))
+                .or_default()
+                .insert(b.block_hash);
+        }
+        // Block 1 justifies genesis, whose own fringe is empty, so the derived fringe is empty.
+        // Claiming genesis as the fringe is a lie the joiner can see.
+        let mut lying = BTreeSet::new();
+        lying.insert(blocks[0].block_hash);
+        let ancestry = vec![BlockFringe {
+            block_hash: blocks[1].block_hash,
+            fringe: lying,
+            fringe_state_hash: StateHash::new([0u8; 32]),
+        }];
+
+        let err = populate_dag(dag.as_ref(), &block_store, &NopLog, &height_map, &ancestry)
+            .await
+            .expect_err("a fringe the block's justifications do not derive must be refused");
+        assert!(err.contains("derive"), "{err}");
+    }
+
     /// A non-bootstrap peer cannot consume the one-shot latch or poison the next retry target.
     #[tokio::test]
     async fn initial_fringe_signal_requires_an_authorized_nonempty_target() {
