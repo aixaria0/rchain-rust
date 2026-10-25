@@ -27,6 +27,19 @@ A = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 1) | @"n447_effect_a"!("A"
 B = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 2) | @"n447_effect_b"!("B") }'
 
 
+def conflict_terms(costlier_writer=None):
+    # Additional runtime arithmetic changes cost, not the resulting cell value.
+    # The two fixtures exercise both min-rejection-cost outcomes deliberately.
+    terms = {"A": A, "B": B}
+    if costlier_writer is not None:
+        if costlier_writer not in terms:
+            raise ValueError("unknown costlier writer")
+        old = "old + 1" if costlier_writer == "A" else "old + 2"
+        terms[costlier_writer] = terms[costlier_writer].replace(
+            old, old + " + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0")
+    return terms["A"], terms["B"]
+
+
 def find_signed_carrier(node, term, minimum_height):
     """Find the containing block by signed term, not by the current tip."""
     # The block-list API rejects depths > 50 with HTTP 400. The generic
@@ -364,7 +377,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--timeout", type=int, default=480)
+    parser.add_argument("--costlier-writer", choices=("A", "B"))
+    parser.add_argument("--expect-winner", choices=("A", "B"))
     args = parser.parse_args(argv)
+    term_a, term_b = conflict_terms(args.costlier_writer)
     p = Path(args.out)
     p.parent.mkdir(parents=True, exist_ok=True)
     record = {"result": "INCOMPLETE",
@@ -380,6 +396,9 @@ def main(argv=None):
         fork.wait_all(CONTAINERS, args.timeout)
         baseline = fork.tip(CONTAINERS[0])
         step("genesis", baseline)
+        step("fixture", {"costlier_writer": args.costlier_writer,
+                         "expected_winner": args.expect_winner,
+                         "term_a": term_a, "term_b": term_b})
 
         # Seed one ordinary linear datum, which BOTH sides will later consume.
         seed_term = CELL + "!(0)"
@@ -474,16 +493,16 @@ def main(argv=None):
                                "cross_pair_tcp": across})
             if not all(pair_reachability) or any(across):
                 raise AssertionError("network topology is not a true 2+2 split")
-            fork.deploy(CONTAINERS[0], A, seed["blockNumber"])
-            fork.deploy(CONTAINERS[2], B, seed["blockNumber"])
+            fork.deploy(CONTAINERS[0], term_a, seed["blockNumber"])
+            fork.deploy(CONTAINERS[2], term_b, seed["blockNumber"])
             fork.propose(CONTAINERS[0])
             fork.propose(CONTAINERS[2])
             end = time.monotonic() + args.timeout
             while time.monotonic() < end:
                 tip_a, sig_a = find_signed_carrier(
-                    CONTAINERS[0], A, seed["blockNumber"])
+                    CONTAINERS[0], term_a, seed["blockNumber"])
                 tip_b, sig_b = find_signed_carrier(
-                    CONTAINERS[2], B, seed["blockNumber"])
+                    CONTAINERS[2], term_b, seed["blockNumber"])
                 if tip_a and tip_b and tip_a["blockHash"] != tip_b["blockHash"]:
                     break
                 fork.propose(CONTAINERS[0])
@@ -608,6 +627,8 @@ def main(argv=None):
         )
         cell_value = require_single_cell_value(first["cell"], survived)
         step("winner", {"survivor": survived, "cell_value": cell_value})
+        if args.expect_winner is not None and survived != args.expect_winner:
+            raise AssertionError("the weighted conflict did not retain the expected winner")
 
         final_deadline = time.monotonic() + args.timeout
         final_errors = []

@@ -13,6 +13,21 @@ conflict = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(conflict)
 
 
+class WeightedConflictControls(unittest.TestCase):
+    def test_only_selected_writer_has_extra_runtime_arithmetic(self):
+        for writer in ("A", "B"):
+            a, b = conflict.conflict_terms(writer)
+            self.assertEqual(" + 0" in a, writer == "A")
+            self.assertEqual(" + 0" in b, writer == "B")
+            self.assertIn("old + 1", a)
+            self.assertIn("old + 2", b)
+
+    def test_default_terms_and_invalid_writer(self):
+        self.assertEqual(conflict.conflict_terms(), (conflict.A, conflict.B))
+        with self.assertRaises(ValueError):
+            conflict.conflict_terms("unknown")
+
+
 class FinalizedAgreementControls(unittest.TestCase):
     def views(self):
         return {n: {"blockHash": "final", "preStateHash": "pre",
