@@ -29,14 +29,21 @@ B = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 2) | @"n447_effect_b"!("B"
 
 def find_signed_carrier(node, term, minimum_height):
     """Find the containing block by signed term, not by the current tip."""
+    # Block inventory can temporarily be a node-status string while sync is
+    # rebuilding. Such a response is NOT a carrying block, but should not
+    # abort the bounded inclusion polling loop before it sees the real block.
+    inventory = fork.blocks(node, 75)
+    if not isinstance(inventory, list):
+        return None, None
     candidates = []
-    for entry in fork.blocks(node, 75):
-        if isinstance(entry, dict):
+    for entry in inventory:
+        if isinstance(entry, dict) and "blockHash" in entry:
             candidates.append(entry)
-        elif isinstance(entry, str) and len(entry) == 64:
+        elif isinstance(entry, str) and len(entry) == 64 and all(
+                c in "0123456789abcdefABCDEF" for c in entry):
             candidates.append(fork.block_info(node, entry))
-        else:
-            raise AssertionError(f"unexpected block inventory item type: {type(entry).__name__}")
+        # Any other item is non-block diagnostic material and cannot count
+        # toward inclusion. The surrounding bounded deadline still fails.
     for block in sorted(candidates, key=lambda b: int(b["blockNumber"])):
         if (int(block["blockNumber"]) <= minimum_height
                 or int(block.get("deployCount", 0)) < 1):
