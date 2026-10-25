@@ -249,14 +249,17 @@ jobs:
         run: |
           set -euo pipefail
           verdict=0
-          for winner in A B; do
-            case_dir="target/issue447-conflict/winner-$winner"
+          seen=""
+          for trial in 1 2 3 4 5 6 7 8; do
+            case_dir="target/issue447-conflict/trial-$trial"
             mkdir -p "$case_dir"
-            if [[ "$winner" == B ]]; then
+            if [[ "$trial" != 1 ]]; then
               tools/devnet.sh down -v
               tools/devnet.sh up --validators 4 --fresh --no-autopropose --no-propose-on-deploy --epoch-length 10 2>&1 | tee "$case_dir/startup.log"
             fi
-            if timeout --preserve-status 1800s python3 tools/n447-same-channel.py --costlier-writer "$winner" --expect-winner "$winner" --out "$case_dir/conflict.json" --timeout 420 2>&1 | tee "$case_dir/conflict.log"; then
+            options=(--costlier-writer A)
+            if (( trial % 2 == 0 )); then options=(--costlier-writer B --swap-writers); fi
+            if timeout --preserve-status 1800s python3 tools/n447-same-channel.py "${options[@]}" --out "$case_dir/conflict.json" --timeout 420 2>&1 | tee "$case_dir/conflict.log"; then
               :
             else
               verdict=1
@@ -264,18 +267,27 @@ jobs:
             for node in n447conflict-bootstrap n447conflict-validator-1 n447conflict-validator-2 n447conflict-validator-3; do
               docker logs "$node" > "$case_dir/$node.log" 2>&1 || true
             done
+            if (( verdict != 0 )); then break; fi
+            winner=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(s["value"]["survivor"] for s in d["steps"] if s["stage"] == "winner"))' "$case_dir/conflict.json")
+            seen="$seen$winner"
+            if [[ "$seen" == *A* && "$seen" == *B* ]]; then break; fi
           done
           python3 - <<'PY'
           import json
           from pathlib import Path
           root = Path("target/issue447-conflict")
-          for winner in ("A", "B"):
-              case = root / ("winner-" + winner)
-              result = json.loads((case / "conflict.json").read_text())
-              assert result["result"] == "PASS", winner
-              for log in case.glob("n447conflict-*.log"):
+          observed = set()
+          files = sorted(root.glob("trial-*/conflict.json"))
+          assert files, "no completed trial evidence"
+          for path in files:
+              result = json.loads(path.read_text())
+              assert result["result"] == "PASS", path
+              observed.add(next(s["value"]["survivor"] for s in result["steps"] if s["stage"] == "winner"))
+              for log in path.parent.glob("n447conflict-*.log"):
                   content = log.read_text(errors="replace")
                   assert not any(s in content for s in ("I1 VIOLATED", "I2 VIOLATED", "panicked at")), log
+          assert observed == {"A", "B"}, "bounded campaign did not cover both winners"
+          (root / "coverage.json").write_text(json.dumps({"result": "PASS", "trials": len(files), "winners": sorted(observed)}, indent=2))
           PY
           exit "$verdict"
       - name: Capture node diagnostics

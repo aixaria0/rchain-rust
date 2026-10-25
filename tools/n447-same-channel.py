@@ -29,7 +29,7 @@ B = 'for (@old <- ' + CELL + ') { ' + CELL + '!(old + 2) | @"n447_effect_b"!("B"
 
 def conflict_terms(costlier_writer=None):
     # Additional runtime arithmetic changes cost, not the resulting cell value.
-    # The two fixtures exercise both min-rejection-cost outcomes deliberately.
+    # Cost and actor placement vary the fixtures without prescribing a global winner.
     terms = {"A": A, "B": B}
     if costlier_writer is not None:
         if costlier_writer not in terms:
@@ -379,8 +379,11 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=480)
     parser.add_argument("--costlier-writer", choices=("A", "B"))
     parser.add_argument("--expect-winner", choices=("A", "B"))
+    parser.add_argument("--swap-writers", action="store_true")
     args = parser.parse_args(argv)
     term_a, term_b = conflict_terms(args.costlier_writer)
+    actor_a, actor_b = ((CONTAINERS[2], CONTAINERS[0]) if args.swap_writers
+                        else (CONTAINERS[0], CONTAINERS[2]))
     p = Path(args.out)
     p.parent.mkdir(parents=True, exist_ok=True)
     record = {"result": "INCOMPLETE",
@@ -398,6 +401,7 @@ def main(argv=None):
         step("genesis", baseline)
         step("fixture", {"costlier_writer": args.costlier_writer,
                          "expected_winner": args.expect_winner,
+                         "actor_a": actor_a, "actor_b": actor_b,
                          "term_a": term_a, "term_b": term_b})
 
         # Seed one ordinary linear datum, which BOTH sides will later consume.
@@ -493,26 +497,26 @@ def main(argv=None):
                                "cross_pair_tcp": across})
             if not all(pair_reachability) or any(across):
                 raise AssertionError("network topology is not a true 2+2 split")
-            fork.deploy(CONTAINERS[0], term_a, seed["blockNumber"])
-            fork.deploy(CONTAINERS[2], term_b, seed["blockNumber"])
-            fork.propose(CONTAINERS[0])
-            fork.propose(CONTAINERS[2])
+            fork.deploy(actor_a, term_a, seed["blockNumber"])
+            fork.deploy(actor_b, term_b, seed["blockNumber"])
+            fork.propose(actor_a)
+            fork.propose(actor_b)
             end = time.monotonic() + args.timeout
             while time.monotonic() < end:
                 tip_a, sig_a = find_signed_carrier(
-                    CONTAINERS[0], term_a, seed["blockNumber"])
+                    actor_a, term_a, seed["blockNumber"])
                 tip_b, sig_b = find_signed_carrier(
-                    CONTAINERS[2], term_b, seed["blockNumber"])
+                    actor_b, term_b, seed["blockNumber"])
                 if tip_a and tip_b and tip_a["blockHash"] != tip_b["blockHash"]:
                     break
-                fork.propose(CONTAINERS[0])
-                fork.propose(CONTAINERS[2])
+                fork.propose(actor_a)
+                fork.propose(actor_b)
                 time.sleep(2)
             else:
                 step("signed_fork_not_observed", {
                     "last_A": tip_a, "last_B": tip_b,
-                    "latest_A": fork.tip(CONTAINERS[0]),
-                    "latest_B": fork.tip(CONTAINERS[2]),
+                    "latest_A": fork.tip(actor_a),
+                    "latest_B": fork.tip(actor_b),
                 })
                 raise AssertionError("both conflicting signed deploys did not produce independent fork tips")
             fork_distinction = require_divergent_signed_tips(
@@ -526,10 +530,10 @@ def main(argv=None):
             # cannot substitute for a DAG ancestry witness.
             branch_parents = {
                 "A": verify_branch_descends_from_seed(
-                    lambda h: fork.block_info(CONTAINERS[0], h),
+                    lambda h: fork.block_info(actor_a, h),
                     tip_a["blockHash"], seed["blockHash"]),
                 "B": verify_branch_descends_from_seed(
-                    lambda h: fork.block_info(CONTAINERS[2], h),
+                    lambda h: fork.block_info(actor_b, h),
                     tip_b["blockHash"], seed["blockHash"]),
             }
             step("branch_common_seed_ancestry", branch_parents)
@@ -538,8 +542,8 @@ def main(argv=None):
             # The previously observed inconsistency was A-marker present
             # while merged cell retained the seed value zero.
             branch_state = {
-                "A": pinned_application_snapshot(CONTAINERS[0], tip_a["blockHash"]),
-                "B": pinned_application_snapshot(CONTAINERS[2], tip_b["blockHash"]),
+                "A": pinned_application_snapshot(actor_a, tip_a["blockHash"]),
+                "B": pinned_application_snapshot(actor_b, tip_b["blockHash"]),
             }
             step("branch_tip_state", {
                 "tips": {"A": tip_a["blockHash"], "B": tip_b["blockHash"]},
