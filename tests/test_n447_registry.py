@@ -33,6 +33,25 @@ class RegistryProbeTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             mod.lookup_term("bad-name")
 
+    def test_empty_latest_block_must_not_substitute_for_signed_inclusion(self):
+        history = [
+            {"blockNumber": 2, "blockHash": "empty", "deployCount": 0},
+            {"blockNumber": 1, "blockHash": "carrying", "deployCount": 1},
+        ]
+        def read(hash_value):
+            return {"deploys": [{"term": "signed-insert", "sig": "sig1"}]
+                    if hash_value == "carrying" else []}
+        block, sig = mod.find_signed_carrier(history, 0, "signed-insert", read)
+        self.assertEqual(block["blockHash"], "carrying")
+        self.assertEqual(sig, "sig1")
+
+    def test_no_matching_signed_deploy_fails_closed(self):
+        history = [{"blockNumber": 1, "blockHash": "unrelated", "deployCount": 1}]
+        self.assertEqual(
+            mod.find_signed_carrier(history, 0, "signed-insert",
+                                    lambda h: {"deploys": [{"term": "other"}]}),
+            (None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

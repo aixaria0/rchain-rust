@@ -75,15 +75,35 @@ def signed_deploy(term, height):
             "term_sha256": hashlib.sha256(term.encode()).hexdigest()}
 
 
-def propose_until_new(height, timeout):
+def find_signed_carrier(history, height, term, block_loader):
+    """Use deploy inclusion, not highest block number or execution status.
+
+    With propose-on-deploy enabled, rnode deploy can already have produced the
+    carrying block. A later manual propose creates an EMPTY higher block; the
+    latest-tip API is then the wrong anchor for the signed write.
+    """
+    for block in sorted(history, key=lambda item: int(item["blockNumber"])):
+        if int(block["blockNumber"]) <= height or int(block.get("deployCount", 0)) < 1:
+            continue
+        response = block_loader(block["blockHash"])
+        matches = [d for d in response.get("deploys", []) if d.get("term") == term]
+        if len(matches) == 1:
+            return block, matches[0].get("sig")
+        if len(matches) > 1:
+            raise AssertionError("duplicate matching signed terms in carrying block")
+    return None, None
+
+
+def propose_until_carrier(height, term, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
+        carrying, deploy_sig = find_signed_carrier(
+            blocks(), height, term, lambda h: req("/api/block/" + h))
+        if carrying is not None:
+            return carrying, deploy_sig
         docker("exec", NODE, "rnode", "propose", check=False)
-        current = tip()
-        if current["blockNumber"] > height:
-            return current
         time.sleep(2)
-    raise RuntimeError("no carrying block from deploy before timeout")
+    raise RuntimeError("no signed deploy carrying block before timeout")
 
 
 def lookup_term(uri):
@@ -120,10 +140,12 @@ def main(argv=None):
             + '), ack in { put!(42, *ack) | for (@uri <- ack) { @"n447_reg_uri"!(uri) } }'
         )
         report["signed_insert"] = signed_deploy(term, base["blockNumber"])
-        carrying = propose_until_new(base["blockNumber"], args.timeout)
+        carrying, included_signature = propose_until_carrier(
+            base["blockNumber"], term, args.timeout)
         report["carrying"] = carrying
-        if int(carrying.get("deployCount", 0)) < 1:
-            raise AssertionError("the carrying block contains no registered deploy")
+        report["included_deploy_signature"] = included_signature
+        if int(carrying.get("deployCount", 0)) < 1 or not included_signature:
+            raise AssertionError("the carrying block does not prove inclusion")
         if carrying.get("postStateHash") == carrying.get("preStateHash"):
             raise AssertionError("the registration block left state unchanged")
         uri_reply = explore('for (@uri <- @"n447_reg_uri") { @"n447_out"!(uri) }',
