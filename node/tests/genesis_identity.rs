@@ -77,10 +77,11 @@ fn two_ceremonies_with_the_same_inputs_and_key_produce_one_genesis() {
             hashes.push(genesis_hash(&client, &base).await);
 
             node.request_stop();
-            tokio::time::timeout(Duration::from_secs(30), node.handle)
+            let served = tokio::time::timeout(Duration::from_secs(30), node.handle)
                 .await
                 .expect("a node asked to stop must return")
                 .expect("the serve task must not panic");
+            served.expect("a stop on the operator's word is not a server error");
             std::fs::remove_dir_all(&dir).ok();
         }
 
