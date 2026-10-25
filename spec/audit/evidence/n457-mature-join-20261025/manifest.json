@@ -1,11 +1,11 @@
 {
   "boundary": "finite local devnet witness of the #457 LFS restore; not a live-testnet join and not a certification",
-  "source_sha": "b0f63b1de50fce80eaafa2299285978594632681",
-  "image": "rnode:local sha256:a4bd4532ff745a77c03132465ac6121824a3a9628e6b8c8317c99f99b849402c",
+  "source_sha": "cdb00670c9922f943a5b485644627c5efe24e4b9",
+  "image": "rnode:local sha256:39b9b3d085d205a535849c76d03c2296cc24e422d0ee06befaceaacad52c542c",
   "arm": "tools/n457-mature-join-arm.py",
   "files": {
-    "mature-join.json": "1f0a0b19234e55f2f9a94657c9a71744977ce98ab304dab868d37d95d99d373c",
-    "README.md": "6fd56bbbc4b9ca0a10726a6b63683611ddd5088d0526e8b60e3e42dfcde8c5ec"
+    "mature-join.json": "9e947e6719e3bef4889c532403eefc2d88599470f9e9fa3a6da87cee6870e5e6",
+    "README.md": "4872e8fb397b63c4c95be3f7f8c4954e116b596a0f1b339ba4b9be0965b729d2"
   },
   "non_claims": [
     "one local four-validator devnet, one reset: a finite witness",

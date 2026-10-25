@@ -2,22 +2,22 @@
   "boundary": "finite local devnet witness; not a live-testnet join and not a certification",
   "chain_height": {
     "n457join-bootstrap": 29,
-    "n457join-validator-1": 28,
+    "n457join-validator-1": 29,
     "n457join-validator-2": 29
   },
   "bootstrap_finalized": {
-    "number": 25,
-    "hash": "b4d24440f27223ff2ef0d99ecadf82def6dbdb6ad89710e26d29cd0482a604ec"
+    "number": 26,
+    "hash": "f8f389991bf01375cec924443c35bddec3f4d9314b02099ce7be332f4bcea7d3"
   },
   "reset_target": "n457join-validator-3",
   "recovered": {
     "latest_block_number": 30,
     "restored_anchor_number": 23,
-    "restored_anchor_hash": "a115f82e942c3931bbdce9a6421beda2baff64555e7be21337032e8d0fc0669e",
+    "restored_anchor_hash": "c4ce5b0f7b466add437206056fd7e0ad99d6e8aea84ee8680060d314ab79cc22",
     "anchor_held_by_bootstrap": true,
     "sync": null
   },
-  "catch_up_seconds": 34.89572024345398,
+  "catch_up_seconds": 39.26590871810913,
   "sync_failures_in_log": 0,
   "give_ups_in_log": 0,
   "manual_reset": true,

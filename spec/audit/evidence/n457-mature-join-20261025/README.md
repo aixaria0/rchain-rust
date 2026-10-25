@@ -7,8 +7,8 @@ the size at which the live join stalled, and must LFS-restore the bootstrap's ap
 
 | | |
 |---|---|
-| node source | `b0f63b1de50fce80eaafa2299285978594632681` (`feat/n457-trustless-join`) |
-| image | `rnode:local` `sha256:a4bd4532ff745a77c03132465ac6121824a3a9628e6b8c8317c99f99b849402c` |
+| node source | `cdb00670c9922f943a5b485644627c5efe24e4b9` (`feat/n457-trustless-join`) |
+| image | `rnode:local` `sha256:39b9b3d085d205a535849c76d03c2296cc24e422d0ee06befaceaacad52c542c` |
 | arm | `tools/n457-mature-join-arm.py` |
 | raw record | `mature-join.json` (sha256 in `manifest.json`) |
 | network | local Docker bridge `n457net`, ports 55402/55403/55405 + 1000·i; disposable, no live testnet |
@@ -35,9 +35,9 @@ restarts it with `--bootstrap`), then waits for the reset node to leave `NodeSyn
 
 | assertion | reading |
 |---|---|
-| chain mature before the reset | bootstrap 29 rounds, finalised block 25; validators-1/2 at 28/29 |
-| LFS restore completed | reset node left `NodeSyncing` in **34.9 s**; `status.sync` is cleared |
-| restored anchor | block **23** `a115f82e…`, held by the bootstrap |
+| chain mature before the reset | bootstrap 29 rounds, finalised block 26; validators-1/2 at 29 |
+| LFS restore completed | reset node left `NodeSyncing` in **39.3 s**; `status.sync` is cleared |
+| restored anchor | block **23** `c4ce5b0f…`, held by the bootstrap |
 | sync failures | `LFS state sync failed` **0**, `no block finished in` **0** |
 | catch-up after restore | `latestBlockNumber` 30 at the reading; the moving tip is the windowed catch-up's |
 
@@ -49,7 +49,7 @@ approved state and enters `NodeRunning`.
 
 - **One** four-validator local devnet, one reset. A finite witness, not a universal join theorem, and
   not a certification of #457 on any live chain.
-- The restored anchor (23) is **older than the bootstrap's live finality at capture (25)**: the
+- The restored anchor (23) is **older than the bootstrap's live finality at capture (26)**: the
   approved-fringe store the bootstrap serves lags its live finality. That is a property of the
   responder, not a defect of this arm; the arm asserts the anchor is a block the bootstrap holds.
 - Convergence to the tip is not asserted. Once the restore returns, the windowed catch-up owns the
