@@ -4318,8 +4318,10 @@ def laws : List Law := [
       `Rchain.Sync.Join.a_rejected_body_leaves_the_walk_where_it_was],
     falsifiable := "A walk state with one `Received` key still in `latest`: \
       `the_written_walk_cannot_finish_from_a_stranded_key` shows every `WrittenStep` leaves it \
-      `Received`, so no run reaches `isFinished` — the live `(3 finished, 25 outstanding)` stall. The \
-      same state reaches the goal in two turns of the repaired machine \
+      `Received`, so no run reaches `isFinished` — the `(3 finished, 25 outstanding)` shape. The same \
+      counts appeared in the live join, but a controlled A/B (2026-10-25) found that instance was inbound \
+      reachability, not this defect; the stranded key is what the code admits and what this row fixes. \
+      The same state reaches the goal in two turns of the repaired machine \
       (`the_fixed_walk_can_finish_from_a_stranded_key`), so the falsifier is not vacuous and the \
       repair is not a widening of the accepted set to unknown keys: `Step.unknown` still drops them.",
     note := "**Why the missing transition was not the whole defect.** The Rust consumes before it \

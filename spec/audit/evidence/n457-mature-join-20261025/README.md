@@ -49,6 +49,9 @@ approved state and enters `NodeRunning`.
 
 - **One** four-validator local devnet, one reset. A finite witness, not a universal join theorem, and
   not a certification of #457 on any live chain.
+- The live join's 3-finished-of-28 counts were caused by **inbound reachability**, not by this walk
+  defect: a controlled A/B on 2026-10-25 joined with every peer allowed inbound and stalled with only
+  the bootstrap. This arm exercises the walk with a reachable peer; it does not reproduce that stall.
 - The restored anchor (23) is **older than the bootstrap's live finality at capture (26)**: the
   approved-fringe store the bootstrap serves lags its live finality. That is a property of the
   responder, not a defect of this arm; the arm asserts the anchor is a block the bootstrap holds.

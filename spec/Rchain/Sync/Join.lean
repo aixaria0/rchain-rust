@@ -11,7 +11,9 @@ body fails `validate::block_hash` has *already* moved the key to `Received` (`mo
 `lfs_block_requester.rs:73-108`). `get_next` then re-asks only `Init` — and on a resend, `Requested`
 (`mod.rs:102-114`) — never `Received`. A key in `Received` is therefore **in neither set**: no request
 selects it and no answer is accepted for it, and `is_finished` (`mod.rs:178-180`), which requires `d`
-to be empty, can never hold. The live shape is a walk stopped at 3 finished keys with 25 outstanding.
+to be empty, can never hold. A walk stopped at 3 finished keys with 25 outstanding is the shape the
+machine admits; the live instance of those counts was inbound reachability (see pass 141 and the
+peer-count diagnostic), and this defect stands on its own — a refused body is enough.
 
 **The two machines.** `WrittenStep` is the walk as it is: accept only `Requested`, a failed body
 consumes the key to `Received`, and a resend re-asks only `Init`/`Requested`. `Step` is the repair:
@@ -401,7 +403,7 @@ theorem a_round_makes_progress (valid : Key → Body → Bool) (K : Finset Key) 
 
 /-! ### The falsifier: a stranded key, and the repair on the same state -/
 
-/-- The live shape in miniature: one key, consumed to `Received` by a failed body, still in `latest`.
+/-- The stranded shape in miniature: one key, consumed to `Received` by a failed body, still in `latest`.
     `Bool` is the smallest key type with room for "the key" and "another key". -/
 def stranded : State Bool where
   d := fun b => if b then some Status.received else none
@@ -441,7 +443,7 @@ theorem the_fixed_walk_can_finish_from_a_stranded_key :
 /-- **The falsifier, red on the code as written.** From the stranded state, every `WrittenStep` leaves
     the key `Received`: no request turn selects it (both resend values) and no accept or reject
     constructor applies to it. So no run reaches `isFinished`, whose every-key-`Done` clause is false
-    of the state for ever. This is the `(3 finished, 25 outstanding)` stall. -/
+    of the state for ever. This is the `(3 finished, 25 outstanding)` shape the code admits. -/
 theorem the_written_walk_cannot_finish_from_a_stranded_key
     (valid : Bool → Unit → Bool) :
     ¬ ∃ σ', Reach (WrittenStep valid) stranded σ' ∧ isFinished σ' := by

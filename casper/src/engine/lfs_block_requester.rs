@@ -278,13 +278,16 @@ pub async fn request_blocks(
                     if finished == last_finished {
                         idle_rounds += 1;
                         if idle_rounds >= MAX_IDLE_ROUNDS {
+                            let peers = comm_util.connected_peer_count().await;
                             return Err(format!(
                                 "no block finished in {idle_rounds} consecutive idle rounds of \
                                  {request_timeout:?} ({finished} block(s) finished; outstanding: \
                                  {init} init, {requested} requested, {received} received; \
-                                 first outstanding: [{}]): the fringe names state no peer is \
-                                 serving, or every answer is being refused; the walk cannot \
-                                 reach it",
+                                 first outstanding: [{}]; {peers} connected peer(s) were asked). \
+                                 The fringe names state no peer is serving, every answer is being \
+                                 refused, or the peers cannot answer this node: a joiner whose \
+                                 protocol and discovery ports admit only its bootstrap gets \
+                                 exactly this — they gossip to it and cannot dial in (#457/#458)",
                                 sample.join(", ")
                             ));
                         }
@@ -1200,6 +1203,11 @@ mod tests {
             err.contains("outstanding:"),
             "the failure must report the status breakdown (#457): a count alone did not say whether \
              keys were init, requested or stranded as received: {err}"
+        );
+        assert!(
+            err.contains("connected peer(s) were asked"),
+            "the failure must name the peer count and the reachability shape (#457/#458): a joiner \
+             that admits only its bootstrap receives gossip and no state answers: {err}"
         );
         assert!(
             transport

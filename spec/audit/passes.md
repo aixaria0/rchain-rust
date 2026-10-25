@@ -11645,8 +11645,14 @@ replay cannot be recomputed from the node API (tuple-space state is not exported
 ## 141. A join walk that consumed the key it could not verify (C337, #457)
 
 A fresh node could not join the testnet: the last-finalized-state walk finished 3 of the 28 blocks its
-fringe named, received answers from the bootstrap, then stalled for ninety seconds and failed. The
-finish condition (`LfsState::is_finished`) is `latest.is_empty() && d.is_empty()`; the live state was
+fringe named, received answers from the bootstrap, then stalled for ninety seconds and failed. **The
+counts were consistent with the defect below, and they were not its cause.** A controlled A/B on
+2026-10-25 — same binary `2745dbb3`, same chain at height 58, only the firewall changed — joined with
+inbound allowed from every peer and stalled with inbound allowed from the bootstrap only: the live
+instance was **inbound reachability**. The walk defect stands on its own, is reachable by a refused or
+corrupted body, and is what this pass fixes and witnesses; the give-up error now names the connected
+peer count and the reachability shape, and #457 stays open for that diagnostic (#458 owns the join
+procedure's doc correction). The finish condition (`LfsState::is_finished`) is `latest.is_empty() && d.is_empty()`; the live state was
 3 finished and 25 keys still in `d`, none of which the walk would ask for again.
 
 **The defect.** `validate_received_block` called `LfsState::received` **before** it recomputed the

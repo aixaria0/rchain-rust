@@ -613,16 +613,27 @@ ERROR [casper.engine.NodeSyncing] LFS state sync failed (attempt 1 of 3):
 Reproduced on both `185ed283` and `2745dbb3`, so it is the join path, not a regression from the
 2026-10-24 merges. **A fresh node cannot join this chain today.**
 
-**Diagnosed and fixed in the tree (#457).** The walk consumed a key when an answer arrived and only then
-checked the block's content hash; a refused body left the key `Received`, and no request ever selected a
-`Received` key again — so the walk could never finish. The fix checks membership and the hash before
-writing state, re-asks `Received` keys on a resend, and reports the `init/requested/received` breakdown
-in the give-up error (Law 81, register C337). A 28-block in-process join and the algorithm's own
-falsifier are in the tree. **The local reset arm passed** ([the evidence record](../spec/audit/evidence/n457-mature-join-20261025/README.md)):
-a reset validator restored a 28+ block chain in 35 s with no sync failures and the sync surface
-cleared. **The live chain itself has not been re-checked with this fix.** What the joiner still trusts after it is stated in
-[what a joining node trusts](../spec/trust-model.md) — content is checked, finality is not. Until the
-arm and a live re-check pass, seed the observer from a synced node and let it reconnect:
+**The observed live stall was reachability, not the walk.** A controlled A/B on 2026-10-25 (same
+binary `2745dbb3`, same chain at height 58, only the firewall changed) settled it: with inbound
+allowed from **every** peer the joiner reached `h=58`, `peers=5`, and followed a deploy 58 → 59; with
+inbound allowed from the **bootstrap only** it sat at `h=0`, `peers=6`, receiving gossip and no state
+answers, and failed the same way. **A joiner's `--protocol-port` and `--discovery-port` must accept
+inbound from every peer, not just `--bootstrap`** — peers can dial its neighbours but not it. The doc
+correction is [#458](https://github.com/rhovision-org/rholo/issues/458).
+
+The walk had a **separate latent defect**: it consumed a key when an answer arrived and only then
+checked the block's content hash; a refused body left the key `Received`, and no request ever selected
+a `Received` key again — so the walk could never finish. The fix checks membership and the hash
+before writing state, re-asks `Received` keys on a resend, and reports the `init/requested/received`
+breakdown and the connected peer count in the give-up error (Law 81, register C337). A 28-block
+in-process join and the local reset arm pass ([the evidence
+record](../spec/audit/evidence/n457-mature-join-20261025/README.md)); this defect was **not** the cause
+of the observed live stall, and #457 stays open for the reachability diagnostic. What the joiner still
+trusts is stated in [what a joining node trusts](../spec/trust-model.md) — content is checked,
+finality is not.
+
+If you must join from a host that cannot accept inbound from every peer, seed the observer from a
+synced node and let it reconnect:
 
 ```bash
 # on the synced node (A) — the chain is ~1.3 MB at 109 blocks

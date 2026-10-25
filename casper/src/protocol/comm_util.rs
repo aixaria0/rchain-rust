@@ -73,6 +73,13 @@ impl CommUtil {
         }
     }
 
+    /// How many peers this node is connected to. The block walk broadcasts its requests to this set,
+    /// so a non-zero count with no answers is a diagnostic: it is the shape of a joiner whose inbound
+    /// protocol/discovery ports admit only its bootstrap — peers gossip to it, and cannot answer it.
+    pub async fn connected_peer_count(&self) -> usize {
+        self.connections.read().await.len()
+    }
+
     /// Broadcast a packet (in one piece) to up to `scope_size` random peers (port of `sendToPeers`).
     pub async fn send_to_peers(&self, message: &Packet, scope_size: Option<usize>) {
         let max = scope_size.unwrap_or(self.conf.max_num_of_connections);
