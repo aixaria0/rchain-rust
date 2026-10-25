@@ -180,7 +180,7 @@ jobs:
       DEVNET_NETWORK: rcash447-disposable
       DEVNET_NODE_MEMORY: 6g
       DEVNET_THREAD_POOL_SIZE: "2"
-      APP_DIR: ${{ runner.temp }}/rcash-447
+      APP_DIR: /tmp/rcash-447
       APP_COMMIT: 0c1cc6e4b2c72fb80aeaae51ec92a2749b9a50a4
     steps:
       - name: Check out exact node source
