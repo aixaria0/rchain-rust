@@ -132,6 +132,18 @@ def main(argv=None):
                 break
             time.sleep(2)
         if seed is None:
+            candidates = []
+            for block in fork.blocks(CONTAINERS[0], 25):
+                if isinstance(block, dict) and int(block.get("deployCount", 0)) > 0:
+                    body = fork.request(CONTAINERS[0], "/api/block/" + block["blockHash"])
+                    candidates.append({"blockHash": block["blockHash"],
+                                       "blockNumber": block["blockNumber"],
+                                       "deployCount": block["deployCount"],
+                                       "deploys": [{"term": dep.get("term"),
+                                                    "sig": dep.get("sig"),
+                                                    "errored": dep.get("errored")}
+                                                   for dep in body.get("deploys", [])]})
+            step("seed_inclusion_diagnostics", candidates)
             raise AssertionError("unable to seed a linear cell in a carrying block")
         step("seed_signature", seed_sig)
         step("seed", seed)
