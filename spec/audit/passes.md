@@ -11641,3 +11641,46 @@ pre-state-hash disagreement. Every validator must run the fix from the fork poin
 testnet chain is already bagged and cannot be repaired. **Non-claims:** the live 840->841 four-parent
 replay cannot be recomputed from the node API (tuple-space state is not exported) and remains with
 #421/#429 (M5); the devnet/fork-point arm is owed; CI green is not certification, and #420 stays open.
+
+## 141. A join walk that consumed the key it could not verify (C337, #457)
+
+A fresh node could not join the testnet: the last-finalized-state walk finished 3 of the 28 blocks its
+fringe named, received answers from the bootstrap, then stalled for ninety seconds and failed. The
+finish condition (`LfsState::is_finished`) is `latest.is_empty() && d.is_empty()`; the live state was
+3 finished and 25 keys still in `d`, none of which the walk would ask for again.
+
+**The defect.** `validate_received_block` called `LfsState::received` **before** it recomputed the
+block's content hash, and `received` moved the key `Requested -> Received`. A body that failed
+`validate::block_hash` therefore left its key in `Received`, and `get_next(resend)` selected only
+`Init` (or `Requested` on a resend) — never `Received`. The key was in neither the request set nor the
+finished set: no request selected it, no answer was accepted for it, and `is_finished` could never
+hold. One forged or corrupted answer stalled the whole walk. Two further shapes shared the cause: an
+answer that overtook its request turn was dropped by the `Requested` gate even though its content was
+verifiable, and the give-up message reported only a count (`{finished} finished, {outstanding}
+outstanding`), so the live log could not say whether the residual keys were init, requested or
+stranded.
+
+**The law (Law 81, `spec/Rchain/Sync/Join.lean`).** Two machines: `WrittenStep` is the code as it was
+(accept only `Requested`, a failed body consumes to `Received`, a resend asks only `Requested`), and
+`LifecycleStep` is the repair (accept a **known** key in any non-`done` state, a rejected body is the
+identity, a resend re-asks `Init`, `Requested` **and** `Received`). The falsifier is
+`the_written_walk_cannot_finish_from_a_stranded_key`: from a state with one `Received` key still in
+`latest`, no run of the written machine reaches `isFinished`; the repaired machine reaches it in two
+turns. `a_round_makes_progress` states the fairness and closure hypotheses explicitly; the law does
+not claim answers arrive.
+
+**Fix.** `LfsState` gains `known` and `outstanding_breakdown`; `received` accepts any key in `d`, and
+`get_next` selects `Received` on a resend. `validate_received_block` now checks membership and the
+content hash **before writing any state**, and `process_block` resends immediately on a rejection.
+Unknown hashes are still dropped. The give-up error reports `init/requested/received` and the first
+eight outstanding hashes.
+
+**Evidence.** `a_mature_chain_join_completes` (a 28-block chain through `request_blocks`),
+`resend_re_requests_a_received_key`, `received_accepts_a_known_key_before_its_request_turn`,
+`a_forged_body_does_not_consume_the_key_and_is_re_requested`,
+`a_known_needed_block_is_accepted_before_its_request_is_sent`,
+`received_still_rejects_an_unknown_key`, and
+`a_decoded_block_still_hashes_to_its_hash` (which rules out a codec cause of a systematic hash
+mismatch). **Non-claims:** these are in-process witnesses; the devnet reset arm is the separate
+evidence record, and the live join is not claimed fixed until it passes. The fringe metadata the join
+trusts is Law 83's subject, not this fix's.

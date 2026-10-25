@@ -70,42 +70,60 @@ async fn validate_received_block(
     source: LogSource,
 ) -> bool {
     let block_number = i64::from(block.block_number);
+
+    // **#457: check what the walk owes, then check the body, and only then consume the key.**
+    //
+    // The order used to be `received` → `validate::block_hash`: a body that failed the check had
+    // already moved the key to `Received`, and `get_next` never selected `Received` again, so the key
+    // was stranded and `is_finished` (which requires `d` empty) could never hold. Nothing about a
+    // block is known until its content hash is re-derived, so nothing is written until then.
+    let known_status = {
+        let guard = st.lock().await;
+        guard.d.get(&block.block_hash).copied()
+    };
+    let Some(status) = known_status else {
+        log.warn(
+            source,
+            &format!(
+                "Received block #{} with hash {} that the walk does not need; dropped.",
+                block.block_number,
+                block.block_hash.to_hex()
+            ),
+        );
+        return false;
+    };
+    if !validate::block_hash(block) {
+        log.warn(
+            source,
+            &format!(
+                "Received block #{} with a hash that does not match its content: claimed {}, \
+                 recomputed {}. Key left {:?}; it will be re-requested rather than consumed.",
+                block.block_number,
+                block.block_hash.to_hex(),
+                crate::proto_util::hash_block(block).to_hex(),
+                status
+            ),
+        );
+        return false;
+    }
+
     let info = {
         let mut guard = st.lock().await;
         let (new_state, info) = guard.received(&block.block_hash, block_number);
         *guard = new_state;
         info
     };
-    let ReceiveInfo {
-        requested,
-        last_latest,
-        ..
-    } = info;
-
-    let block_hash_is_valid = requested && validate::block_hash(block);
-    if requested && !block_hash_is_valid {
-        log.warn(
-            source,
-            &format!(
-                "Received block #{} with invalid hash. Ignored block.",
-                block.block_number
-            ),
-        );
+    let ReceiveInfo { last_latest, .. } = info;
+    if last_latest {
+        log.info(source, "Latest blocks downloaded.");
     }
-
-    if block_hash_is_valid {
-        if last_latest {
-            log.info(source, "Latest blocks downloaded.");
-        }
-        // Always request the block's justifications: `dag.insert` requires every justification to
-        // be present in the message map, so the requester must reconstruct the full ancestry chain
-        // down to the genesis block (a syncing node's DAG is always empty).
-        let justifications: BTreeSet<BlockHash> = block.justifications.iter().copied().collect();
-        let mut guard = st.lock().await;
-        *guard = guard.add(&justifications);
-        return requested;
-    }
-    false
+    // Always request the block's justifications: `dag.insert` requires every justification to be
+    // present in the message map, so the requester must reconstruct the full ancestry chain down
+    // to the genesis block (a syncing node's DAG is always empty).
+    let justifications: BTreeSet<BlockHash> = block.justifications.iter().copied().collect();
+    let mut guard = st.lock().await;
+    *guard = guard.add(&justifications);
+    true
 }
 
 /// Save a received block to the store and mark it done (port of `saveBlock`).
@@ -151,8 +169,9 @@ async fn process_block(
     if is_valid {
         save_block(st, block_store, block).await?;
     }
-    // Trigger the request queue (without resending already-requested blocks).
-    chan::send(request_tx, false).await;
+    // A rejected body leaves its key outstanding (#457), so ask for it again immediately instead of
+    // waiting for the next idle round; the normal path resends nothing.
+    chan::send(request_tx, !is_valid).await;
     Ok(())
 }
 
@@ -246,18 +265,27 @@ pub async fn request_blocks(
                     // An idle round: a whole resend interval with no block response. Whether it is
                     // *stuck* is a different question from whether it is *quiet*, and `finished` is
                     // the measure that answers it.
-                    let (finished, outstanding) = {
+                    let (finished, (init, requested, received), sample) = {
                         let guard = st.lock().await;
-                        (guard.finished.len(), guard.d.len())
+                        let sample: Vec<String> = guard
+                            .d
+                            .iter()
+                            .take(8)
+                            .map(|(k, s)| format!("{}={s:?}", k.to_hex()))
+                            .collect();
+                        (guard.finished.len(), guard.outstanding_breakdown(), sample)
                     };
                     if finished == last_finished {
                         idle_rounds += 1;
                         if idle_rounds >= MAX_IDLE_ROUNDS {
                             return Err(format!(
                                 "no block finished in {idle_rounds} consecutive idle rounds of \
-                                 {request_timeout:?} ({finished} block(s) finished, {outstanding} \
-                                 key(s) still outstanding): the fringe names state no peer is \
-                                 serving, so the walk cannot reach it"
+                                 {request_timeout:?} ({finished} block(s) finished; outstanding: \
+                                 {init} init, {requested} requested, {received} received; \
+                                 first outstanding: [{}]): the fringe names state no peer is \
+                                 serving, or every answer is being refused; the walk cannot \
+                                 reach it",
+                                sample.join(", ")
                             ));
                         }
                     } else {
@@ -366,6 +394,7 @@ mod tests {
     use rchain_shared::refined::{BlockHeight, SeqNum};
     use std::time::{Duration, Instant};
 
+    use crate::engine::ReqStatus;
     use crate::protocol::casper_message_protocol::BlockRequestSerde;
     use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
 
@@ -414,9 +443,9 @@ mod tests {
         ))
     }
 
-    /// The state a node is in once it has *asked* for `hash`: `received` only reports
-    /// `requested: true` for a key in `Requested` status, so a fixture that skipped this step would
-    /// test the rejection path by accident (see the resend test).
+    /// The state a node is in once it has *asked* for `hash`. The request status no longer gates
+    /// acceptance (#457 — `known` does), but a fixture that skipped the request would exercise the
+    /// early-answer path rather than the requested one.
     fn requested(hash: BlockHash) -> St {
         let seeded = St::new([hash].into_iter().collect(), BTreeSet::new());
         seeded.get_next(false).0
@@ -435,18 +464,17 @@ mod tests {
         assert!(!validate_received_block(&st, &valid_block(&[]), &NopLog, source()).await);
     }
 
-    /// A requested block whose hash does not match its content is rejected: the requester
-    /// re-derives the hash rather than trusting the message, so a peer cannot substitute a
-    /// different block for the one requested. Its justifications are not added either.
+    /// A requested block whose hash does not match its content is rejected: the requester re-derives
+    /// the hash rather than trusting the message, so a peer cannot substitute a different block for
+    /// the one requested. Its justifications are not added either.
     ///
-    /// The rejected key is nonetheless marked `Received` — faithful to `LfsBlockRequester
-    /// .validateReceivedBlock`, which calls `st.received` before it checks the hash — and **nothing
-    /// re-requests it**: `get_next(resend)` only re-requests `Init` or `Requested` keys, and this
-    /// one is now `Received`. So a peer that answers a request with a forged block stalls the sync
-    /// for that key in *both* implementations. Pinned as the latent liveness wart it is (AUDIT
-    /// §16): if a guard is ever added, this test fails and is updated deliberately.
+    /// **The key is not consumed** (#457). `validate_received_block` used to call `st.received`
+    /// *before* checking the hash, so a forged body moved the key to `Received`; `get_next(resend)`
+    /// only re-requested `Init`/`Requested`, so nothing ever asked for it again and `is_finished`
+    /// (which requires `d` empty) could never hold. One forged answer stalled the whole walk. The
+    /// state is now untouched on rejection and the resend path re-asks the key.
     #[tokio::test]
-    async fn a_requested_block_with_a_forged_hash_is_rejected() {
+    async fn a_forged_body_does_not_consume_the_key_and_is_re_requested() {
         let forged = block(&[]);
         let st = Arc::new(tokio::sync::Mutex::new(requested(forged.block_hash)));
 
@@ -455,18 +483,39 @@ mod tests {
             "a hash that does not match the content must not be accepted"
         );
         let guard = st.lock().await;
-        assert!(
-            guard.get_next(false).1.is_empty(),
-            "a rejected block must not be requested again in the normal path"
+        assert_eq!(
+            guard.d.get(&forged.block_hash),
+            Some(&ReqStatus::Requested),
+            "the key is left as it was, not consumed to `Received`"
         );
         assert!(
-            guard.get_next(true).1.is_empty(),
-            "…nor by the resend path, which only re-requests `Requested` keys"
+            guard.get_next(true).1.contains(&forged.block_hash),
+            "…and the resend path asks for it again"
         );
         assert!(
             !guard.is_finished(),
-            "…and the key is not `done`, so the requester cannot report finished either"
+            "…the key is still outstanding, as it should be"
         );
+    }
+
+    /// #457 at the requester's edge: an answer for a key the walk still owes is accepted even when
+    /// its request turn has not fired. The content hash is the verification; the request slot is
+    /// scheduling.
+    #[tokio::test]
+    async fn a_known_needed_block_is_accepted_before_its_request_is_sent() {
+        let answer = valid_block(&[]);
+        let st = Arc::new(tokio::sync::Mutex::new(St::new(
+            [answer.block_hash].into_iter().collect(),
+            BTreeSet::new(),
+        )));
+
+        assert!(
+            validate_received_block(&st, &answer, &NopLog, source()).await,
+            "the walk owed this key, so the verified answer is the walk's"
+        );
+        let guard = st.lock().await;
+        assert_eq!(guard.d.get(&answer.block_hash), Some(&ReqStatus::Received));
+        assert!(!guard.is_finished());
     }
 
     /// An accepted block contributes its **justifications** to the download set — that is how the
@@ -1148,6 +1197,11 @@ mod tests {
             "the failure must name the silence, not the fringe: {err}"
         );
         assert!(
+            err.contains("outstanding:"),
+            "the failure must report the status breakdown (#457): a count alone did not say whether \
+             keys were init, requested or stranded as received: {err}"
+        );
+        assert!(
             transport
                 .broadcasts
                 .lock()
@@ -1236,6 +1290,76 @@ mod tests {
             state.finished.len(),
             N,
             "and it completed every block of the chain"
+        );
+    }
+
+    /// **The mature-chain join #457 needs, in the tree.** The live walk stopped at 3 finished of 28
+    /// blocks against a bootstrap that *was* answering; the unit tests around this one use chains of
+    /// one to three blocks, so nothing exercised the shape the defect appeared in. This serves a
+    /// 28-block chain whose every block justifies its parent — the topology the requester grows the
+    /// request set along — and requires the walk to finish every block.
+    #[tokio::test]
+    async fn a_mature_chain_join_completes() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+        const N: usize = 28;
+        const HARNESS_BOUND: Duration = Duration::from_secs(10);
+
+        let blocks = chain(N);
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let by_hash: BTreeMap<BlockHash, BlockMessage> =
+            blocks.iter().map(|b| (b.block_hash, b.clone())).collect();
+        let store = store().await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let transport = Arc::new(SlowServingTransport {
+            blocks: by_hash,
+            incoming: incoming_tx,
+            after: 1,
+            asked: std::sync::Mutex::new(BTreeMap::new()),
+        });
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport, conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
+        };
+
+        let state = tokio::time::timeout(
+            HARNESS_BOUND,
+            request_blocks(
+                &fringe,
+                &mut incoming_rx,
+                REQUEST_TIMEOUT,
+                &store,
+                &comm_util,
+                &NopLog,
+            ),
+        )
+        .await
+        .expect("a served mature chain must finish inside the harness bound")
+        .expect("every block of the chain is served, so the walk must not fail");
+
+        assert!(state.is_finished(), "the walk reached the fringe");
+        assert_eq!(
+            state.finished.len(),
+            N,
+            "every block of the chain completed"
+        );
+        assert_eq!(
+            state.outstanding_breakdown(),
+            (0, 0, 0),
+            "and nothing was left outstanding — the stranded-key shape that stopped the live join"
         );
     }
 }

@@ -4305,7 +4305,14 @@ def laws : List Law := [
       `Rchain.Sync.Join.the_written_walk_cannot_finish_from_a_stranded_key],
     axioms := [],
     rust := ["casper/src/engine/mod.rs", "casper/src/engine/lfs_block_requester.rs"],
-    rustWitness := [],
+    rustWitness := [
+      "casper/src/engine/mod.rs:resend_re_requests_a_received_key",
+      "casper/src/engine/mod.rs:received_accepts_a_known_key_before_its_request_turn",
+      "casper/src/engine/mod.rs:received_still_rejects_an_unknown_key",
+      "casper/src/engine/lfs_block_requester.rs:a_forged_body_does_not_consume_the_key_and_is_re_requested",
+      "casper/src/engine/lfs_block_requester.rs:a_known_needed_block_is_accepted_before_its_request_is_sent",
+      "casper/src/engine/lfs_block_requester.rs:a_mature_chain_join_completes",
+      "block-storage/src/dag/codecs.rs:a_decoded_block_still_hashes_to_its_hash"],
     witness := [`Rchain.Sync.Join.the_written_walk_strands_a_received_key,
       `Rchain.Sync.Join.the_fixed_walk_can_finish_from_a_stranded_key,
       `Rchain.Sync.Join.a_rejected_body_leaves_the_walk_where_it_was],
@@ -4324,7 +4331,9 @@ def laws : List Law := [
       (`hanswer`) and the key universe to be finite and closed (`hK`); the Rust supplies the closure \
       through the fringe's ancestry but this module does not prove the DAG finite. **Law 69 is not \
       replaced**: it models the tuple-space page walk, whose validation failure aborts the attempt and \
-      so has no silent stranded key. `rustWitness` is owed until the block-requester tests land." },
+      so has no silent stranded key. The witnesses are the 28-block `request_blocks` test and the \
+      requester's rejection/early-answer tests; the codec round-trip witness rules out a wire cause \
+      of a systematic hash mismatch." },
 
   { number := 82, layer := "PoS",
     statement := "**A validator's lifecycle has six transitions, and trust is the admission one.** \
