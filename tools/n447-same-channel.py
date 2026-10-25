@@ -126,6 +126,89 @@ def brief_block_evidence(info, fork_tips):
     }
 
 
+def causal_ancestor_paths(fetch_block, head, targets, max_blocks=1200):
+    """Bounded DAG ancestry witness: each fork tip must be an ancestor of head.
+
+    A later merge need not list the original fork tips as immediate parents.
+    Traversal follows the block's actual justification hashes, never height
+    proximity or a rejected-deploy field in isolation. No complete ancestry,
+    no accepted causal-merge witness.
+    """
+    from collections import deque
+
+    targets = set(targets)
+    if not isinstance(head, str) or not head or len(targets) != 2:
+        raise AssertionError("causal witness needs one block and two distinct tips")
+    queue = deque([(head, (head,))])
+    visited = set()
+    found = {}
+    while queue and len(found) < 2:
+        block_hash, trail = queue.popleft()
+        if block_hash in visited:
+            continue
+        if len(visited) >= max_blocks:
+            raise AssertionError("causal ancestry traversal exceeded its block bound")
+        visited.add(block_hash)
+        if block_hash in targets:
+            found[block_hash] = list(trail)
+            continue
+        block = fetch_block(block_hash)
+        if not isinstance(block, dict) or block.get("blockHash") != block_hash:
+            raise AssertionError(f"invalid block response in ancestry path: {block_hash}")
+        parents = block.get("justifications")
+        if not isinstance(parents, list) or any(
+                not isinstance(item, str) or not item for item in parents):
+            raise AssertionError(f"malformed DAG justifications at {block_hash}")
+        for parent in parents:
+            if parent not in visited and parent not in trail:
+                queue.append((parent, trail + (parent,)))
+    return found
+
+
+def scan_causal_conflict(node, minimum_height, tips, ids, fetch_block=None,
+                         inventory=None):
+    """Find a later block that both descends from both tips and rejects one ID.
+
+    Reject-only or height-only hints are insufficient; the ancestry chain
+    must be independently traversable from the candidate's own block hash.
+    """
+    fetch_block = fetch_block or (lambda h: fork.block_info(node, h))
+    inventory = inventory if inventory is not None else fork.blocks(node, 50)
+    if not isinstance(inventory, list):
+        raise AssertionError("invalid post-heal block list")
+    cache = {}
+
+    def cached(h):
+        if h not in cache:
+            cache[h] = fetch_block(h)
+        return cache[h]
+
+    suspects = []
+    for item in sorted(inventory, key=lambda v: v.get("blockNumber", -1)
+                       if isinstance(v, dict) else -1):
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("blockNumber", -1)) <= minimum_height:
+            continue
+        matching = set(item.get("rejectedDeploys") or []) & set(ids)
+        if len(matching) != 1:
+            continue
+        block_hash = item.get("blockHash")
+        if not isinstance(block_hash, str) or not block_hash:
+            continue
+        try:
+            paths = causal_ancestor_paths(cached, block_hash, tips)
+        except (AssertionError, KeyError) as error:
+            suspects.append({"hash": block_hash, "invalid_ancestry": str(error)})
+            continue
+        if set(paths) == set(tips):
+            return item, paths, suspects
+        suspects.append({"hash": block_hash,
+                         "reachable_tips": sorted(paths),
+                         "matching_rejections": sorted(matching)})
+    return None, {}, suspects
+
+
 def post_heal_diagnostics(fork_tips, minimum_height):
     """A missing direct merge needs node-level evidence, not a generic timeout."""
     result = {}
@@ -214,6 +297,16 @@ def main(argv=None):
             else:
                 raise AssertionError(f"seed block not replicated before split: {node}")
         step("seed_replicated", True)
+        seed_cell = expr(CONTAINERS[0], "n447_linear_cell", seed["blockHash"])
+        if seed_cell != [{"ExprInt": {"data": 0}}]:
+            raise AssertionError(f"the common pre-fork linear cell is not exactly zero: {seed_cell}")
+        seed_markers = {
+            "a": expr(CONTAINERS[0], "n447_effect_a", seed["blockHash"]),
+            "b": expr(CONTAINERS[0], "n447_effect_b", seed["blockHash"]),
+        }
+        if seed_markers["a"] or seed_markers["b"]:
+            raise AssertionError("pre-fork seed already contains a conflicting effect")
+        step("seed_state", {"cell": seed_cell, "effects": seed_markers})
 
         with SplitNetwork(DockerBackend(), prefix=fork.PREFIX, main=fork.NETWORK) as topology:
             pair_reachability = [
@@ -268,50 +361,42 @@ def main(argv=None):
             raise AssertionError("disconnected groups did not exchange their tips after healing")
         step("gossip", views)
 
-        # A single favored proposer can extend only its own selected branch.
-        # Give every bonded validator a bounded opportunity to propose and
-        # inspect each node for a block that directly justifies both tips.
+        # The fork tips may become *ancestors*, not direct parents, of the
+        # later merge. Accept only a real rejected-deploy block for which
+        # both causal paths can be independently traced through the DAG.
         end = time.monotonic() + args.timeout
         merge = None
-        proposals = []
+        ancestry = {}
+        attempts = []
+        rejected_hints = []
         while time.monotonic() < end and merge is None:
-            actor = CONTAINERS[len(proposals) % len(CONTAINERS)]
-            response = fork.propose(actor)
-            proposals.append({"validator": actor, "exit": response.returncode})
-            for observer in CONTAINERS:
-                merge = fork.find_merge(
-                    observer, tip_a["blockNumber"], target, time.time() + 1
-                )
-                if merge is not None:
-                    break
+            actor = CONTAINERS[len(attempts) % len(CONTAINERS)]
+            proposed = fork.propose(actor)
+            attempts.append({"validator": actor, "exit": proposed.returncode})
+            merge, ancestry, rejected_hints = scan_causal_conflict(
+                CONTAINERS[0], tip_a["blockNumber"], target, [sig_a, sig_b])
             if merge is None:
                 time.sleep(2)
         step("post_heal_proposals", {
-            "attempts": len(proposals), "by_validator": proposals[-24:],
+            "attempts": len(attempts), "by_validator": attempts[-24:],
         })
         if merge is None:
             diagnostics = post_heal_diagnostics(target, tip_a["blockNumber"])
             step("merge_not_observed", diagnostics)
-            # A DAG merge can reject a conflicting deploy in a later block
-            # whose direct parents are descendants of the original fork tips.
-            # Record such candidates, but do not silently accept them without
-            # an ancestry witness and a pinned, four-node state check.
-            candidates = {}
-            for node, detail in diagnostics.items():
-                for block in detail.get("recent_blocks", []):
-                    rejected_ids = set(block.get("rejected_deploys") or [])
-                    if rejected_ids & {sig_a, sig_b}:
-                        candidates.setdefault(block["hash"], []).append({
-                            "node": node, "height": block["height"],
-                            "matched_rejections": sorted(rejected_ids & {sig_a, sig_b}),
-                            "post_state_hash": block.get("post_state_hash"),
-                        })
-            step("indirect_rejection_candidates", candidates)
+            step("rejection_hints_without_full_ancestry", rejected_hints[-30:])
             raise AssertionError(
-                "direct two-tip merge not observed; indirect rejected-deploy "
-                "candidates retained, ancestry and pinned state unverified"
+                "no causally witnessed rejection block after healing; "
+                "matching rejection alone cannot prove a valid conflict merge"
             )
         merge_hash = merge["blockHash"]
+        step("causal_merge", {
+            "hash": merge_hash,
+            "height": merge["blockNumber"],
+            "original_fork_tips": target,
+            "ancestry_paths": ancestry,
+            "matching_rejected_deploys": sorted(
+                set(merge.get("rejectedDeploys") or []) & {sig_a, sig_b}),
+        })
         views = wait_for_block_on_all(merge_hash)
         step("merge", {"hash": merge_hash, "views": views})
         rejected = set(merge["rejectedDeploys"]) & {sig_a, sig_b}
@@ -335,6 +420,44 @@ def main(argv=None):
         )
         cell_value = require_single_cell_value(first["cell"], survived)
         step("winner", {"survivor": survived, "cell_value": cell_value})
+
+        # Re-open the exact same accepted block and application state after a
+        # hard validator container restart. The block hash is pinned: reading
+        # an unrelated new tip would not demonstrate durable recovery.
+        restarted = CONTAINERS[-1]
+        fork.docker("restart", restarted)
+        recovered = False
+        recovery_errors = []
+        recovery_deadline = time.monotonic() + 90
+        while time.monotonic() < recovery_deadline:
+            try:
+                observed = fork.block_info(restarted, merge_hash)
+                fork.merge_state_agreement(
+                    {restarted: observed, **{
+                        node: views[node] for node in CONTAINERS if node != restarted
+                    }}, CONTAINERS, merge_hash
+                )
+                replay = {
+                    "a": expr(restarted, "n447_effect_a", merge_hash),
+                    "b": expr(restarted, "n447_effect_b", merge_hash),
+                    "cell": expr(restarted, "n447_linear_cell", merge_hash),
+                }
+                if replay != first:
+                    raise AssertionError("restart changed the pinned application state")
+                recovered = True
+                step("durable_restart", {
+                    "validator": restarted, "block_hash": merge_hash,
+                    "pre_state_hash": observed["preStateHash"],
+                    "post_state_hash": observed["postStateHash"],
+                    "readback": replay,
+                })
+                break
+            except Exception as error:
+                recovery_errors.append(f"{type(error).__name__}: {error}")
+                time.sleep(2)
+        if not recovered:
+            step("restart_failure", {"errors": recovery_errors[-8:]})
+            raise AssertionError("validator restart did not restore the pinned merge block")
         record["result"] = "PASS"
     except Exception as error:
         record["error"] = f"{type(error).__name__}: {error}"

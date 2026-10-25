@@ -13,12 +13,24 @@ of two. The same signing test key submits one update per group. Each update
 must consume the pre-partition datum, produce a distinct updated value,
 and publish a distinct marker. Both validators propose independently.
 After healing, each validator must receive both diverging tips. The test
-requires a multi-parent merge block that all four validators serve with
-identical hashes, and records that block's rejection list.
+does **not** require those original tips to appear as direct justifications
+of a later block. In a DAG, the conflicting effects may be merged only after
+one or more further proposal rounds. The test follows bounded, verified
+justification paths from a rejection-bearing block back to **both** original
+fork tips. A rejected deploy signature alone is not a passing witness.
 
-The acceptance rule is intentionally strict: one, not zero or two, of
-the two signed deploys must be included in rejectedDeploys, and exactly
-one of the two markers may be visible at the pinned merged root.
+The selected merge successor must be served with identical block, pre-state,
+post-state hashes and pinned application state by all four validators; the
+pre-fork cell and marker channels are negative controls. The cell must contain
+exactly the surviving update's expected integer, while the opposite marker
+must be absent. One validator is then restarted and the exact same pinned
+block, roots and readbacks must be preserved.
+
+The acceptance rule is intentionally strict: exactly one of the two
+signed conflicting deploys must be included in the candidate block's
+rejectedDeploys, and exactly one of the two markers may be visible at the
+pinned merged root. Unrelated rejections are recorded but do not count
+toward the conflicting-deploy verdict.
 Unexpected absence, duplicated effects or disagreement are failures.
 
 The signed deploy ID is read from the block's own deploy list, never

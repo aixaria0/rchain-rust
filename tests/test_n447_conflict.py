@@ -118,6 +118,103 @@ class VerdictControls(unittest.TestCase):
         self.assertEqual(item["rejected_deploys"], ["r1"])
         self.assertNotIn("bonds", item)
 
+    def test_indirect_merge_accepts_both_real_ancestry_paths(self):
+        dag = {
+            "seed": ["genesis"],
+            "tipA": ["seed"],
+            "tipB": ["seed"],
+            "childA": ["tipA"],
+            "childB": ["tipB"],
+            "merged": ["childA", "childB"],
+            "genesis": [],
+        }
+        blocks = {
+            h: {"blockHash": h, "justifications": parents}
+            for h, parents in dag.items()
+        }
+        paths = conflict.causal_ancestor_paths(blocks.__getitem__,
+                                               "merged", {"tipA", "tipB"})
+        self.assertEqual(set(paths), {"tipA", "tipB"})
+        self.assertEqual(paths["tipA"], ["merged", "childA", "tipA"])
+        self.assertEqual(paths["tipB"], ["merged", "childB", "tipB"])
+
+    def test_matching_rejection_alone_cannot_fake_two_tip_merge(self):
+        dag = {
+            "seed": ["genesis"],
+            "tipA": ["seed"], "tipB": ["seed"],
+            "onlyA": ["tipA"],
+            "genesis": [],
+        }
+        blocks = {
+            h: {"blockHash": h, "justifications": parents}
+            for h, parents in dag.items()
+        }
+        inventory = [
+            {"blockHash": "onlyA", "blockNumber": 6,
+             "rejectedDeploys": ["sigB"]},
+        ]
+        candidate, paths, hints = conflict.scan_causal_conflict(
+            "observer", 3, {"tipA", "tipB"}, {"sigA", "sigB"},
+            fetch_block=blocks.__getitem__, inventory=inventory)
+        self.assertIsNone(candidate)
+        self.assertEqual(paths, {})
+        self.assertEqual(hints[0]["reachable_tips"], ["tipA"])
+
+    def test_indirect_conflict_candidate_requires_one_rejection_and_both_paths(self):
+        dag = {
+            "seed": [], "tipA": ["seed"], "tipB": ["seed"],
+            "left": ["tipA"], "right": ["tipB"],
+            "mergeLater": ["left", "right"],
+        }
+        blocks = {
+            h: {"blockHash": h, "justifications": parents}
+            for h, parents in dag.items()
+        }
+        inventory = [
+            {"blockHash": "mergeLater", "blockNumber": 20,
+             "rejectedDeploys": ["sigB", "unrelated"]},
+        ]
+        candidate, paths, hints = conflict.scan_causal_conflict(
+            "observer", 3, {"tipA", "tipB"}, {"sigA", "sigB"},
+            fetch_block=blocks.__getitem__, inventory=inventory)
+        self.assertEqual(candidate["blockHash"], "mergeLater")
+        self.assertEqual(set(paths), {"tipA", "tipB"})
+        self.assertEqual(hints, [])
+
+    def test_both_conflicting_deploys_rejected_is_not_a_candidate(self):
+        block = {"blockHash": "both", "blockNumber": 20,
+                 "rejectedDeploys": ["sigA", "sigB"]}
+        candidate, paths, _ = conflict.scan_causal_conflict(
+            "observer", 3, {"tipA", "tipB"}, {"sigA", "sigB"},
+            fetch_block=lambda h: {"blockHash": h, "justifications": []},
+            inventory=[block])
+        self.assertIsNone(candidate)
+        self.assertEqual(paths, {})
+
+    def test_malformed_or_substituted_ancestry_cannot_pass(self):
+        with self.assertRaisesRegex(AssertionError, "invalid block response"):
+            conflict.causal_ancestor_paths(
+                lambda h: {"blockHash": "substituted", "justifications": []},
+                "merged", {"tipA", "tipB"})
+        with self.assertRaisesRegex(AssertionError, "malformed DAG"):
+            conflict.causal_ancestor_paths(
+                lambda h: {"blockHash": h, "justifications": "tipA"},
+                "merged", {"tipA", "tipB"})
+
+    def test_bounded_ancestry_refuses_deep_or_cyclic_work(self):
+        dag = {"merged": ["intermediate"],
+               "intermediate": ["tipA", "tipB"]}
+        blocks = {h: {"blockHash": h, "justifications": parents}
+                  for h, parents in dag.items()}
+        with self.assertRaisesRegex(AssertionError, "block bound"):
+            conflict.causal_ancestor_paths(
+                blocks.__getitem__, "merged", {"tipA", "tipB"},
+                max_blocks=1)
+        cycle = {"x": {"blockHash": "x", "justifications": ["y"]},
+                 "y": {"blockHash": "y", "justifications": ["x"]}}
+        self.assertEqual(conflict.causal_ancestor_paths(
+            cycle.__getitem__, "x", {"tipA", "tipB"}), {})
+
     def test_marker_json_shape(self):
         self.assertTrue(conflict.contains_marker([{"ExprString": {"data": "A"}}], "A"))
         self.assertFalse(conflict.contains_marker([{"ExprString": {"data": "B"}}], "A"))
