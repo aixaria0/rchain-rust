@@ -4351,7 +4351,14 @@ def laws : List Law := [
     axioms := [],
     rust := ["rholang/src/native_state.rs", "rholang/src/system_processes.rs",
       "casper/src/genesis/mod.rs"],
-    rustWitness := [],
+    rustWitness := [
+      "rholang/src/native_state.rs:trust_requires_a_trusted_caller",
+      "rholang/src/native_state.rs:untrust_removes_trust_and_leaves_the_bond_alone",
+      "rholang/src/native_state.rs:untrust_does_not_change_the_active_set",
+      "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
+      "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
+      "rholang/src/native_state.rs:a_validator_with_delegations_cannot_withdraw",
+      "rholang/src/native_state.rs:the_boundary_pays_on_the_participation_it_is_handed"],
     witness := [`Rchain.untrust_does_not_deactivate, `Rchain.the_bond_step_does_not_activate,
       `Rchain.a_justified_slash_is_a_step, `Rchain.a_bond_reaches_the_bonded_phase],
     falsifiable := "The rule this replaces is C111's: `untrust` called `slash` on a bonded target, so \
@@ -4370,7 +4377,9 @@ def laws : List Law := [
       per-vault debit of a bond is the Rust's property and not a theorem here; the Rust's min/max bond \
       bounds are policy outside the state machine; and `retired` is model-only — the Rust observes \
       removal as absence. `untrust` leaving an active validator active is deliberate and is named as a \
-      non-claim of Law 83's trust model. `rustWitness` is owed until the lifecycle tests land." },
+      non-claim of Law 83's trust model. The witnesses are the lifecycle's own tests: the caller \
+      gate, revocation without confiscation, revocation without deactivation, the bond/boundary \
+      split, the epoch gate, the delegation guard and the boundary payout." },
 
   { number := 83, layer := "Sync",
     statement := "**The join is content-trustless, not finality-trustless.** Every join input is \

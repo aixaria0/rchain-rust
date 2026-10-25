@@ -85,6 +85,7 @@
 - [The bounded adversary](spec/adversary.md)
 - [Failure-mode HAZOP and disposition](spec/failure-hazop.md)
 - [Resource safety case](spec/resource-safety-case.md)
+- [What a joining node trusts](spec/trust-model.md)
 
 # Part VIII — Methodology (draft papers)
 

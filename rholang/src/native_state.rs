@@ -20,9 +20,14 @@
 //!   `number_of_active_validators` from the pool (0 = unlimited), redrawn at each epoch boundary
 //!   from the seeded rule in `select_active`. Consensus (supermajority, finality fringe, bond
 //!   queries) reads this set.
-//! * **withdrawing** — a withdrawal immediately deactivates the validator; the stake is escrowed
-//!   until the quarantine deadline ([`pos_withdrawers_key`]) and refunded by `close_block`.
-//! * **removed** — `slash`/`untrust` remove the validator and confiscate the stake to the Coop vault.
+//! * **withdrawing** — a withdrawal **stages** a quarantine request
+//!   ([`pos_pending_withdrawers_key`]); the validator stays bonded and active, still earning, until
+//!   the boundary after the quarantine escrows the bond ([`pos_withdrawers_key`]), and a later
+//!   boundary pays the bond plus its committed rewards.
+//! * **removed** — a *justified* `slash` removes the validator from every PoS ledger and sends the
+//!   tiered share to the Coop vault. **`untrust` only revokes admission and never confiscates a
+//!   bond** (AUDIT C111): an untrusted validator keeps its stake, stays in the active set until the
+//!   next boundary re-selects, and can withdraw. Admission is not membership.
 //!
 //! # The staking vault
 //!
@@ -4829,6 +4834,47 @@ mod tests {
             ),
             60,
             "the validator keeps what it did not bond, so it can still withdraw the stake"
+        );
+    }
+
+    /// **Law 82: untrust does not deactivate.** Trust is an admission list, not the consensus set: a
+    /// validator that is already active when it is untrusted stays in `pos:active` — and keeps its
+    /// bond — until a boundary re-selects. The old module header said the opposite ("`untrust`
+    /// removes the validator and confiscates the stake"); the code and AUDIT C111 say this, and the
+    /// stale prose was the defect.
+    #[tokio::test]
+    async fn untrust_does_not_change_the_active_set() {
+        let native = native_with(&[validator(1), validator(2)], PosParams::default(), &[]).await;
+        let v = validator(1);
+        fund(&native, &v, 100).await;
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .close_block(1, fringe_state(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            native.active().await.unwrap().contains_key(&v),
+            "the fixture is only meaningful if the validator is active before the revocation"
+        );
+
+        native.untrust(&validator(2), &v).await.unwrap().unwrap();
+
+        assert!(
+            !native.trusted().await.unwrap().contains(&v),
+            "admission is revoked"
+        );
+        assert!(
+            native.active().await.unwrap().contains_key(&v),
+            "…and consensus membership is not: `phaseOf` reads the stake ledgers before admission"
+        );
+        assert!(
+            native.bonds().await.unwrap().contains_key(&v),
+            "…nor is the bond touched"
         );
     }
 
