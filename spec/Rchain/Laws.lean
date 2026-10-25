@@ -4362,6 +4362,45 @@ def laws : List Law := [
       bounds are policy outside the state machine; and `retired` is model-only — the Rust observes \
       removal as absence. `untrust` leaving an active validator active is deliberate and is named as a \
       non-claim of Law 83's trust model. `rustWitness` is owed until the lifecycle tests land." },
+
+  { number := 83, layer := "Sync",
+    statement := "**The join is content-trustless, not finality-trustless.** Every join input is \
+      genesis-anchored (the configured genesis block/state and its `bond keys ∪ pos-multi-sig` trust \
+      set), verified (block content hashes, trie pages by Law 70, ancestry membership and the \
+      *derived* `fringe`), or residual (the bootstrap's choice of finalised root, the multi-member \
+      `fringe_state_hash`, liveness, and wire signatures/finality proofs). Two joiners that verify \
+      the same block map and hold the same trie read the same value at the claimed root and answer \
+      the same block lookup; the residual is an exact, checked enumeration",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.derivedFringe,
+      `Rchain.Sync.Trust.join_is_content_trustless,
+      `Rchain.Sync.Trust.a_singleton_fringe_pins_the_state_hash,
+      `Rchain.Sync.Trust.a_lying_ancestry_fringe_is_refused,
+      `Rchain.Sync.Trust.the_residual_is_exactly_named],
+    axioms := [],
+    rust := ["casper/src/engine/node_syncing.rs", "casper/src/engine/lfs_block_requester.rs",
+      "casper/src/genesis/mod.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Sync.Trust.a_lying_ancestry_state_hash_changes_replay,
+      `Rchain.Sync.Trust.genesis_trust_anchor,
+      `Rchain.Sync.Trust.a_singleton_fringe_can_pass_the_check],
+    falsifiable := "The peer-chosen field the join path could not check: \
+      `a_lying_ancestry_state_hash_changes_replay` shows two ancestry rows with the same block and \
+      fringe and a different `fringe_state_hash` produce different replay metadata, which \
+      `close_block` folds into the epoch seed — so the multi-member fringe's claim is a residual, and \
+      pretending the singleton check covered it would be the lie this row prevents. \
+      `a_lying_ancestry_fringe_is_refused` is the field that *is* derivable and therefore refused; \
+      `a_different_multisig_list_changes_the_anchor` is the anchor's sensitivity.",
+    note := "**The exact wording matters.** The proved claim is *content* trustlessness: every state \
+      byte and block body is checked against a hash, so two joiners with the same verified inputs \
+      cannot read differently. It is **not** finality trustlessness: the joiner trusts the \
+      bootstrap's choice of finalised root, its liveness, the per-block `fringe_state_hash` for a \
+      multi-member fringe, and it checks neither block signatures nor a quorum finality proof. Those \
+      are enumerated in `the_residual_is_exactly_named` and on the trust-model page. The Rust fix this \
+      row accompanies verifies ancestry block membership, duplicate-freedom and the derived `fringe`, \
+      and pins the root for a singleton fringe; **C339 stays open** — the merged state of a \
+      multi-member fringe is not recomputed on the join path, so the residual stands. `rustWitness` is \
+      owed until the lying-bootstrap tests land." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
