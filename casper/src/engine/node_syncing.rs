@@ -835,7 +835,11 @@ async fn check_singleton_state(
     if fringe.len() != 1 {
         return Ok(());
     }
-    let member = *fringe.iter().next().expect("one element");
+    // The length check above guarantees one member; the `else` keeps the function total so the
+    // type-system audit sees no panic on a reachable path (AUDIT C97's rule).
+    let Some(&member) = fringe.iter().next() else {
+        return Ok(());
+    };
     let block = block_store
         .get(&[member])
         .await?
