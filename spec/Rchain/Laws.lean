@@ -4390,7 +4390,7 @@ def laws : List Law := [
       the same block map and hold the same trie read the same value at the claimed root and answer \
       the same block lookup; the residual is an exact, checked enumeration",
     status := .provedModel,
-    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.latestFringe,
+    declarations := [`Rchain.Sync.Trust.Join, `Rchain.Sync.Trust.derivedFringe,
       `Rchain.Sync.Trust.join_is_content_trustless,
       `Rchain.Sync.Trust.a_singleton_fringe_pins_the_state_hash,
       `Rchain.Sync.Trust.a_lying_ancestry_fringe_is_refused,

@@ -135,9 +135,13 @@ DEPLOYER_BALANCE=1000000000000
 # Contract sources are mounted read-only at /contracts; deploy/eval reference them by basename.
 CONTRACTS_DIR="$(pwd)/examples"
 
-GRPC_BASE=40402   # host port mapped to the bootstrap's deploy gRPC (in-container 40401)
-HTTP_BASE=40403   # host port mapped to the bootstrap's public HTTP API (in-container 40403)
-ADMIN_BASE=40405  # host port mapped to the bootstrap's admin HTTP API (in-container 40405)
+# **Overridable so two devnets can run on one host** (a second session, or an arm beside a measurement).
+# The defaults are the original fixed ports; a caller that starts a second network must set all three
+# (and `DEVNET_NETWORK`, or the two bridges see each other's peers) — validator `i` adds `i * 1000` to
+# each base, so the three values must be far enough apart to leave that range free.
+GRPC_BASE="${DEVNET_GRPC_BASE:-40402}"   # host port mapped to the bootstrap's deploy gRPC (in-container 40401)
+HTTP_BASE="${DEVNET_HTTP_BASE:-40403}"   # host port mapped to the bootstrap's public HTTP API (in-container 40403)
+ADMIN_BASE="${DEVNET_ADMIN_BASE:-40405}" # host port mapped to the bootstrap's admin HTTP API (in-container 40405)
 
 help() {
   cat >&2 <<'EOF'

@@ -18,7 +18,7 @@ of this file is to name exactly which parts.
   configuration supplies;
 * **verified** — a downloaded block's content hash; each imported trie page against its key (Law 70);
   an ancestry entry's block-hash membership, duplicate-freedom, and the `fringe` set **derived** from
-  the justifications the joiner already has (the same `latest_fringe` the validator derives);
+  the justifications the joiner already has (the same finality gate the validator runs);
 * **residual** — which root the bootstrap calls finalised; the per-block `fringe_state_hash` when the
   fringe is multi-member (not covered by the block hash and not derivable without recomputing the
   merge); liveness (the peer must serve the blocks); and wire signatures/quorum finality, which the
@@ -49,15 +49,10 @@ namespace Trust
 structure Block where
   hash : Hash
   justifications : List Hash
-  /-- The block's **own** fringe, as the validator derived it when it inserted the block — the field
-      `message_map::latest_fringe` reads off the parent it selects. -/
-  fringe : List Hash
-  /-- The derived fringe's height (`fringe_height` in the Rust): the largest height among the
-      messages in `fringe`. The model carries it, rather than recomputing it from a height map, so
-      the selection rule it mirrors is visible. -/
-  fringeHeight : Nat
+  /-- The bond map the block carries (`BlockMessage.bonds`): an input to the finality gate, and so to
+      the fringe, because the partition and quorum are read from it. -/
+  bonds : List (Validator × Nat)
   postState : Hash
-  carriedBonds : List (Validator × Nat)
 
 /-- One block's row in the fringe's ancestry metadata. `fringe` is the set the sender claims, and
     `fringeStateHash` the state it claims for that set. -/
@@ -80,24 +75,20 @@ structure Join where
 
 /-! ### The derivable fringe -/
 
-/-- The justification with the greatest fringe height — `max_by_key(fringe_height)` in
-    `message_map::latest_fringe`. The tie-break is the Rust's: `max_by_key` keeps the **last**
-    maximum, which the fold models by preferring the accumulator on a tie. -/
-def pickLatest : List Block → Option Block
-  | [] => none
-  | b :: rest =>
-      match pickLatest rest with
-      | none => some b
-      | some m => some (if b.fringeHeight > m.fringeHeight then b else m)
+/- **The finality gate**, as an opaque parameter: it takes the child block and the messages it
+    justifies, and answers the fringe the validator derived — `liveness::calculate_finalization`,
+    which returns the parent fringe when the gate does not advance and the next layer when it does.
+    The gate is **Law 52's** subject (`Rchain.Casper.Liveness`, `Finalizer`); restating its body here
+    would be a second implementation of one rule (`Split`, Law 51b), and the property this law needs
+    is the one below: the value is a function of inputs the joiner already holds. -/
+variable (derive : Block → List Block → List Hash)
 
-/-- **The fringe a block's justifications derive**: the selected parent's own fringe —
-    `message_map::latest_fringe` (`block-storage/src/dag/message_map.rs:70-89`), whose output a
-    bootstrap cannot choose once the joiner holds the parents. This is the field the join recomputes
-    from blocks it has already verified; the Rust's tie-break is mirrored in `pickLatest`. -/
-def latestFringe (msg : Hash → Option Block) (hs : List Hash) : List Hash :=
-  match pickLatest (hs.filterMap msg) with
-  | none => []
-  | some b => b.fringe
+/-- **The fringe a block's justifications derive**, computed by the same gate a validating node runs:
+    the child (which carries its bond map) and the parent messages the joiner has already verified.
+    This is the field the join recomputes, and the field a bootstrap cannot choose once the parents
+    are in hand. -/
+def derivedFringe (msg : Hash → Option Block) (b : Block) : List Hash :=
+  derive b (b.justifications.filterMap msg)
 
 /-! ### The predicates the join path checks -/
 
@@ -112,12 +103,11 @@ def Downloaded (j : Join) (hs : List Hash) : Prop :=
 /-- An ancestry entry is derivable when the block it names is held and the `fringe` it claims is the
     one the block's own justifications derive. -/
 def AncestryDerivable (j : Join) (a : Ancestry) : Prop :=
-  ∃ b, j.blocks a.blockHash = some b ∧
-    latestFringe j.blocks b.justifications = a.fringe
+  ∃ b, j.blocks a.blockHash = some b ∧ derivedFringe derive j.blocks b = a.fringe
 
 /-- Every ancestry row in a fringe is derivable. -/
 def FringeDerivable (j : Join) (f : Fringe) : Prop :=
-  ∀ a ∈ f.ancestry, AncestryDerivable j a
+  ∀ a ∈ f.ancestry, AncestryDerivable derive j a
 
 /-- For a fringe that names one block, the merged state hash must be that block's post-state. -/
 def SingletonPinned (j : Join) (f : Fringe) : Prop :=
@@ -213,12 +203,21 @@ theorem a_singleton_fringe_pins_the_state_hash (j : Join) (f : Fringe) (m : Bloc
     *cannot* choose. -/
 theorem a_lying_ancestry_fringe_is_refused (j : Join) (a : Ancestry) (b : Block)
     (hb : j.blocks a.blockHash = some b)
-    (hnot : latestFringe j.blocks b.justifications ≠ a.fringe) :
-    ¬ AncestryDerivable j a := by
+    (hnot : derivedFringe derive j.blocks b ≠ a.fringe) :
+    ¬ AncestryDerivable derive j a := by
   rintro ⟨b', hb', hf⟩
   rw [hb] at hb'
   injection hb' with hbb
   exact hnot (by rw [← hbb] at hf; exact hf)
+
+/-- **The derivation is a function of verified inputs**: two joins that hold the same block map derive
+    the same fringe for the same block. No field of the wire choice enters — the child is content-
+    addressed and its parents are looked up by the hashes it names — which is what makes the
+    recomputation a check rather than a second opinion. -/
+theorem the_derivation_is_a_function_of_the_verified_inputs {j j' : Join} {b : Block}
+    (h : j.blocks = j'.blocks) :
+    derivedFringe derive j.blocks b = derivedFringe derive j'.blocks b := by
+  rw [h]
 
 /-- **The per-block `fringe_state_hash` changes the replay input.** Two ancestry rows with the same block
     and fringe but a different claimed state produce different replay metadata — and `close_block` folds
@@ -265,7 +264,7 @@ theorem the_residual_is_exactly_named :
 /-- The non-vacuity of the singleton check: a one-block fringe whose root is the block's post-state
     passes it. -/
 def exampleJoin (h p : Hash) : Join where
-  blocks := fun k => if k = h then some ⟨h, [], [], 0, p, []⟩ else none
+  blocks := fun k => if k = h then some ⟨h, [], [], p⟩ else none
   trie := fun _ => none
 
 theorem a_singleton_fringe_can_pass_the_check (h p : Hash) :

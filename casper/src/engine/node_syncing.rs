@@ -12,8 +12,8 @@ use std::time::Duration;
 use rchain_block_storage::approved_store::{ApprovedStore, FINALIZED_FRINGE_KEY};
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
-use rchain_block_storage::dag::finalizer::Message;
-use rchain_block_storage::dag::message_map;
+use rchain_block_storage::dag::finalizer::{Finalizer, Message};
+use rchain_block_storage::dag::liveness;
 use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_block_storage::syntax::insert_genesis;
 use rchain_comm::peer_node::PeerNode;
@@ -748,6 +748,17 @@ fn check_ancestry_shape(
                 bf.block_hash.to_hex()
             ));
         }
+        for h in &bf.fringe {
+            if !downloaded.contains(h) {
+                return Err(format!(
+                    "the ancestry for block {} names fringe member {}, which the walk did not \
+                     download; a fringe names ancestors, so this is not a history the joiner can \
+                     check",
+                    bf.block_hash.to_hex(),
+                    h.to_hex()
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -774,17 +785,38 @@ fn check_derived_fringe(
         })?;
         parents.insert(parent);
     }
-    let derived: BTreeSet<BlockHash> = message_map::latest_fringe(msg_map, &parents)
+    // **The validator's own derivation**, not its first half: the block's fringe is what
+    // `calculate_finalization` returns — the parent fringe when the gate does not advance, and the
+    // next layer when it does — computed from the justifications and the block's own bonds. Running
+    // the same gate here is what lets a correct bootstrap's row pass; comparing against the parent
+    // fringe alone would reject every block whose fringe advanced.
+    let (parent_fringe, advanced) =
+        liveness::calculate_finalization(&Finalizer::new(msg_map), &parents, &block.bonds);
+    let derived: BTreeSet<BlockHash> = advanced
+        .unwrap_or(parent_fringe)
         .iter()
         .map(|m| m.id)
         .collect();
     if derived != bf.fringe {
+        let parent_fringes: Vec<String> = parents
+            .iter()
+            .map(|p| format!("{}:{}", p.id.to_hex(), p.fringe.len()))
+            .collect();
+        let missing: Vec<String> = bf
+            .fringe
+            .iter()
+            .filter(|h| !msg_map.contains_key(*h))
+            .map(|h| h.to_hex())
+            .collect();
         return Err(format!(
             "the bootstrap's ancestry for block {} claims fringe [{}], but its justifications derive \
-             [{}]; refusing the join's metadata rather than writing a fringe the block does not have",
+             [{}]; parents (id:fringe-size) [{}], claimed members absent from the map [{}]; \
+             refusing the join's metadata rather than writing a fringe the block does not have",
             block.block_hash.to_hex(),
             fringe_hex(&bf.fringe),
-            fringe_hex(&derived)
+            fringe_hex(&derived),
+            parent_fringes.join(", "),
+            missing.join(", ")
         ));
     }
     Ok(())

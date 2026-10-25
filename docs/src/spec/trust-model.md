@@ -19,7 +19,7 @@ it.
 | A downloaded block body | **verified** | Recomputes `Blake2b256` over the body and refuses a mismatch (`validate::block_hash`) |
 | An imported trie page | **verified** | Recomputes the node hash against its key, and the walk against the walk listing (Law 70) |
 | An ancestry row's `block_hash` | **verified** | Must be a block the walk downloaded; duplicates refused |
-| An ancestry row's `fringe` | **verified** | Must equal `message_map::latest_fringe` of the block's justifications — the value a validating node derives |
+| An ancestry row's `fringe` | **verified** | Must equal the fringe the finality gate derives from the block's justifications and bond map — the value a validating node derives |
 | A singleton fringe's `state_hash` | **verified** | Must equal the named block's `post_state_hash` (genesis and one-validator chains) |
 | Which root the bootstrap calls finalised | **residual** | Assumed; the joiner cannot see the quorum that finalised it |
 | A multi-member fringe's per-block `fringe_state_hash` | **residual** | Assumed; the merged state is not recomputed on the join path (**C339**) |
@@ -43,9 +43,10 @@ protocol change, not a join-path check.
 
 ## The derivable half and the residual (C338, C339)
 
-The per-block `fringe` **is** derivable from the block's justifications — it is the same
-`message_map::latest_fringe` a validating node computes — so the join path refuses a row that disagrees
-(`check_derived_fringe`). The per-block `fringe_state_hash` is **not**: it is the merged state of the
+The per-block `fringe` **is** derivable: it is what `liveness::calculate_finalization` produces for
+the block — the parent fringe when the gate does not advance, the next layer when it does — from the
+block's justifications and its own bond map. The join path runs the same gate and refuses a row that
+disagrees (`check_derived_fringe`). The per-block `fringe_state_hash` is **not**: it is the merged state of the
 fringe, and `close_block` folds it into the epoch seed, so a peer that chooses it can change what a
 restored block replays to. The joiner pins it when the fringe names one block; when the fringe names
 several, it keeps the claim and logs it. That is **C339**, and it stays open until the join path
