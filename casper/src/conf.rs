@@ -104,6 +104,13 @@ impl ShardMemberships {
         std::iter::once(&self.primary).chain(self.others.iter())
     }
 
+    /// Every membership, primary first, mutably — for a resolved default that has to reach each
+    /// shard (the production dev-tax address).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ShardSpec> {
+        let ShardMemberships { primary, others } = self;
+        std::iter::once(primary).chain(others.iter_mut())
+    }
+
     pub fn len(&self) -> usize {
         1 + self.others.len()
     }

@@ -148,6 +148,11 @@ impl Configuration {
         check_merge_divergence_injection(&node_conf)?;
         check_sync_anchor(&node_conf)?;
         check_self_reset(&node_conf)?;
+        // **The production recipient is a repository constant** (`genesis::dev_tax`): an empty
+        // configured address resolves to it outside dev mode and to no allocation inside it. Applied
+        // before validation, so the genesis builder, the replay descriptors and the checks see one
+        // value; an explicit value always wins.
+        apply_production_dev_tax_address(&mut node_conf);
         check_dev_tax_address(&node_conf)?;
 
         Ok((check_dev_mode(node_conf), profile, config_file))
@@ -396,6 +401,19 @@ fn check_sync_anchor(node_conf: &NodeConf) -> Result<(), String> {
 /// genesis creation (`node_launch::apply`), because only a node about to build a genesis is making
 /// that decision, and only there can a *new* chain be told from a restart onto an existing one — the
 /// public testnet's bootstrap is standalone and its genesis predates this key.
+/// Resolve every shard's empty `dev-tax-address` to [`rchain_casper::genesis::dev_tax::
+/// PRODUCTION_DEV_TAX_ADDRESS`] outside dev mode, and leave it empty inside it. An explicit value is
+/// untouched. See `dev_tax::effective_address` for why this is a repository constant rather than an
+/// image default (devnets must never inherit a real allocation).
+fn apply_production_dev_tax_address(node_conf: &mut NodeConf) {
+    let dev_mode = node_conf.dev_mode;
+    for spec in node_conf.casper.shards.iter_mut() {
+        let configured = spec.genesis_block_data.dev_tax_address.clone();
+        spec.genesis_block_data.dev_tax_address =
+            rchain_casper::genesis::dev_tax::effective_address(&configured, dev_mode);
+    }
+}
+
 fn check_dev_tax_address(node_conf: &NodeConf) -> Result<(), String> {
     for spec in node_conf.casper.shards.iter() {
         let address = &spec.genesis_block_data.dev_tax_address;
@@ -1711,6 +1729,46 @@ mod tests {
             let err = check_resource_guard(&changed)
                 .expect_err(&format!("{name} must be refused, not guessed around"));
             assert!(err.contains(name), "{name} is not named in: {err}");
+        }
+    }
+
+    /// **The production dev-tax recipient is applied from the repository constant only outside dev
+    /// mode.** Empty config → the constant on a production node, empty on a devnet; explicit wins.
+    #[test]
+    fn an_empty_dev_tax_address_resolves_from_the_repository_outside_dev_mode() {
+        let defaults = parse_defaults("/tmp/n467-dev-tax").expect("defaults");
+        let mut conf = node_conf_from_hocon(&defaults).expect("a default NodeConf");
+
+        conf.dev_mode = false;
+        apply_production_dev_tax_address(&mut conf);
+        for spec in conf.casper.shards.iter() {
+            assert_eq!(
+                spec.genesis_block_data.dev_tax_address,
+                rchain_casper::genesis::dev_tax::PRODUCTION_DEV_TAX_ADDRESS
+            );
+        }
+
+        conf.dev_mode = true;
+        for spec in conf.casper.shards.iter_mut() {
+            spec.genesis_block_data.dev_tax_address = String::new();
+        }
+        apply_production_dev_tax_address(&mut conf);
+        for spec in conf.casper.shards.iter() {
+            assert!(
+                spec.genesis_block_data.dev_tax_address.is_empty(),
+                "dev mode must not inherit the production allocation"
+            );
+        }
+
+        for spec in conf.casper.shards.iter_mut() {
+            spec.genesis_block_data.dev_tax_address = "an explicit address".to_string();
+        }
+        apply_production_dev_tax_address(&mut conf);
+        for spec in conf.casper.shards.iter() {
+            assert_eq!(
+                spec.genesis_block_data.dev_tax_address,
+                "an explicit address"
+            );
         }
     }
 }

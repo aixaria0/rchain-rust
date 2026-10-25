@@ -405,20 +405,21 @@ shipped 2 500 rather than failing to start). State it explicitly:
 --executor-share 2500     # or 0, for the contract's own behaviour: producers are paid nothing extra
 ```
 
-**`dev-tax-address` is required in a *production* genesis and empty everywhere else.** It names the REV
-address the developer allocation is credited to — `max(20 000 000 REV, 2% of the wallets file's total)`,
-[Law 78](../formal/laws.md). The *amount* is derived from the wallets file and is not configurable; only
-the address is. A genesis created outside `--dev-mode` with this key empty is refused at the launch
-branch, and a value that is set must parse as a REV address or startup refuses it. A devnet need not set
-it (devnets run `--dev-mode`); a node **joining** a chain whose genesis has no allocation must leave it
-empty, because naming an address there makes it derive a different genesis and refuse the block.
+**`dev-tax-address` names the REV address the developer allocation is credited to** —
+`max(20 000 000 REV, 2% of the wallets file's total)`, [Law 78](../formal/laws.md). The *amount* is
+derived from the wallets file and is not configurable; only the address is.
 
-**The address is a ceremony input, not an image default.** It is a custody decision taken when the
-genesis is created: set `--dev-tax-address` at the ceremony, record the address beside the produced
-`bonds.txt` and `wallets.txt`, and keep the shipped default empty. Every node that replays the genesis —
-the creator and every joiner — must use the identical value or the post-state differs. An image that
-ships a provisional recipient silently gives every devnet built from it an allocation nobody asked for,
-and a genesis cut with a provisional recipient cannot change without a hard fork.
+**The production recipient is a repository constant.** `casper/src/genesis/dev_tax.rs` hard-codes
+`PRODUCTION_DEV_TAX_ADDRESS`; an empty configured value resolves to it on a **production** node and to
+no allocation inside `--dev-mode`, so devnets and tests never inherit a real 20M-REV credit. An explicit
+value wins in either mode, for a network that names its own recipient. The value must parse as a REV
+address or startup refuses it.
+
+The address is a **genesis parameter**: every node that replays the genesis — the creator and every
+joiner — must use the identical value or the post-state differs. Record the address (not the key)
+beside the produced `bonds.txt` and `wallets.txt` at the ceremony. A node **joining** an allocation-free
+chain (a devnet) runs in `--dev-mode`; outside dev mode an empty value means the production allocation,
+so it would derive a different genesis and refuse the block.
 
 **`dev-tax-vesting-blocks` is how long that allocation takes to unlock**, in blocks from genesis. The
 allocation is credited to a *vesting account* rather than a spendable vault, and each epoch boundary
