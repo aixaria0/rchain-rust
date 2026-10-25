@@ -4478,6 +4478,39 @@ def lawsC : List Law := [
       second refuses with both keys named, and the autogen path's `.sk` supplies the generated first \
       bond's key for a standalone node." },
 
+  { number := 85, layer := "Casper",
+    statement := "**The finalized fringe's root is a member's claim about a fringe it finalises, not a \
+      state field of the named block.** The ordinary answer serves the max `(height, hash)` member's \
+      `fringe_state_hash`; a recovery anchor and the fresh-shard answer serve a block's \
+      `post_state_hash`; and a member's claim is the state at the fringe **it** finalises — one \
+      fringe earlier than the set it belongs to. The served root is therefore always some member's \
+      claim, but it need not equal either state the block carries, which is why the singleton pin was \
+      false and removed. The joiner cannot recompute the merge, so the root is assumed (C339)",
+    status := .provedModel,
+    declarations := [`Rchain.FringeClaim, `Rchain.ClaimsTheStateAtItsFringe, `Rchain.servedRoot,
+      `Rchain.the_served_root_is_a_members_claim,
+      `Rchain.the_served_root_is_the_state_at_the_members_fringe],
+    axioms := [],
+    rust := ["casper/src/engine/node_running.rs", "casper/src/multi_parent_casper.rs",
+      "casper/src/engine/node_syncing.rs"],
+    rustWitness := [],
+    witness := [`Rchain.a_members_claim_is_not_necessarily_a_block_state,
+      `Rchain.the_served_root_is_a_members_claim],
+    falsifiable := "The pin this branch first implemented: compare the served root with the named \
+      block's pre- or post-state. `a_members_claim_is_not_necessarily_a_block_state` is its \
+      refutation — a member's claim (the state at the empty fringe) is neither the block's pre-state \
+      nor its post-state — and the node's `lfs_restore_dev_tax` suite found it in the genesis-branch \
+      claim. The three answer branches are the remaining distinctions: they serve three different \
+      kinds of value under one field name.",
+    note := "**The member/finaliser distinction is the whole of it**, and `multi_parent_casper.rs` \
+      records the stall it caused when a reader took a member for a finaliser (the base came out one \
+      fringe early and the chain stopped at height 20). The responder's ordinary branch takes the max \
+      member of the latest fringe and serves its membership claim anyway; the anchor and fresh-shard \
+      branches serve `post_state_hash` instead. The law proves the served value is always a member's \
+      claim (never an invented root) and that the claim is the state at that member's fringe; it does \
+      **not** supply `stateAt` (the merge), which is why C339 stays open. Recomputing the merge on the \
+      join path, or carrying a proof for the root, is the closing option; a pin is not." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
