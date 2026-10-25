@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-conflict' && github.event.inputs.mode != 'issue447-registry' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-conflict' && github.event.inputs.mode != 'issue447-registry' && github.event.inputs.mode != 'issue447-rcash' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -268,6 +268,79 @@ jobs:
         if: always()
         run: |
           DEVNET_PREFIX=n447conflict DEVNET_NETWORK=n447-conflict-disposable tools/devnet.sh down -v || true
+
+  issue447-rcash:
+    if: ${{ github.event.inputs.mode == 'issue447-rcash' }}
+    name: Issue 447 exact-r-cash verified 17-step installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_PREFIX: rcash447
+      DEVNET_NETWORK: rcash447-disposable
+      DEVNET_NODE_MEMORY: 6g
+      DEVNET_THREAD_POOL_SIZE: "2"
+      APP_DIR: /tmp/rcash-447
+      APP_COMMIT: 0c1cc6e4b2c72fb80aeaae51ec92a2749b9a50a4
+    steps:
+      - name: Check out exact node source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record node source and offline acceptance controls
+        run: |
+          mkdir -p target/issue447-rcash
+          git rev-parse HEAD > target/issue447-rcash/node-source.sha
+          python3 -m unittest discover -s tests -p 'test_n447_rcash_evidence.py' -v             2>&1 | tee target/issue447-rcash/regressions.log
+      - name: Build real node Docker image
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build 2>&1 | tee target/issue447-rcash/node-build.log
+          docker image inspect rnode:local --format '{{.Id}}' > target/issue447-rcash/node-image.txt
+      - name: Start disposable funded one-validator chain
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 1 --fresh --epoch-length 10             2>&1 | tee target/issue447-rcash/network-startup.log
+      - name: Fetch exactly pinned external r-cash source
+        run: |
+          set -euo pipefail
+          git clone -q --filter=blob:none --depth 1             https://github.com/PatrickMockridge/r-cash.git "$APP_DIR"
+          git -C "$APP_DIR" fetch --depth 1 origin "$APP_COMMIT"
+          git -C "$APP_DIR" checkout -q --detach "$APP_COMMIT"
+          test "$(git -C "$APP_DIR" rev-parse HEAD)" = "$APP_COMMIT"
+          git -C "$APP_DIR" rev-parse HEAD > target/issue447-rcash/rcash-source.sha
+      - name: Build original r-cash CLI and contract corpus
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/rcash-447-env"
+          source "$RUNNER_TEMP/rcash-447-env/bin/activate"
+          python3 -m pip install -q -r "$APP_DIR/harness/requirements.txt"
+          cd "$APP_DIR"
+          python3 tools/build_contracts.py
+          cargo build --locked -p rcash-cli 2>&1 | tee "$GITHUB_WORKSPACE/target/issue447-rcash/rcash-build.log"
+          python3 tools/keygen.py --out .testnet/keys.json --names admin1,admin2,admin3
+          python3 tools/keygen.py --out .devnet/keys.json --names reporter1,reporter2,reporter3,admin1,admin2,admin3
+      - name: Run verified dependency-by-dependency installer
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/rcash-447-env/bin/activate"
+          cd "$APP_DIR"
+          timeout --preserve-status 3600s python3 harness/install_testnet.py --fresh             --node http://127.0.0.1:40403             --keys .testnet/keys.json --admin-keys .devnet/keys.json             --state .testnet/install.json --ops .testnet/ops             --manifest "$RUNNER_TEMP/rcash-447-manifest.json"             2>&1 | tee "$GITHUB_WORKSPACE/target/issue447-rcash/installer.log"
+          cd "$GITHUB_WORKSPACE"
+          python3 tools/n447-rcash-evidence.py             --state "$APP_DIR/.testnet/install.json"             --out target/issue447-rcash/verified-steps.json
+      - name: Collect disposal and node diagnostics
+        if: always()
+        run: |
+          docker logs --tail 800 rcash447-bootstrap > target/issue447-rcash/node.log 2>&1 || true
+          docker ps -a --filter "name=rcash447" > target/issue447-rcash/containers.txt || true
+      - name: Upload source-pinned application acceptance artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue447-rcash-${{ github.run_id }}
+          path: target/issue447-rcash/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Tear down ONLY the disposable application network
+        if: always()
+        run: tools/devnet.sh down -v || true
 
   source-and-regressions:
     if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
