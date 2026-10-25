@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' && github.event.inputs.mode != 'issue447-n4' && github.event.inputs.mode != 'issue447-conflict' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -169,6 +169,58 @@ jobs:
         if: always()
         run: |
           DEVNET_PREFIX=n420fork DEVNET_NETWORK=n447-disposable tools/devnet.sh down -v || true
+
+  issue447-conflict:
+    if: ${{ github.event.inputs.mode == 'issue447-conflict' }}
+    name: Issue 447 real four-validator same-channel conflict
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_PREFIX: n447conflict
+      DEVNET_NETWORK: n447-conflict-disposable
+      DEVNET_NODE_MEMORY: 2g
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_WAIT_TRIES: "180"
+    steps:
+      - name: Checkout exact merge source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Source provenance and negative verdict controls
+        run: |
+          mkdir -p target/issue447-conflict
+          git rev-parse HEAD | tee target/issue447-conflict/source.sha
+          python3 -m unittest discover -s tests -p 'test_n447_conflict.py' -v             2>&1 | tee target/issue447-conflict/regressions.log
+      - name: Build real Docker node
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build 2>&1 | tee target/issue447-conflict/build.log
+          docker image inspect rnode:local --format '{{.Id}}' > target/issue447-conflict/image-id.txt
+      - name: Start isolated four-validator genesis
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 4 --fresh --no-autopropose --no-propose-on-deploy --epoch-length 10 2>&1 | tee target/issue447-conflict/startup.log
+      - name: Execute conflicting linear-cell updates across 2+2
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 1050s python3 tools/n447-same-channel.py             --out target/issue447-conflict/conflict.json --timeout 420             2>&1 | tee target/issue447-conflict/conflict.log
+      - name: Capture node diagnostics
+        if: always()
+        run: |
+          docker ps -a --filter "name=n447conflict" > target/issue447-conflict/containers.txt || true
+          for node in n447conflict-bootstrap n447conflict-validator-1 n447conflict-validator-2 n447conflict-validator-3; do
+            docker logs --tail 450 "$node" > "target/issue447-conflict/$node.log" 2>&1 || true
+          done
+      - name: Preserve raw conflict verdict
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue447-conflict-${{ github.run_id }}
+          path: target/issue447-conflict/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Teardown disposable conflict network
+        if: always()
+        run: |
+          DEVNET_PREFIX=n447conflict DEVNET_NETWORK=n447-conflict-disposable tools/devnet.sh down -v || true
 
   source-and-regressions:
     if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
