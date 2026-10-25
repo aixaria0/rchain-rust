@@ -11673,7 +11673,11 @@ not claim answers arrive.
 `get_next` selects `Received` on a resend. `validate_received_block` now checks membership and the
 content hash **before writing any state**, and `process_block` resends immediately on a rejection.
 Unknown hashes are still dropped. The give-up error reports `init/requested/received` and the first
-eight outstanding hashes.
+eight outstanding hashes. **The devnet arm** (`spec/audit/evidence/n457-mature-join-20261025/`): four
+validators to 28+ rounds, validator-3 reset to an empty store, LFS restore complete in 34.9 s with
+`status.sync` cleared, the restored anchor a block the bootstrap holds, and no `LFS state sync
+failed` in its log. That is the mature join the live chain could not do; the live chain itself is
+still the observation that counts.
 
 **Evidence.** `a_mature_chain_join_completes` (a 28-block chain through `request_blocks`),
 `resend_re_requests_a_received_key`, `received_accepts_a_known_key_before_its_request_turn`,

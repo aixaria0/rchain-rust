@@ -618,8 +618,9 @@ checked the block's content hash; a refused body left the key `Received`, and no
 `Received` key again — so the walk could never finish. The fix checks membership and the hash before
 writing state, re-asks `Received` keys on a resend, and reports the `init/requested/received` breakdown
 in the give-up error (Law 81, register C337). A 28-block in-process join and the algorithm's own
-falsifier are in the tree. **The live chain has not been re-checked with this fix**; the local reset arm
-is the next witness. What the joiner still trusts after it is stated in
+falsifier are in the tree. **The local reset arm passed** ([the evidence record](../spec/audit/evidence/n457-mature-join-20261025/README.md)):
+a reset validator restored a 28+ block chain in 35 s with no sync failures and the sync surface
+cleared. **The live chain itself has not been re-checked with this fix.** What the joiner still trusts after it is stated in
 [what a joining node trusts](../spec/trust-model.md) — content is checked, finality is not. Until the
 arm and a live re-check pass, seed the observer from a synced node and let it reconnect:
 
