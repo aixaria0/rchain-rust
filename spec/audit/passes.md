@@ -11701,10 +11701,14 @@ trusts is Law 83's subject, not this fix's.
 and `dag.insert` then uses `fringe` for `member_of_fringe`/`fringe_diff` while `close_block` folds
 `fringe_state_hash` into the epoch seed. Nothing checked either field against the blocks the walk had
 verified. The join now (a) refuses an ancestry row for a block the walk did not download, and refuses
-duplicate rows; (b) recomputes the field that **is** derivable — `fringe` must equal
-`message_map::latest_fringe` of the block's justifications, with the same max-fringe-parent tie-break,
-using the parents already inserted in height order; (c) pins the state hash to the block's post-state
-when the fringe names one block, for the finalized fringe and for each ancestry row; and (d) keeps but
-logs a **multi-member** fringe state, which is not derivable on this path — that is C339 and it stays
-open. A peer that sends no ancestry rows keeps the existing per-block WARN fallback, so the check does
-not refuse older implementations. Law 83 is the trust model this is an instance of.
+duplicate rows; and (b) recomputes the field that **is** derivable — `fringe` must equal the fringe the
+**finality gate** (`liveness::calculate_finalization`) derives from the block's justifications and bond
+map, using the parents already inserted in height order. The fringe's **state hashes** (the root and
+each per-block `fringe_state_hash`) are not derivable on this path; they are kept and logged, and that
+is **C339**. **Law 85** states exactly why a check cannot simply compare them with a block: the ordinary
+answer serves the max member's claim, and a member's claim is the state at the fringe **it** finalises
+— one fringe earlier than the set it belongs to — while the recovery-anchor and fresh-shard answers
+serve a block's post-state. A singleton pin against the named block's pre- or post-state was
+implemented and the restore suite refuted it; it was removed rather than kept as false assurance. A
+peer that sends no ancestry rows keeps the existing per-block WARN fallback, so the check does not
+refuse older implementations. Law 83 is the trust model this is an instance of.

@@ -21,7 +21,7 @@ it.
 | An ancestry row's `block_hash` | **verified** | Must be a block the walk downloaded; duplicates refused |
 | An ancestry row's `fringe` | **verified** | Must equal the fringe the finality gate derives from the block's justifications and bond map — the value a validating node derives |
 | Which root the bootstrap calls finalised | **residual** | Assumed; the joiner cannot see the quorum that finalised it |
-| The fringe's `state_hash` (root and each per-block `fringe_state_hash`) | **residual** | Assumed. It is the state *at* the fringe — one fringe earlier than the named block's pre-state — not a field of the block; a singleton pin was tried and refuted by the node tests (**C339**). The first block validated after the restore checks it indirectly against its `pre_state_hash` |
+| The fringe's `state_hash` (root and each per-block `fringe_state_hash`) | **residual** | Assumed. It is the state at the fringe the served member finalises — one fringe earlier than the named block's pre-state — not a field of the block. **Law 85** proves the served value is always some member's claim and why a pin cannot work; a singleton pin was tried and refuted by the node tests (**C339**). The first block validated after the restore checks it indirectly against its `pre_state_hash` |
 | Liveness (the peer serves the blocks) | **residual** | Assumed; the walk's give-up rule bounds the wait, it does not produce an answer |
 | Wire signatures and quorum finality proofs | **residual** | Not checked on the join path |
 
@@ -50,10 +50,14 @@ disagrees (`check_derived_fringe`). The fringe's **state** (the root and each pe
 `close_block` folds it into the epoch seed. The joiner keeps the claim and logs it. That is **C339**,
 and it stays open until the join path recomputes the merge (or the wire carries a proof for it).
 
-A singleton pin — compare the root with the named block's pre- or post-state — was implemented and
-**refuted by the node's restore tests**: the genesis-branch answer is neither (it is the state one
-fringe earlier), so the check was removed rather than kept as false assurance. This is the kind of
-claim that reads like a verification and is not one.
+**The state is a claim, not a field** (Law 85). The ordinary answer takes the max member's
+`fringe_state_hash`, whose meaning is the state at the fringe **that member** finalises; the
+recovery-anchor and fresh-shard answers take a block's `post_state_hash` instead. A member is not a
+finaliser of the set it belongs to, and the two states differ by one fringe — which is precisely why a
+pin comparing the root with the named block's pre- or post-state was false. It was implemented, the
+node's restore tests refuted it, and it was removed rather than kept as false assurance. The law proves
+the served value is always a member's claim; it does not supply the merge that would let the joiner
+check it.
 
 The same reasoning applies to the ancestry's shape: a row for a block the walk did not download, or two
 rows for one block, is refused before anything is written. A peer that sends **no** ancestry rows is
