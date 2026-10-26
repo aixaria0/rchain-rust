@@ -127,7 +127,7 @@ header is a short history of exactly those misses.
 ### 3.6 Hazard study and adversarial rehearsal, under CI
 
 The failure-mode HAZOP ([`docs/src/spec/failure-hazop.md`](../spec/failure-hazop.md)) drives all eleven
-IEC 61882 guide words across 16 study nodes, producing 39 `F-U<n>-<m>` deviation rows, each with a
+IEC 61882 guide words across 17 study nodes, producing 52 `F-U<n>-<m>` deviation rows, each with a
 causal chain, a current behaviour, a class and a falsifier; the acceptance sheet adds a bow-tie whose top
 events are named and numbered. The bounded-adversary tabletop
 ([`docs/src/spec/adversary.md`](../spec/adversary.md)) is 97 `W-N<n>-<m>` rows over 7 personas — Alice,
@@ -142,7 +142,7 @@ and the runs are committed.
 
 ### 3.7 Evidence is committed, not cited
 
-Every claimed run has a home under `spec/audit/evidence/` (37 suites). A citation to a `target/`
+Every claimed run has a home under `spec/audit/evidence/` (44 suites). A citation to a `target/`
 directory is unopenable and therefore not evidence. This is the practice that answers the reproduction
 gap that verification-evidence methodology papers most often have to concede.
 
@@ -176,9 +176,9 @@ carries its account (`spec/findings.tsv`'s `section` column), and each pass sect
 the review programmes — the red-team series alone runs to pass 9 (§21). What does not yet exist is the
 mapping from *pass section* to *layer*, and without it the register cannot answer the question:
 
-1. Read the 137 `## N.` sections of [`spec/audit/passes.md`](../../../spec/audit/passes.md) and assign
+1. Read the 141 `## N.` sections of [`spec/audit/passes.md`](../../../spec/audit/passes.md) and assign
    each to a layer.
-2. Join `spec/findings.tsv` on its `section` column against that assignment (366 rows).
+2. Join `spec/findings.tsv` on its `section` column against that assignment (374 rows).
 3. Weight by the size of each layer's artifact (laws + corpus cases; pass lines; worksheet rows; corpus
    files; test functions) to get a per-layer ratio.
 4. Report the ratio **whether or not it flatters the proofs** — a layer that found nothing is a result.

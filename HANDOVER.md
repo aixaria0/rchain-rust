@@ -46,6 +46,10 @@ no `owed:` cells left either: all 97 rows carry a taken falsifier, a gate citati
 decision (pass record §128–§136, register C313–C330), and `tools/check-wargame.sh` — wired into CI —
 refuses a page that says otherwise.
 
+**Correction, 2026-10-26, after #457's close-out.** The register reads **374 findings — 1 `todo`
+(C339, Law 85's fringe-state residual), 372 `done`, 1 `in progress` (C301)**. The 2026-10-14 line
+above is the record as it stood then, not a description of the tree.
+
 **Correction, 2026-10-09, after this handover was written.** §2's first entry below — "C215's fix is
 unproven, and the proof attempt is the evidence" — was true when written and is not any more. The
 full-path test was made to bite (the shortfall was `incompatible_with_final`'s asymmetry, and the

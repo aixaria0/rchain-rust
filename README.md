@@ -133,14 +133,14 @@ through the node by a Rust consumer, so a definition cannot drift from its corpu
 noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
 
 **Reviewed, adversarially, repeatedly.** The pass record is
-[`spec/audit/passes.md`](spec/audit/passes.md) — 137 sections of findings, refutations and remediations,
+[`spec/audit/passes.md`](spec/audit/passes.md) — 141 sections of findings, refutations and remediations,
 from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
 full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
 and closes by construction — a row is `done` only when the bad state is no longer representable, with
 the citation that forbids it, or as a recorded decision. It reads **TODO 0**.
 
 **HAZOP, and a tabletop wargame.** A failure-mode HAZOP dispositions all eleven IEC guide words across
-16 study nodes and 39 deviations, with four bow-tie top events
+17 study nodes and 52 deviations, with four bow-tie top events
 ([`docs/src/spec/failure-hazop.md`](docs/src/spec/failure-hazop.md),
 [`docs/src/spec/testnet-acceptance.md`](docs/src/spec/testnet-acceptance.md)). And a bounded-adversary
 tabletop walks the running system node by node — deploy ingress, validator keys, OCapN transports, the

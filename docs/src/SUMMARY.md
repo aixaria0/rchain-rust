@@ -96,3 +96,4 @@
 ---
 
 - [Navigation for AI agents](ai-entrypoint.md)
+- [Laws reference for AI agents](ai/laws-reference.md)
