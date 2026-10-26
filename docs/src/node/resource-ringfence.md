@@ -127,3 +127,7 @@ The node cannot raise a cgroup limit, prevent co-location, or choose the kernel'
 detect a limit, refuse to start below a policy floor, shed work before the limit, degrade to read-only,
 and report the state and the reason. Those are the safety-case barriers B31–B41; this page is the
 operator barrier they depend on.
+
+---
+
+**Setting one up:** [Running a node: testnet now, mainnet later](validator-observer-setup.md).
