@@ -39,6 +39,7 @@
 - [Sorted matching (proposal)](node/sorted-matching.md)
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
+- [Running a node: testnet and future mainnet, validator and observer](node/validator-observer-setup.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [OCapN interoperability](node/ocapn.md)
 - [ERTP: brands, issuers, purses and payments](node/ertp.md)
@@ -95,3 +96,4 @@
 ---
 
 - [Navigation for AI agents](ai-entrypoint.md)
+- [Laws reference for AI agents](ai/laws-reference.md)

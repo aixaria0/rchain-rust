@@ -87,3 +87,7 @@ membership moves. The Rust header at `rholang/src/native_state.rs` said the oppo
 - It does not close C339.
 - It does not claim the bootstrap is honest about liveness: a peer that will not serve blocks fails
   the walk after the give-up rule, which is a bounded failure, not a restored state.
+
+---
+
+**Operating one:** [Running a node: testnet now, mainnet later](../node/validator-observer-setup.md).

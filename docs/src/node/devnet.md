@@ -278,3 +278,7 @@ so a browser can reach them directly.
 The host maps each node's deploy gRPC port to `40402 + 1000·i`, its public HTTP port to
 `40403 + 1000·i`, and its admin HTTP port to `40405 + 1000·i` — the bootstrap is `i = 0`, so it
 publishes `40402`/`40403`/`40405` directly.
+
+---
+
+**Running a real network:** [Running a node: testnet now, mainnet later](validator-observer-setup.md).

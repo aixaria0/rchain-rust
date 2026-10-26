@@ -4,7 +4,7 @@ A small public RChain testnet running this codebase, used by the [r-wallet](http
 second — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
-is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
+is [Running a node: testnet now, mainnet later](validator-observer-setup.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets.
 
 > **Status: four bonded validators at 250 each, pool 1000, and the chain finalises.**
@@ -30,7 +30,7 @@ hosts, the genesis, the wallets.
   stakes. Rebuilt 2026-10-24 from a fresh genesis `c596bef4bb678b3ac0cdb931b5b6968653209ca40bc35b6fec0050254d479b26` |
 | Validators | **four, at equal stake — 250 each, pool 1000**, two per host. Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (nyc3) and B `167.99.43.214` (**ams3**) — deliberately on two continents, so every 3-of-4 quorum crosses the Atlantic. Both `s-2vcpu-4gb` |
-| Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
+| Cost | 2 × DigitalOcean droplets, **$12/mo** (the size is the row above) |
 | Binary | `dev` @ `185ed283`, static musl, `sha256:c4948443bb6b…`, **the same build on all four nodes and on the playground** — rebuilt 2026-10-24 |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
@@ -62,7 +62,7 @@ is the public endpoint's routing, and it has a cost if A dies — see
 
 Ports `40400` (protocol) and `40404` (discovery) are open on all four nodes, as are `40401`, `40403` and
 `40405` for clients — and the `414xx` family for nodes D and C, which share the hosts — what each is for is in
-[running a public testnet § Ports](running-a-public-testnet.md#ports).
+[the setup guide § Network and firewall](validator-observer-setup.md).
 
 ## Use it from r-wallet
 
@@ -217,7 +217,7 @@ our hosts, keys, genesis and health checks.
 
 | page | what lives there |
 |---|---|
-| [Running a public testnet](running-a-public-testnet.md) | the generalised procedure: stake split, genesis ceremony, joining, admitting a validator to a running chain, monitoring, sizing, rebuilds, and the port map |
+| [Running a node: testnet and future mainnet](validator-observer-setup.md) | the generalised procedure: roles, prerequisites, the canonical port map, genesis ceremony, joining, live admission, monitoring, recovery, and the testnet-vs-mainnet delta |
 | [Operating the node](operating.md#deploying-and-block-production) | `--shard-id`, the deploy-anchor rule, reading a term's return value, the block production modes, finality and withdraw behaviour |
 | [Running a validator: hardware requirements](validator-requirements.md) | host sizing, including the start-up replay floor () |
 | [#60](https://github.com/rhovision-org/rholo/issues/60) / [#68](https://github.com/rhovision-org/rholo/issues/68) | the start-up replay: measurements, reproductions, and what is still unattributed |
@@ -591,6 +591,10 @@ rnode --profile docker run --host <its-ip> --data-dir /var/lib/rnode \
 (The multi-sig flags must match the genesis master's, or the joiner's own view of the genesis PoS
 spec will not match — see [Genesis](#genesis).)
 
+The generalised procedure — prerequisites, the firewall rule below, the genesis ceremony, live
+admission and recovery — is [Running a node: testnet now, mainnet later](validator-observer-setup.md).
+This section records **this live net's own run**.
+
 Success looks like this in the log — note the LFS step, which restores from the **approved genesis**
 fringe. That is why joining works even though this idle chain has no *last-finalised* fringe:
 
@@ -602,20 +606,12 @@ INFO [casper.engine.NodeLaunch] Making a transition to Running state.
 
 A join takes about 15 seconds and ~19 MB, measured.
 
-**Measured 2026-10-25: this is what a join looks like when there is nothing to catch up on.** Every
-node above was at height 1, so "restoring LFS state" had only the approved genesis fringe to fetch.
-Against the chain at height 28, a fresh data directory with `--bootstrap` receives the finalized
-fringe, then all 29 history and 235 data store items, then **every block #0–28** — and applies none of
-them. It sits at `h=0` while the bootstrap logs `Response sent.` to all 28 block requests, and after
-three 30-second idle rounds it reports:
-
-```
-ERROR [casper.engine.NodeSyncing] LFS state sync failed (attempt 1 of 3):
-      no block finished in 3 consecutive idle rounds of 30s
-```
-
-Reproduced on both `185ed283` and `2745dbb3`, so it is the join path, not a regression from the
-2026-10-24 merges. **A fresh node cannot join this chain today.**
+**Measured 2026-10-25: the chain shape matters, and so does the firewall.** Every node above was at
+height 1, so "restoring LFS state" had only the approved genesis fringe to fetch. Against the chain at
+height 28, a fresh data directory with `--bootstrap` receives the finalized fringe, then all 29 history
+and 235 data store items, then **every block #0–28**. Whether it applies them depends on reachability:
+with inbound from every peer it reached the tip; with inbound from the bootstrap only it applied none
+and sat at `h=0`, logging `no block finished in 3 consecutive idle rounds of 30s`.
 
 **The observed live stall was reachability, not the walk.** A controlled A/B on 2026-10-25 (same
 binary `2745dbb3`, same chain at height 58, only the firewall changed) settled it: with inbound
@@ -631,7 +627,7 @@ a `Received` key again — so the walk could never finish. The fix checks member
 before writing state, re-asks `Received` keys on a resend, and reports the `init/requested/received`
 breakdown and the connected peer count in the give-up error (Law 81, register C337). A 28-block
 in-process join and the local reset arm pass ([the evidence
-record](../spec/audit/evidence/n457-mature-join-20261025/README.md)); this defect was **not** the cause
+record](../../../spec/audit/evidence/n457-mature-join-20261025/README.md)); this defect was **not** the cause
 of the observed live stall, and #457 stays open for the reachability diagnostic. What the joiner still
 trusts is stated in [what a joining node trusts](../spec/trust-model.md) — content is checked,
 finality is not.
@@ -674,7 +670,7 @@ What still bites when a validator is added, and is worth knowing before you try:
 ## Onboarding an observer into the validator pool
 
 The generalised procedure — the admission routes, the funding prerequisites and a verified transcript — is
-in [Running a public testnet of your own](running-a-public-testnet.md).
+in [Running a node: testnet now, mainnet later](validator-observer-setup.md).
 What follows is this net's version, with the keys and addresses actually in play here.
 
 The implementation models the full lifecycle natively (`rholang/src/native_state.rs`):
