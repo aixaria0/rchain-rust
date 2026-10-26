@@ -1,0 +1,24 @@
+
+name: Protect Issue 468
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  reopen:
+    if: github.event.issue.number == 468 && github.actor != 'aixaria0'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reopen issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            --method PATCH \
+            "repos/${{ github.repository }}/issues/468" \
+            -f state=open
