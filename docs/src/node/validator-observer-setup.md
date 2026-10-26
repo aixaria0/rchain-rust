@@ -115,12 +115,14 @@ function of the inputs (Law 84, #456). A node whose key is not first **refuses**
 names both keys instead of starting a private chain.
 
 The command above is a **testnet** ceremony: add `--dev-mode` (as the devnet does) for a disposable
-network. A **production** genesis runs without `--dev-mode`; it then requires a developer allocation
-address, and the address is a genesis input:
+network. A **production** genesis runs without `--dev-mode`; it then credits a developer allocation, and
+the recipient is a genesis parameter:
 
-- `casper.genesis-block-data.dev-tax-address` — empty in dev mode (no allocation), resolved to the
-  repository's production recipient outside it; an explicit value wins. The **amount** is derived from
-  the wallets file (`max(20 000 000 REV, 2% of its total)`), not configured.
+- `casper.genesis-block-data.dev-tax-address` — empty in dev mode (no allocation); outside it an empty
+  value resolves to the repository's `PRODUCTION_DEV_TAX_ADDRESS` (`casper/src/genesis/dev_tax.rs`),
+  and an explicit value wins for a network that names its own recipient. Every node replaying the
+  genesis must use the identical value. The **amount** is derived from the wallets file
+  (`max(20 000 000 REV, 2% of its total)`), not configured.
 - `dev-tax-vesting-blocks` — the unlock term. 36 months is a *block count* because the block cadence is
   not a constant; set it from the measured cadence at the ceremony.
 
@@ -260,7 +262,8 @@ Alert on: a finality number that stops while blocks continue, a non-null `sync` 
 - The validator key and the TLS identity are the node's credentials: file permissions `0600`, no argv
   hex, no public admin listener, no shared keys between nodes.
 - Treat testnet keys as disposable; treat mainnet keys as custody. The production developer allocation
-  address is a **ceremony** input the maintainer names; the shipped default in the image is empty.
+  recipient is the repository constant `PRODUCTION_DEV_TAX_ADDRESS` unless the ceremony names one; it
+  is a genesis parameter, so every replaying node must use the same value. Dev mode has no allocation.
 - Give the node its own cgroup and disk; a host-wide OOM is a consensus event, not an inconvenience.
 - Do not accept inbound from the internet to 40402 or 40405.
 

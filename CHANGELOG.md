@@ -83,8 +83,8 @@ cites PR numbers.
 - An activation schedule stages block versions by height. (#373)
 - The minimum phlo price and the maximum number of parents are committed into genesis state and
   checked against every block. (#373, #376)
-- A developer allocation that vests linearly over 36 months. Its address is set per network.
-  (#388)
+- A developer allocation that vests linearly over 36 months. Its recipient is a genesis parameter,
+  defaulting outside dev mode to the repository's production address. (#388, #467)
 - The rooted-name master dictionary and the RhoGOV governance class contracts are installed at
   genesis. (#194)
 
