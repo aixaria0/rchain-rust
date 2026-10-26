@@ -293,8 +293,8 @@ consequences operators run into:
 
 A net that must keep finalising while otherwise idle should either give its founding validator more than
 2/3 of the pool as a genesis stake, or run a second validator — attestation is on by default, so it adds
-its attestations without `--autopropose` (and without a deployer key). [Running a public
-testnet](running-a-public-testnet.md) works both through.
+its attestations without `--autopropose` (and without a deployer key). [The setup
+guide](validator-observer-setup.md) works both through.
 
 ---
 

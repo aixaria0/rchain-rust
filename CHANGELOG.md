@@ -135,12 +135,14 @@ cites PR numbers.
 
 ### Known issues
 
-- **#457:** a brand-new node with an empty data directory cannot sync from a chain that has
-  history. Adding validators still works: an observer already following the chain can be trusted
-  and bonded (A2.4). Workaround: seed the new node from a synced node's data directory, leaving
-  out `node.key.pem` and `node.certificate.pem` (see `docs/src/node/testnet.md`).
-- **#456:** the genesis hash depends on which validator created it. A joiner must receive genesis
-  from the network and cannot recompute it.
+- **#457:** on this release, a brand-new node joins a chain with history only when **every peer** can
+  reach its protocol and discovery ports (40400/40404). A bootstrap-only firewall leaves it at `h=0`
+  with a healthy peer count; the workaround is to seed it from a synced node's data directory, leaving
+  out `node.key.pem` and `node.certificate.pem` (see `docs/src/node/validator-observer-setup.md`). A
+  separate latent walk defect — a refused body could strand a key — is fixed on `dev`.
+- **#456:** on this release the genesis hash depends on which validator created it, so a joiner must
+  receive genesis rather than recompute it. On `dev`, the ceremony identity is the first bond in
+  `bonds.txt` and any other key refuses to create a genesis (#465).
 - This release needs a **new genesis** and cannot replay older chains.
 - Post-quantum signatures and key exchange are planned (#274) and not shipped.
 

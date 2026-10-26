@@ -231,3 +231,7 @@ limits, choose the kernel's OOM victim or prevent two validators sharing a host.
 dedicated-NVMe data-directory rule and the cgroup signals to alert on. The node-side start-up preflight
 is shipped and documented there; memory-aware admission and fallback states are tracked in the
 [resource safety case](../spec/resource-safety-case.md) and HAZOP study node U17.
+
+---
+
+**Setting one up:** [Running a node: testnet now, mainnet later](validator-observer-setup.md).

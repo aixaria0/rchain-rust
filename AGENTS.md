@@ -18,7 +18,8 @@ IV.
 | Running/operating the node — REPL, standalone genesis, ports, Docker network | [`docs/src/node/operating.md`](docs/src/node/operating.md) |
 | Reader/agent navigation map (goal-indexed) | [`docs/src/ai-entrypoint.md`](docs/src/ai-entrypoint.md) |
 | The ρ-calculus core spec (grammar, sorts, operations, refinements) | [`spec/RHO-CALCULUS.md`](spec/RHO-CALCULUS.md) |
-| The law register — every invariant, its source of truth and its Rust realization | [`spec/INVENTORY.md`](spec/INVENTORY.md) |
+| The law register — every invariant, its checked status, axioms and Rust realization | [`spec/LAWS.md`](spec/LAWS.md) (long-form catalogue: [`spec/INVENTORY.md`](spec/INVENTORY.md)) |
+| Operating manual for the register — numbering, statuses, commands, the Lean-first protocol | [`docs/src/ai/laws-reference.md`](docs/src/ai/laws-reference.md) |
 | Human-facing walkthrough: each law → concrete Rust file/type/function + test | [`docs/src/contributor/laws-to-rust.md`](docs/src/contributor/laws-to-rust.md) |
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
@@ -187,7 +188,7 @@ For any component you are about to write in Rust:
 |-------|-------|----------|-------|
 | **Lean 4** (primary) | algebraic/order laws, canonicalization, merge monoids, consensus arithmetic | [`spec/`](spec/) | `cd spec && lake build` |
 | **Coq** | substitution, α-equivalence, and programming-language metatheory (Autosubst in Phase 1) | [`spec/coq/`](spec/coq/) | `make -C spec/coq` |
-| **Inventory** | the laws, each with source-of-truth + formalization status | [`spec/INVENTORY.md`](spec/INVENTORY.md) | — |
+| **Register** | the laws, each with status, declarations, axioms and falsifier | [`spec/LAWS.md`](spec/LAWS.md) (long form: [`spec/INVENTORY.md`](spec/INVENTORY.md)) | — |
 | **Type system** | the port's own type discipline: ρ-calculus as the base sort of a Calculus of Constructions, no silent partiality | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md), `Rchain/Rho.lean`, `Rchain/Ty.lean` | `cd spec && lake build` |
 
 The **type-system spec** ([`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)) overlaps the Lean/Coq split
@@ -237,12 +238,14 @@ code.
 - In-repo executable semantics: `rholang/src/main/k/rholang/*.k` (`name-equivalence.k`,
   `processes-semantics.k`, `sending-receiving.k`, `matching-function.k`, `free.k`).
 
-Per-law proof status lives in [`spec/INVENTORY.md`](spec/INVENTORY.md).
+Per-law proof status lives in the register, [`spec/LAWS.md`](spec/LAWS.md); the long-form catalogue is
+[`spec/INVENTORY.md`](spec/INVENTORY.md). The numbering key and the protocol for changing a law are in
+[`docs/src/ai/laws-reference.md`](docs/src/ai/laws-reference.md).
 
 ## What must be preserved
 
-The full law table (with per-law formalization status and line-level source pointers) lives in
-[`spec/INVENTORY.md`](spec/INVENTORY.md); it is the canonical catalog and is not repeated here.
+The full law table, with line-level source pointers, lives in [`spec/INVENTORY.md`](spec/INVENTORY.md);
+the register is the authority for status, and it is not repeated here.
 
 **Proven vs. axiomatized:** the algebraic/combinatorial laws are provable statements — Law 1
 (idempotence/commutativity), Law 2's core (≡), Law 4's core (COMM), and Law 6 (`Closed`) are already

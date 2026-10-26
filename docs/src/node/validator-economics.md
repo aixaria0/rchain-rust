@@ -261,7 +261,7 @@ Which regime a net is in is a property of its size, not a policy — and the two
 What is at stake is **everything the validator holds in the PoS system** — its bond, its accrued and
 unwithdrawn rewards, and an escrowed withdrawal claim — and what is earned is its share of one epoch's
 burned phlo. The two exits from the active set are not symmetric, and the asymmetry is deliberate rather
-than an accident of the code — [Running a public testnet of your own](running-a-public-testnet.md) states
+than an accident of the code — [Running a public testnet of your own](validator-observer-setup.md) states
 it:
 
 > A silent validator is not slashed; it is a drag instead. […] The protocol is asymmetric: going offline
@@ -484,7 +484,7 @@ so a change is a deviation from `Pos.rhox` registered in
 - [Consensus (Casper)](consensus.md) — the fringe, the `> 2/3` rule, and the weight set the draw feeds.
 - [Running a validator: hardware requirements](validator-requirements.md) — what a node *costs*; this
   page is what it *earns*.
-- [Running a public testnet of your own](running-a-public-testnet.md) — the slash rule and the
+- [Running a public testnet of your own](validator-observer-setup.md) — the slash rule and the
   offline-is-free asymmetry stated for an operator.
 - [Progress: the shapes of non-progress](../formal/progress.md) — the `Participation` hypothesis, and why
   an inactivity leak is out of scope.
