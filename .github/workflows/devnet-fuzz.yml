@@ -1,4 +1,6 @@
 # Nightly devnet fuzz — robustness, input guards and the scheduler modes, over a real Docker network.
+# The schedule also runs the source-pinned N4/N8 quiet-chain and recovery gates.
+# These jobs use disposable Docker networks; manual mode selection stays independent.
 #
 # **Nothing here gates a pull request.** It needs Docker, a built image and a live network, so it runs
 # on a schedule (and on demand) rather than on every push: a flaky network harness in the PR path
@@ -98,7 +100,7 @@ jobs:
             target/lfs-history-evidence/
             target/lfs-anchor-evidence/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
 
       - name: Dump the devnet state on failure
         if: failure()
@@ -164,7 +166,7 @@ jobs:
           name: issue447-n4-${{ github.run_id }}
           path: target/issue447/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
       - name: Teardown only the disposable campaign
         if: always()
         run: |
@@ -212,7 +214,7 @@ jobs:
           name: issue447-registry-${{ github.run_id }}
           path: target/issue447-registry/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
       - name: Tear down isolated devnet only
         if: always()
         run: tools/devnet.sh down -v || true
@@ -763,7 +765,7 @@ jobs:
           DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
 
   final-gap-recovery:
-    if: ${{ github.event.inputs.mode == 'final-gap-recovery' }}
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'final-gap-recovery' }}
     permissions:
       contents: read
       actions: read
@@ -855,7 +857,7 @@ jobs:
           DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
 
   quiet-435-real-nodes:
-    if: ${{ github.event.inputs.mode == 'quiet-gap' }}
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'quiet-gap' }}
     name: Issue 435 quiet chain, one paused validator, no helpers
     runs-on: ubuntu-24.04
     timeout-minutes: 110
@@ -916,7 +918,7 @@ jobs:
 
 
   quiet-435-seeded-real-nodes:
-    if: ${{ github.event.inputs.mode == 'quiet-seeded' }}
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'quiet-seeded' }}
     name: Issue 435 seeded-baseline quiet chain, no helpers during window
     runs-on: ubuntu-24.04
     timeout-minutes: 110
