@@ -100,7 +100,7 @@ jobs:
             target/lfs-history-evidence/
             target/lfs-anchor-evidence/
           if-no-files-found: warn
-          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
+          retention-days: 14
 
       - name: Dump the devnet state on failure
         if: failure()
@@ -166,7 +166,7 @@ jobs:
           name: issue447-n4-${{ github.run_id }}
           path: target/issue447/
           if-no-files-found: warn
-          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
+          retention-days: 14
       - name: Teardown only the disposable campaign
         if: always()
         run: |
@@ -214,7 +214,7 @@ jobs:
           name: issue447-registry-${{ github.run_id }}
           path: target/issue447-registry/
           if-no-files-found: warn
-          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
+          retention-days: 14
       - name: Tear down isolated devnet only
         if: always()
         run: tools/devnet.sh down -v || true
@@ -849,7 +849,7 @@ jobs:
             target/lfs-anchor-evidence/
             target/final-gap-image/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
       - name: Teardown only disposable campaign networks
         if: always()
         run: |
@@ -910,7 +910,7 @@ jobs:
           name: quiet-435-${{ github.run_id }}
           path: target/quiet-435/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
       - name: Teardown disposable networks
         if: always()
         run: |
@@ -971,7 +971,7 @@ jobs:
           name: quiet-435-seeded-${{ github.run_id }}
           path: target/quiet-435-seeded/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 14 }}
       - name: Teardown disposable networks
         if: always()
         run: |
