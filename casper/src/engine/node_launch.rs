@@ -5,6 +5,7 @@
 
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +29,7 @@ use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_rspace::state::{RSpaceExporter, RSpaceImporter};
 use rchain_shared::base16;
 use rchain_shared::log::{Log, LogSource};
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 use tokio::sync::mpsc;
 
 use crate::blocks::block_retriever::BlockRetriever;
@@ -319,6 +320,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // **An operator-named block to sync to instead of a finalised fringe** (C259). See
     // `CasperConf::sync_anchor`; only consulted when this node's DAG is empty.
     sync_anchor: Option<String>,
+    expected_genesis_hash: Option<String>,
     // **May this node reset itself?** (F-U5-01's acting half, #320.) Off means the detector still
     // counts, logs and dry-runs the divergence but nothing acts on it — the behaviour of every build
     // before this one. See `CasperConf::self_reset` for why it is an operator switch and not automatic.
@@ -359,8 +361,20 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         ),
     };
 
+    let expected_genesis_hash = expected_genesis_hash
+        .as_deref()
+        .map(|hash| {
+            BlockHash::try_from_hex(hash)
+                .map_err(|e| format!("--expected-genesis-hash `{hash}` is invalid: {e}"))
+        })
+        .transpose()?;
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
+        if expected_genesis_hash.is_some() {
+            return Err(
+                "a pinned network genesis cannot be created by a standalone node".to_string(),
+            );
+        }
         // **The last point at which the developer allocation is still decidable** (Law 78). A genesis
         // vault cannot be added afterwards without a hard fork, so an unset address is refused *here*,
         // where the node is about to build genesis and the operator can still act. The condition and
@@ -618,6 +632,10 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         }
     }
 
+    if let Some(expected) = expected_genesis_hash {
+        check_expected_genesis(dag.as_ref(), &expected).await?;
+    }
+
     // The synced root is content-addressed, but its params must also be readable by this binary
     // and agree with this node's admission/proposal configuration before it enters Running.
     // Do this on reconnect and local genesis too, so a restart cannot bypass the restore guard.
@@ -835,6 +853,48 @@ async fn restored_native_state_root(
     Ok(approved.state_hash)
 }
 
+/// Refuse to enter Running on a different genesis, including when restarting a populated DAG.
+async fn check_expected_genesis(
+    dag: &dyn BlockDagStorage,
+    expected: &BlockHash,
+) -> Result<(), String> {
+    let repr = dag.get_representation().await;
+    check_genesis_height_map(repr.height_map.as_ref(), expected)
+}
+
+/// The identity pin is a claim about the *unique block at height zero*, not about
+/// whichever block happens to appear first in an incomplete or forked DAG index.
+fn check_genesis_height_map(
+    heights: &BTreeMap<BlockHeight, BTreeSet<BlockHash>>,
+    expected: &BlockHash,
+) -> Result<(), String> {
+    let roots = heights.get(&BlockHeight::zero()).ok_or_else(|| {
+        "expected genesis hash is pinned but the restored DAG has no height-zero genesis; refusing to enter Running".to_string()
+    })?;
+    if roots.len() != 1 {
+        return Err(format!(
+            "expected one genesis at height zero, found {}; refusing to enter Running",
+            roots.len()
+        ));
+    }
+    let actual = roots.first().ok_or_else(|| {
+        "expected genesis hash is pinned but height zero is empty; refusing to enter Running"
+            .to_string()
+    })?;
+    compare_genesis_hash(expected, actual)
+}
+
+fn compare_genesis_hash(expected: &BlockHash, actual: &BlockHash) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!(
+            "restored genesis {} differs from pinned genesis {}; refusing to enter Running",
+            actual.to_hex(),
+            expected.to_hex()
+        ));
+    }
+    Ok(())
+}
+
 /// The genesis block's post-state hash, from the restored DAG. `None` when the DAG has no genesis
 /// (a synthetic approved state in a guard unit test).
 async fn genesis_post_state_hash(
@@ -1005,6 +1065,50 @@ async fn start_catchup_if_anchored(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_genesis_rejects_a_different_chain() {
+        let canonical = BlockHash::try_from_hex(&"11".repeat(32)).unwrap();
+        let fork = BlockHash::try_from_hex(&"22".repeat(32)).unwrap();
+        assert!(compare_genesis_hash(&canonical, &canonical).is_ok());
+        let error = compare_genesis_hash(&canonical, &fork).unwrap_err();
+        assert!(error.contains("refusing to enter Running"));
+        assert!(error.contains(&canonical.to_hex()));
+        assert!(error.contains(&fork.to_hex()));
+    }
+
+    #[test]
+    fn pinned_genesis_requires_a_unique_height_zero_root() {
+        let canonical = BlockHash::try_from_hex(&"11".repeat(32)).unwrap();
+        let fork = BlockHash::try_from_hex(&"22".repeat(32)).unwrap();
+        let height_zero = BlockHeight::zero();
+        let height_one = BlockHeight::try_from(1).unwrap();
+
+        let empty = BTreeMap::new();
+        assert!(check_genesis_height_map(&empty, &canonical)
+            .unwrap_err()
+            .contains("no height-zero genesis"));
+
+        let missing_genesis = BTreeMap::from([(height_one, BTreeSet::from([canonical]))]);
+        assert!(check_genesis_height_map(&missing_genesis, &canonical)
+            .unwrap_err()
+            .contains("no height-zero genesis"));
+
+        let forked_genesis = BTreeMap::from([(height_zero, BTreeSet::from([canonical, fork]))]);
+        assert!(check_genesis_height_map(&forked_genesis, &canonical)
+            .unwrap_err()
+            .contains("expected one genesis"));
+
+        let valid = BTreeMap::from([
+            (height_zero, BTreeSet::from([canonical])),
+            (height_one, BTreeSet::from([fork])),
+        ]);
+        assert!(check_genesis_height_map(&valid, &canonical).is_ok());
+        assert!(check_genesis_height_map(&valid, &fork)
+            .unwrap_err()
+            .contains("differs from pinned genesis"));
+    }
+
     use rchain_comm::peer_node::NodeIdentifier;
     use rchain_shared::log::NopLog;
     use rchain_shared::refined::Port;
