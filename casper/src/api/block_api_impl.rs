@@ -1229,7 +1229,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             parents: BTreeSet::new(),
             fringe: BTreeSet::from([finalized]),
-            seen: Arc::new(BTreeSet::from([finalized])),
+            seen: Arc::new([finalized].into_iter().collect()),
         };
         let mut latest_msgs = BTreeMap::new();
         latest_msgs.insert(sender.clone(), finalized_msg.clone());
@@ -1346,7 +1346,7 @@ mod tests {
                 bonds_map: BTreeMap::new(),
                 parents: BTreeSet::new(),
                 fringe: BTreeSet::new(),
-                seen: Arc::new([id].into_iter().collect::<BTreeSet<_>>()),
+                seen: Arc::new([id].into_iter().collect()),
             });
         }
         DagRepresentation {

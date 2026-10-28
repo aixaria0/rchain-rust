@@ -100,7 +100,7 @@ pub fn message_from_block_metadata(
         bonds_map: block.bonds_map.clone(),
         parents: block.justifications.clone(),
         fringe: block.fringe.clone(),
-        seen: Arc::new(seen),
+        seen: Arc::new(seen.into_iter().collect()),
     })
 }
 
