@@ -1,0 +1,53 @@
+name: Upstream snapshot - fast-forward only
+
+on:
+  schedule:
+    - cron: '17 */8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: independent-upstream-snapshot
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    name: Verify and advance upstream snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Advance without overwriting working branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_repo=rhovision-org/rholo
+          fork_repo=aixaria0/rchain-rust
+          snapshot_ref=snapshots/upstream-dev
+
+          upstream_sha=$(gh api "repos/$source_repo/git/ref/heads/dev" --jq '.object.sha')
+          current_sha=$(gh api "repos/$fork_repo/git/ref/heads/$snapshot_ref" --jq '.object.sha')
+          echo "Source: $upstream_sha"
+          echo "Current snapshot: $current_sha"
+
+          if [[ "$upstream_sha" != "$current_sha" ]]; then
+            # GitHub rejects non-fast-forward changes when force=false.
+            # Do not force, reset, merge, or update the fork's dev branch.
+            gh api --method PATCH "repos/$fork_repo/git/refs/heads/$snapshot_ref" \
+              -f sha="$upstream_sha" -F force=false \
+              --jq '{updated_ref: .ref, updated_sha: .object.sha}'
+          fi
+          verified=$(gh api "repos/$fork_repo/git/ref/heads/$snapshot_ref" --jq '.object.sha')
+          test "$verified" = "$upstream_sha"
+          printf '{"upstream":"%s","snapshot":"%s","run_id":"%s","result":"PASS"}\n' \
+            "$upstream_sha" "$verified" "$GITHUB_RUN_ID" > snapshot-evidence.json
+      - name: Preserve snapshot evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: upstream-snapshot-${{ github.run_id }}
+          path: snapshot-evidence.json
+          retention-days: 30
+          if-no-files-found: warn
