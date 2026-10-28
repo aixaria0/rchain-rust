@@ -1,4 +1,4 @@
-name: N457 public testnet mature-history qualification
+name: N457 real-history recovery from stopped validator state
 
 on:
   push:
@@ -11,30 +11,23 @@ permissions:
   actions: read
 
 concurrency:
-  group: n457-live-history-${{ github.ref }}
+  group: n457-state-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  join-restart:
-    name: Source-pinned passive join and restart
+  stored-replay:
+    name: Isolated source-pinned restart on mature chain
     runs-on: ubuntu-24.04
-    timeout-minutes: 95
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Record runner hardware and public-node availability
+      - name: Record resources
         run: |
           set -euo pipefail
           uname -a
           free -m
           df -h /
-          python3 - <<'PY'
-          import socket
-          with socket.create_connection(("164.90.140.144", 40400), timeout=8):
-              print("BOOTSTRAP_TCP_REACHABLE")
-          PY
-          curl --fail --max-time 12 --silent --show-error https://testnet.rhobot.net/api/v1/status > baseline.json
-          python3 -m json.tool baseline.json
-      - name: Download the already-built exact-source release artifact
+      - name: Retrieve exact-source artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -42,25 +35,37 @@ jobs:
           mkdir -p bin
           gh run download 40754851864 --repo rhovision-org/rholo --name rnode-x86_64-unknown-linux-musl --dir bin
           (cd bin && sha256sum -c rnode.sha256)
-          chmod +x bin/rnode
+          chmod 700 bin/rnode
           bin/rnode --version | tee source-version.txt
           grep -F 'd1af45d1db3f5fe2fa6047ad6c8a72b654d041df' source-version.txt
-      - name: Run live-history passive-join and independent restart
+      - name: Fetch draft keyless stopped-validator store
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 tools/n457_live_history_runner.py
-      - name: Preserve time-series, evidence and live-node logs
+          mkdir -p fixture stored-real-testnet
+          gh release download n457-keyless-fixture-20261028 --repo aixaria0/rchain-rust --pattern d-validator-public-state-only.tar.gz --dir fixture
+          printf 'd00c0b3f5e66fb70d8abfc35439a79ea85ee9ce1211691dde0b0e0f8802d7cb1  fixture/d-validator-public-state-only.tar.gz\n' | sha256sum --check
+          tar -tzf fixture/d-validator-public-state-only.tar.gz | tee snapshot-manifest.txt
+          if grep -E 'node[.]key|node[.]certificate|validator[.]key|deployer|[.]pem$' snapshot-manifest.txt; then echo 'PRIVATE_IDENTITY_IN_FIXTURE'; exit 2; fi
+          tar -xzf fixture/d-validator-public-state-only.tar.gz -C stored-real-testnet
+          du -sh stored-real-testnet
+      - name: Run independent stored-state replay and restart
+        run: |
+          set -euo pipefail
+          python3 tools/n457_stored_history_runner.py
+      - name: Save execution and failure evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: n457-live-history-${{ github.run_id }}
-          if-no-files-found: warn
+          name: n457-stored-state-${{ github.run_id }}
           retention-days: 14
+          if-no-files-found: warn
           path: |
-            baseline.json
             source-version.txt
-            fresh-join.json
-            fresh-join.log
-            restart.json
-            restart.log
-            unexpected-error.txt
+            snapshot-manifest.txt
+            stored-replay.json
+            stored-replay.log
+            stored-restart.json
+            stored-restart.log
+            stored-error.txt
