@@ -1,0 +1,66 @@
+name: N457 public testnet mature-history qualification
+
+on:
+  push:
+    branches:
+      - validation/n457-live-join-runner-20261028
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: n457-live-history-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  join-restart:
+    name: Source-pinned passive join and restart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Record runner hardware and public-node availability
+        run: |
+          set -euo pipefail
+          uname -a
+          free -m
+          df -h /
+          python3 - <<'PY'
+          import socket
+          with socket.create_connection(("164.90.140.144", 40400), timeout=8):
+              print("BOOTSTRAP_TCP_REACHABLE")
+          PY
+          curl --fail --max-time 12 --silent --show-error https://testnet.rhobot.net/api/v1/status > baseline.json
+          python3 -m json.tool baseline.json
+      - name: Download the already-built exact-source release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          gh run download 40754851864 --repo rhovision-org/rholo --name rnode-x86_64-unknown-linux-musl --dir bin
+          (cd bin && sha256sum -c rnode.sha256)
+          chmod +x bin/rnode
+          bin/rnode --version | tee source-version.txt
+          grep -F 'd1af45d1db3f5fe2fa6047ad6c8a72b654d041df' source-version.txt
+      - name: Run live-history passive-join and independent restart
+        run: |
+          set -euo pipefail
+          python3 tools/n457_live_history_runner.py
+      - name: Preserve time-series, evidence and live-node logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: n457-live-history-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            baseline.json
+            source-version.txt
+            fresh-join.json
+            fresh-join.log
+            restart.json
+            restart.log
+            unexpected-error.txt
