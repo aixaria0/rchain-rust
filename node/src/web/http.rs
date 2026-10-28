@@ -1096,7 +1096,13 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable (a stale or unreadable sample reports unavailable). A word, not a number; the numbers are on the operator surface" },
-          "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" }
+          "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
+          "pool": { "type": "object", "properties": {
+            "deploys": { "type": "integer" },
+            "bytes": { "type": "integer" },
+            "maxDeploys": { "type": "integer" },
+            "maxBytes": { "type": "integer" }
+          } }
         }
       },
       "OperatorStatus": {
@@ -1117,6 +1123,12 @@ pub const OPENAPI_JSON: &str = r##"{
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable. A word, not a number; the numbers are on the operator surface" },
           "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
+          "pool": { "type": "object", "properties": {
+            "deploys": { "type": "integer" },
+            "bytes": { "type": "integer" },
+            "maxDeploys": { "type": "integer" },
+            "maxBytes": { "type": "integer" }
+          } },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
           "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped. Two things restart it: the process (the halt is durable, re-seeded at boot), and POST /api/v1/autopropose/resume on the admin listener, which clears the record and wakes the parked timer in-process. Not the same as block production having stopped: the tap and POST /api/propose keep running" },

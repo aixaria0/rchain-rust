@@ -12,7 +12,7 @@ disagree, the register is right.
 > - **`Law Nx`** — a *clause* of a law whose parts have different proofs or statuses (`16a`, `16b`, …).
 >   <!-- counts:clause-laws -->17<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
 > - **Entry** — one row of the register. **<!-- counts:laws -->86 laws<!-- counts:end --> = <!-- counts:entries -->114 entries<!-- counts:end -->**, and the
->   status counts are per entry. Laws 14 and 16 have clauses on both sides of `proved-tied`/`proved-model`,
+>   status counts are per entry. Laws 14, 16 and 86 have clauses on both sides of `proved-tied`/`proved-model`,
 >   which is why the number of *laws* proved is smaller than the sum of the two status columns.
 > - **`C###`** — an audit finding (`spec/audit/passes.md`), never a law. HAZOP rows are `F-U…`/`H-U…`,
 >   wargame rows `W-N…`, and an audit pass is `§N`. They are different namespaces.
@@ -228,9 +228,9 @@ catalog does not silently shrink.
 The register classifies every entry; the words mean different things:
 
 - **proved-tied** — proved, *and* tied to the node by a conformance corpus the Rust consumer runs.
-  <!-- counts:proved-tied-entries -->23<!-- counts:end --> entries.
+  <!-- counts:proved-tied-entries -->25<!-- counts:end --> entries.
 - **proved-model** — proved about a model that a person keeps in sync with the Rust.
-  <!-- counts:proved-model-entries -->82<!-- counts:end --> entries.
+  <!-- counts:proved-model-entries -->80<!-- counts:end --> entries.
 - **axiom-by-design** — a primitive assumed rather than proved (cryptography): <!-- counts:axioms -->10 axioms<!-- counts:end --> across the tree.
 - **owed / deferred** — stated, with the proof or the decision outstanding; **open** — a recorded design
   question, not a proof gap; **vacuous** — proved but restating its own definition (kept visible, never
@@ -239,8 +239,8 @@ The register classifies every entry; the words mean different things:
 
 The count arithmetic, in one sentence: **<!-- counts:laws -->86 laws<!-- counts:end -->, <!-- counts:entries -->114 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->17<!-- counts:end --> laws
 carry clauses; **<!-- counts:proved-laws -->79<!-- counts:end --> laws are proved in at least one clause**, split over entries as
-<!-- counts:proved-tied-entries -->23<!-- counts:end --> tied and <!-- counts:proved-model-entries -->82<!-- counts:end --> over the model. The two status columns overlap on
-laws 14 and 16, which is why they do not add up to the law-level union. No total on this page is
+<!-- counts:proved-tied-entries -->25<!-- counts:end --> tied and <!-- counts:proved-model-entries -->80<!-- counts:end --> over the model. The two status columns overlap on
+laws 14, 16 and 86, which is why they do not add up to the law-level union. No total on this page is
 hand-written: the spans are emitted from the register.
 
 ## Where the detail lives

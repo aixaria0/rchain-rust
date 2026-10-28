@@ -274,6 +274,31 @@ There is **no `--no-autopropose` flag** on the node — you omit `--autopropose`
 accepts `--no-autopropose` because that is *its* CLI, and it simply omits the node flag. Passing it to
 `rnode run` exits 1 in a restart loop.)
 
+### Admission, memory and the relay
+
+A deploy with a free pool slot is accepted whatever the host's memory state. `degraded` is an
+**advisory** word; `acceptsDeploys` is the pool's count/byte capacity. Only a real bound refuses:
+
+- a full pool, a deployer's share or its rate: **429 + `Retry-After`** (HTTP) or
+  `RESOURCE_EXHAUSTED` (gRPC);
+- a malformed request, bad signature, wrong shard or expired anchor: **400**.
+
+Explore has its own headroom permit budget and a **429** when it is spent; it is never gated by the
+deploy pool. A **503** means the node cannot serve at all. The operator status
+(`/api/v1/status/operator`, admin listener) carries the headroom, the critical/throttle/recovery
+floors, the process RSS and the permit limits; `/metrics` carries the same as `rchain.resource.*`
+gauges; the node's own `GET /health` is a readiness body (200 while serving).
+
+| Switch | Default | Effect |
+|---|---|---|
+| `RNODE_DEPLOY_RELAY` | off | offer each admitted deploy to connected peers' external deploy service (`_PORT`, default 40401; `_FANOUT` to cap) |
+| `RNODE_CROSS_DEPLOY_BATCHING` | off | execute independent deploys on forked runtimes and merge them (`_VERIFY` on, `_MAX` default 4) |
+| `RNODE_HTTP_MAX_INFLIGHT_DEPLOY` / `_EXPLORE` | off | operator concurrency caps, 1–1024 |
+
+The batch and relay are opt-in because both are new paths: the batch re-executes a block
+sequentially (`RNODE_CROSS_DEPLOY_BATCH_VERIFY=1`) and falls back on any mismatch; the relay assumes
+the peers expose their external deploy port. Neither changes the block format or the consensus rules.
+
 ### Finality, and why an idle chain can report no fringe
 
 Finality requires **more than 2/3 of the whole bond pool** to attest, *and* someone to propose. Two

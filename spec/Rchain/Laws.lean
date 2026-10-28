@@ -4517,13 +4517,14 @@ def lawsC : List Law := [
       (`normal`/`throttled`/`critical`/`unavailable`) is not an input to `enqueue`: it is an input to \
       the execution budget (86d). The legacy boolean gate is modelled as `legacyAdmit`, and \
       `the_legacy_gate_refuses_an_empty_slot` is the height-1688 state as a theorem",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "admission",
     declarations := [`Rchain.Admission.Pool, `Rchain.Admission.enqueue,
       `Rchain.Admission.legacyAdmit, `Rchain.Admission.an_empty_slot_admits,
       `Rchain.Admission.a_full_pool_refuses,
       `Rchain.Admission.the_legacy_gate_refuses_an_empty_slot],
     axioms := [],
-    rust := ["casper/src/dag.rs", "node/src/resources/fallback.rs"],
+    rust := ["casper/src/dag.rs", "casper/src/pool.rs", "node/src/resources/fallback.rs"],
     rustWitness := [],
     witness := [`Rchain.Admission.an_empty_slot_admits,
       `Rchain.Admission.a_full_pool_refuses,
@@ -4534,10 +4535,12 @@ def lawsC : List Law := [
       throttle floor would instead fail `an_empty_slot_admits`.",
     note := "The model's `capacity` is the count bound; the Rust's byte and per-deployer bounds are \
       the same `hasSlot` shape and are driven by the admission corpus when it lands. The row is \
-      `proved-model` in this unit because the Rust's typed refusal path is the next unit; the \
-      register's note is updated to `proved-tied` when `spec/conformance/admission.tsv` and its \
-      consumer exist. The law does **not** say a node must accept unbounded work: a full pool is a \
-      real bound and refuses, with a retry condition." },
+      `proved-tied` on `spec/conformance/admission.tsv`; its Rust consumer drives \
+      `casper::pool::check_admission`/`check_commit`, the same policy `dag.rs` calls. The corpus's \
+      five cases cover the free slot, the count bound, the duplicate, one permit and zero headroom; \
+      the rate, share and byte bounds are unit-tested in `casper::pool`. The law does **not** say a \
+      node must accept unbounded work: a full pool is a real bound and refuses, with a retry \
+      condition." },
 
   { number := 86, clause := "b", layer := "Admission",
     statement := "**No admitted work is silently lost.** A pool step advances an entry's status \
@@ -4602,7 +4605,8 @@ def lawsC : List Law := [
       non-empty pending pool with at least one permit has a step (`one_permit_progresses`), and \
       `next` takes at most `permits` ids (`the_batch_is_bounded_by_the_permits`). The defect shape is \
       `needsTwoPermits`: a non-empty pool with one permit and no step",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "admission",
     declarations := [`Rchain.Admission.Node, `Rchain.Admission.scheduleBatch,
       `Rchain.Admission.next, `Rchain.Admission.NodeStep,
       `Rchain.Admission.one_permit_progresses,
@@ -4610,8 +4614,8 @@ def lawsC : List Law := [
       `Rchain.Admission.the_batch_is_bounded_by_the_permits,
       `Rchain.Admission.a_scheduler_that_needs_two_permits_stalls],
     axioms := [],
-    rust := ["casper/src/blocks/proposer/proposer.rs",
-      "node/src/instances/proposer_instance.rs"],
+    rust := ["casper/src/budget.rs", "node/src/resources/budget.rs",
+      "casper/src/blocks/proposer/proposer.rs"],
     rustWitness := [],
     witness := [`Rchain.Admission.one_permit_progresses,
       `Rchain.Admission.the_batch_is_bounded_by_the_permits,
