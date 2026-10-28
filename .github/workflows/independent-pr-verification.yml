@@ -58,6 +58,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends protobuf-compiler
 
+      - name: Install formatting component for the source-pinned toolchain
+        working-directory: source
+        run: rustup component add rustfmt
+
       - name: Check formatting
         working-directory: source
         run: cargo fmt --all -- --check
