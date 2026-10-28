@@ -1,0 +1,102 @@
+name: Independent upstream PR verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Upstream Rholo PR number (targeting dev)
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: independent-pr-${{ inputs.pr_number }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Check out trusted verification harness only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve upstream PR to immutable commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 2
+          gh api "repos/rhovision-org/rholo/pulls/$PR_NUMBER" > /tmp/pr.json
+          test "$(jq -r .base.ref /tmp/pr.json)" = dev
+          sha=$(jq -r .head.sha /tmp/pr.json)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 3
+          echo "PR_SHA=$sha" >> "$GITHUB_ENV"
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
+          echo "Immutable source: $sha"
+          echo "PR: $PR_NUMBER"
+
+      - name: Fetch exact source without persistence of credentials
+        run: |
+          set -euo pipefail
+          mkdir source
+          git -C source init -q
+          git -C source remote add upstream https://github.com/rhovision-org/rholo.git
+          git -C source fetch --no-tags --depth=1 upstream "$PR_SHA"
+          git -C source checkout --detach -q FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$PR_SHA"
+          echo "SOURCE_PIN_VERIFIED $PR_SHA"
+
+      - name: Provision required compiler dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Check formatting
+        working-directory: source
+        run: cargo fmt --all -- --check
+
+      - name: Compile and run consensus/storage unit tests
+        working-directory: source
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUST_TEST_THREADS: '4'
+        run: cargo test --locked -p rchain-block-storage -p rchain-casper --lib
+
+      - name: Record evidence even when a gate fails
+        if: always()
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PINNED_SHA: ${{ env.PR_SHA }}
+          RUN_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          evidence={
+              "repository":"rhovision-org/rholo",
+              "pull_request":os.environ["PR_NUMBER"],
+              "head_sha":os.environ.get("PINNED_SHA","not-resolved"),
+              "github_run_id":os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+              "result":os.environ["RUN_STATUS"],
+              "scope":"format check and consensus/storage library tests only",
+              "limitations":"Not an approval, deployment qualification, or substitute for upstream CI."
+          }
+          pathlib.Path("independent-evidence.json").write_text(json.dumps(evidence,indent=2))
+          print(json.dumps(evidence,indent=2))
+          PY
+
+      - name: Preserve source-pinned verification record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: independent-pr-${{ inputs.pr_number }}-${{ github.run_id }}
+          path: independent-evidence.json
+          retention-days: 30
+          if-no-files-found: warn
