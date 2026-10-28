@@ -473,9 +473,10 @@ impl DeployService for DeployGrpcServiceV1 {
                 {
                     let detail = e.messages.join("; ");
                     let mut status = Status::resource_exhausted(detail);
-                    status
-                        .metadata_mut()
-                        .insert("retry-after", "1".parse().expect("a static metadata value"));
+                    status.metadata_mut().insert(
+                        "retry-after",
+                        tonic::metadata::MetadataValue::from_static("1"),
+                    );
                     return Err(status);
                 }
                 wire::deploy_response::Message::Error(to_tonic_service_error(e))

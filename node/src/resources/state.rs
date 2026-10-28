@@ -87,7 +87,7 @@ pub fn read_rss_mb() -> Option<u64> {
 fn parse_rss_kb(status: &str) -> Option<u64> {
     status.lines().find_map(|line| {
         line.strip_prefix("VmRSS:")
-            .and_then(|v| v.trim().split_whitespace().next())
+            .and_then(|v| v.split_whitespace().next())
             .and_then(|v| v.parse().ok())
     })
 }

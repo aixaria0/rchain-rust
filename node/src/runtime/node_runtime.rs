@@ -2384,7 +2384,7 @@ pub async fn setup_shard(
             let seen = seen.clone();
             tokio::spawn(async move {
                 {
-                    let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut seen = seen.lock().unpoison();
                     if !seen.insert(deploy.sig.clone()) {
                         return;
                     }
