@@ -12,6 +12,7 @@ import Rchain.Lex
 import Rchain.Parse
 import Rchain.Casper.Validate
 import Rchain.Casper.Rounds
+import Rchain.Admission
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1771,6 +1772,74 @@ def bodyLine (c : BodyCase) : String :=
     ["body", toString c.blockNumber, c.senderHex, toString c.seqNum, toString c.timestamp,
      String.intercalate ";" c.justificationsHex, c.stateHex, c.bytesHex]
 
+namespace Rchain
+namespace Corpus
+
+/-! ## Law 86 — the admission layer -/
+
+/-- The admission corpus cases, each a shape the Lean pool and the Rust `casper::pool` policy both
+    answer. The Rust consumer drives `check_admission`/`check_commit` and `budget::permits_for`; the
+    cases that are not shared (rate/share bounds, the relay) stay unit tests rather than being
+    claimed by a corpus that does not exercise them. -/
+inductive AdmissionCase where
+  | freeSlot
+  | countBound
+  | duplicateBound
+  | onePermit
+  | zeroHeadroom
+  deriving DecidableEq, Repr
+
+def admissionCaseCount : Nat := 5
+
+open Admission in
+def admissionHolds (c : AdmissionCase) : Bool :=
+  match c with
+  | .freeSlot =>
+      match enqueue { capacity := 1, entries := [] } 0 with
+      | .admitted _ => true
+      | .refused _ _ => false
+  | .countBound =>
+      match enqueue { capacity := 1, entries := [{ id := 0, status := .pending }] } 1 with
+      | .refused _ .full => true
+      | _ => false
+  | .duplicateBound =>
+      match enqueue { capacity := 2, entries := [{ id := 0, status := .pending }] } 0 with
+      | .refused _ .duplicate => true
+      | _ => false
+  | .onePermit =>
+      match next
+          { pool := { capacity := 1, entries := [{ id := 0, status := .pending }] },
+            permits := 1 } with
+      | some (batch, _) => !batch.isEmpty
+      | none => false
+  | .zeroHeadroom =>
+      match next
+          { pool := { capacity := 1, entries := [{ id := 0, status := .pending }] },
+            permits := 0 } with
+      | none => true
+      | some _ => false
+
+def admissionCases : List AdmissionCase :=
+  [.freeSlot, .countBound, .duplicateBound, .onePermit, .zeroHeadroom]
+
+theorem admissionCases_decide : admissionCases.all admissionHolds = true := by decide
+
+theorem admissionCases_length : admissionCases.length = admissionCaseCount := by decide
+
+def admissionCaseName : AdmissionCase → String
+  | .freeSlot => "free_slot"
+  | .countBound => "count_bound"
+  | .duplicateBound => "duplicate_bound"
+  | .onePermit => "one_permit"
+  | .zeroHeadroom => "zero_headroom"
+
+def admissionLine (c : AdmissionCase) : String :=
+  String.intercalate "\t"
+    ["admission", admissionCaseName c, if admissionHolds c then "true" else "false"]
+
+end Corpus
+end Rchain
+
 /-- `rchain-corpus --layer {flags|match|silence|store|protocol} [--out FILE]` — print the corpus
 (stdout by default). -/
 def main (args : List String) : IO UInt32 := do
@@ -1779,7 +1848,7 @@ def main (args : List String) : IO UInt32 := do
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
       || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
-      || a == "stake" || a == "block" || a == "liveness")).getD "flags"
+      || a == "stake" || a == "block" || a == "liveness" || a == "admission")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1811,6 +1880,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.blockCases.map Corpus.blockLine, Corpus.blockCaseCount)
     else if want == "liveness" then
       (Corpus.livenessCases.map Corpus.livenessLine, Corpus.livenessCaseCount)
+    else if want == "admission" then
+      (Corpus.admissionCases.map Corpus.admissionLine, Corpus.admissionCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

@@ -229,7 +229,8 @@ shard named and read the reply out of the term, not only from `deploy-status`
 ## 8. Monitoring
 
 - `GET /api/status` — `latestBlockNumber` (rounds, not blocks), `sync` (non-null means the LFS sync task
-  is running and names its last failure), `degraded` (the fallback state), `acceptsDeploys`.
+  is running and names its last failure), `acceptsDeploys` (the deploy pool's count/byte capacity),
+  `degraded` (the **advisory** fallback word; it does not gate admission).
 - `GET /api/last-finalized-block` — finality, the number that matters for consensus health.
 - `GET /health` — **not a node route**: the `/health` an operator sees is the host's nginx snapshot,
   refreshed by a timer (`node/src/web/http.rs` mounts `/status`, `/version`, `/metrics`, not `/health`).
@@ -239,7 +240,16 @@ shard named and read the reply out of the term, not only from `deploy-status`
   the admin listener — keep it private.
 
 Alert on: a finality number that stops while blocks continue, a non-null `sync` that persists, a
-`degraded` state other than `normal`, and a validator that is active but not producing.
+`degraded` word sustained below `normal` (a host below the specification), `acceptsDeploys: false`
+with pending work that does not drain, and a validator that is active but not producing. Do **not**
+alert on `degraded: throttled` alone: a node on an undersized host is expected to say so while it
+keeps serving.
+
+**Under memory pressure the pool is the throttle.** A deploy with a free pool slot is accepted even
+when `throttled`; a full pool, a deployer share or a rate is **429 + `Retry-After`**; explore has its
+own permit budget. A **503** means the node cannot serve at all. If the pool is full, work drains as
+blocks include it, and with `RNODE_DEPLOY_RELAY=1` an admitted deploy is offered to peers' deploy
+service so a constrained node is not the only proposer of work it holds.
 
 ## 9. Restart, upgrade, recovery
 
@@ -289,7 +299,8 @@ the anchor; the rebuild-from-config shortcut is not a mainnet procedure.
 - [ ] validator key at `0600`, path passed, admin on loopback
 - [ ] genesis inputs identical on every node (files, multi-sig list/quorum, all parameters)
 - [ ] LFS restore reached `LFS state is successfully restored`, then `Running`
-- [ ] `/api/status` shows `sync` null and `degraded` `normal`
+- [ ] `/api/status` shows `sync` null and `acceptsDeploys` true (`degraded` may be `throttled` on an
+      undersized host; that is the advisory word, not a refusal)
 - [ ] `/api/last-finalized-block` advances
 - [ ] for a validator: synced before bonding, trust from a funded key, self-bond, active after a boundary
 - [ ] the genesis hash and node ids are recorded beside the genesis files

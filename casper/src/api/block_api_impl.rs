@@ -30,8 +30,8 @@ use rchain_rspace::trace::event::Event as REvent;
 use rchain_shared::base16;
 
 use crate::api::block_api::{
-    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployerInfo,
-    FinalityHealth, ProposeHealth, ProposerHealth, ShardHealthEntry,
+    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployPoolStats,
+    DeployerInfo, FinalityHealth, ProposeHealth, ProposerHealth, ShardHealthEntry,
 };
 use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
@@ -62,6 +62,11 @@ pub type ProposeFunction = Box<
 pub type NetworkStatusFn =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = NetworkStatus> + Send + 'static>> + Send + Sync>;
 
+/// **The pending-work relay** (Law 86e). Called after a deploy is admitted, with the signed deploy;
+/// the implementation offers it to peers and returns immediately (it owns any spawned task). It is
+/// an `Fn`, not an `async fn`, so the deploy response does not wait on a peer round-trip.
+pub type RelayFunction = Arc<dyn Fn(SignedDeployData) + Send + Sync>;
+
 /// The concrete `BlockApi` (port of `BlockApiImpl`).
 pub struct BlockApiImpl {
     dag: Arc<dyn BlockDagStorage>,
@@ -88,6 +93,8 @@ pub struct BlockApiImpl {
     /// **This shard's finality-and-merge health** (W-N10-02, W-N10-03) — the cell the validation path
     /// writes, one per shard, beside `propose_health` and for the same reason. See [`ShardHealth`].
     shard_health: ShardHealth,
+    /// The pending-work relay, when the operator enabled it (Law 86e). `None` admits locally only.
+    relay: Option<RelayFunction>,
 }
 
 /// The messages at or above `lowest_height`, in the shape the DAG view renders.
@@ -284,6 +291,7 @@ impl BlockApiImpl {
         system_public_keys: BTreeSet<Vec<u8>>,
         propose_health: ProposeHealth,
         shard_health: ShardHealth,
+        relay: Option<RelayFunction>,
     ) -> Self {
         BlockApiImpl {
             dag,
@@ -306,6 +314,7 @@ impl BlockApiImpl {
             system_public_keys,
             propose_health,
             shard_health,
+            relay,
         }
     }
 
@@ -480,6 +489,16 @@ impl BlockApi for BlockApiImpl {
         Ok(pooled.into_values().collect())
     }
 
+    async fn deploy_pool_stats(&self) -> ApiErr<DeployPoolStats> {
+        let (deploys, bytes) = self.dag.deploy_pool_stats().await?;
+        Ok(DeployPoolStats {
+            deploys,
+            max_deploys: crate::dag::MAX_POOLED_DEPLOYS,
+            bytes,
+            max_bytes: crate::dag::MAX_POOLED_DEPLOY_BYTES,
+        })
+    }
+
     async fn capabilities(&self) -> Capabilities {
         Capabilities {
             autopropose: self.auto_propose,
@@ -594,6 +613,15 @@ impl BlockApi for BlockApiImpl {
             Ok(id) => Ok(format!("Success!\nDeployId is: {}", base16::encode(&id))),
             Err(e) => Err(e.0),
         };
+
+        // **Offer admitted work to peers before proposing** (Law 86e). The deploy is already in
+        // this pool; the relay copies it to peers, so a constrained node that cannot execute it
+        // still lets a properly equipped validator include it. The callback spawns its own task.
+        if r.is_ok() {
+            if let Some(relay) = &self.relay {
+                relay(deploy.clone());
+            }
+        }
 
         // Auto-propose if enabled and a trigger is available.
         if self.propose_on_deploy || self.auto_propose {

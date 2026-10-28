@@ -382,6 +382,45 @@ pub struct ShardHealthEntry {
     pub finality: FinalityHealth,
 }
 
+/// **A deploy refusal that is a bound, not a malformed request** (Law 86a). The pool's count/byte
+/// bounds, a deployer's share and the per-deployer rate are all "come back", not "your request is
+/// wrong"; the HTTP and gRPC surfaces must say so with 429/`RESOURCE_EXHAUSTED` and a `Retry-After`,
+/// never with a 400. The strings are the pool's own (`casper/src/dag.rs`), and this is the one place
+/// the two surfaces agree on the classification.
+pub fn deploy_refusal_is_bounded(message: &str) -> bool {
+    message.starts_with("deploy pool is full")
+        || message.contains("holds its share of the deploy pool")
+        || message.contains("deploy rate limit exceeded")
+}
+
+/// **The deploy pool's capacity**, as the public status surface reads it (Law 86a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeployPoolStats {
+    pub deploys: usize,
+    pub max_deploys: usize,
+    pub bytes: usize,
+    pub max_bytes: usize,
+}
+
+impl DeployPoolStats {
+    /// Room under both the count and the term-byte bound. Per-deployer shares and the rate limiter
+    /// are submitter bounds, not pool capacity; a node with room may still refuse one deployer.
+    pub fn has_room(&self) -> bool {
+        self.deploys < self.max_deploys && self.bytes < self.max_bytes
+    }
+}
+
+impl Default for DeployPoolStats {
+    fn default() -> Self {
+        DeployPoolStats {
+            deploys: 0,
+            max_deploys: usize::MAX,
+            bytes: 0,
+            max_bytes: usize::MAX,
+        }
+    }
+}
+
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
 /// propose via the runtime.
 #[async_trait]
@@ -394,6 +433,13 @@ pub trait BlockApi: Send + Sync {
 
     /// The currently-pooled (not-yet-included) deploys.
     async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>>;
+
+    /// **The pool's capacity, for the public `acceptsDeploys` answer** (Law 86a). Admission is the
+    /// pool's decision, so the status surface reads the pool's own bounds rather than the advisory
+    /// resource word. The default is unbounded for stubs that model an API, not a pool.
+    async fn deploy_pool_stats(&self) -> ApiErr<DeployPoolStats> {
+        Ok(DeployPoolStats::default())
+    }
 
     /// The node's block-creation mode + deploy-gating capabilities.
     async fn capabilities(&self) -> Capabilities;

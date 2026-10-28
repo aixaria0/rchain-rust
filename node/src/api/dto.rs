@@ -123,13 +123,27 @@ pub struct PublicStatus {
     /// Dev mode is on. Public: it is a configuration fact, and a client that must not be handed
     /// dev-only answers has to be able to see it.
     pub dev_mode: bool,
-    /// **The sampled resource state** (A1): `normal` while the host facts are readable, `unavailable`
-    /// when they are not. A word, not a number — numeric host data stays on the operator surface. The
-    /// pressure states (`throttled`/`critical`) arrive with the fallback-state unit.
+    /// **The sampled resource state, advisory** (A1, Law 86): `normal` while the host facts are
+    /// readable, `unavailable` when they are not, and `throttled`/`critical` when the fallback state
+    /// machine latches them. It is a word, not a number, and it no longer gates admission: a throttled
+    /// node with a free pool accepts work.
     pub degraded: String,
-    /// Whether the node is accepting deploys right now. True until the admission/fallback units land;
-    /// the field is the contract, and a node under pressure will make it false.
+    /// Whether the deploy pool has room under its count and term-byte bounds (Law 86a). A throttled
+    /// node with a free slot accepts; memory pressure bounds execution concurrency, not admission.
     pub accepts_deploys: bool,
+    /// The pool's depth and bounds, so a client can see *why* `acceptsDeploys` is false.
+    pub pool: DeployPoolStatus,
+}
+
+/// **The deploy pool's public capacity answer** (Law 86a). Counts and bytes only; per-deployer keys
+/// and ages stay on the operator surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployPoolStatus {
+    pub deploys: usize,
+    pub bytes: usize,
+    pub max_deploys: usize,
+    pub max_bytes: usize,
 }
 
 /// **The shard's autopropose halt**, beside the episode count the surface already carried — which
@@ -376,6 +390,18 @@ pub struct ResourceStatusDto {
     pub sample_age_ms: u64,
     /// Which readers contributed, e.g. `meminfo+cgroup+disk`.
     pub source: String,
+    /// **The execution permit budget** (Law 86d): how many concurrent executions the headroom pays
+    /// for, and the explore share. Limits only; the in-flight count is a live node quantity.
+    pub execution_permits: usize,
+    pub explore_permits: usize,
+    /// The node's own resident set (MiB), from `/proc/self/status`; 0 when unreadable.
+    pub rss_mb: u64,
+    /// The cgroup-aware headroom and the three thresholds an operator needs to read `degraded`
+    /// without inferring them (issue #477): critical, throttle and recovery floors.
+    pub headroom_mb: u64,
+    pub critical_floor_mb: u64,
+    pub throttle_floor_mb: u64,
+    pub recovery_floor_mb: u64,
 }
 
 /// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).
@@ -520,6 +546,7 @@ mod tests {
             dev_mode: true,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: DeployPoolStatus::default(),
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

@@ -470,6 +470,14 @@ pub trait BlockDagStorage: Send + Sync {
     async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String>;
 
     async fn contains_deploy_in_pool(&self, deploy_id: &DeployId) -> Result<bool, String>;
+
+    /// The pool's current count and term bytes, for the status surface's capacity answer. A storage
+    /// that does not track a pool returns the default (an empty, unbounded-looking pool), which is
+    /// what a stub API means by "not the thing that is full". Law 86a: admission depends on the pool's
+    /// bounds, and the status surface must read the same bounds.
+    async fn deploy_pool_stats(&self) -> Result<(usize, usize), String> {
+        Ok((0, 0))
+    }
 }
 
 /// A reservation of the submitter's place in the deploy pool, from admission until the deploy is

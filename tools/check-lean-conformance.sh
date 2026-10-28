@@ -289,6 +289,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       stake)    test_name="lean_stake_corpus";     crate="rchain-node" ;;
       block)    test_name="lean_block_corpus";     crate="rchain-node" ;;
       liveness) test_name="lean_liveness_corpus";  crate="rchain-node" ;;
+      admission) test_name="lean_admission_corpus"; crate="rchain-casper" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;
@@ -296,7 +297,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       syrup)    test_name="lean_syrup_corpus";    crate="rchain-node" ;;
       *)        fail "corpus spec/conformance/$layer.tsv has no consumer mapping"; continue ;;
     esac
-    if [[ ! -f "$ROOT/rholang/tests/$test_name.rs" && ! -f "$ROOT/node/tests/$test_name.rs" ]]; then
+    if [[ ! -f "$ROOT/rholang/tests/$test_name.rs" && ! -f "$ROOT/node/tests/$test_name.rs" && ! -f "$ROOT/casper/tests/$test_name.rs" ]]; then
       fail "spec/conformance/$layer.tsv exists but no consumer test ($test_name) does — the corpus has no consumer"
       continue
     fi

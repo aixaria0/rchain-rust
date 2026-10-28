@@ -39,14 +39,15 @@ jemalloc purge and the #117 retention test; the devnet/Docker memory ceiling.
 | B31 | start-up host facts + chain-length policy floor + data-dir/cgroup checks, warn/refuse with an explicit override | A2 |
 | B32 | ringfence and co-location advisories, operator guidance | A2 / [ringfence page](../node/resource-ringfence.md) |
 | B33 | independent watchdog thread with hysteresis and OOM-event observation | A1/C |
-| B34 | memory-aware HTTP `503` and gRPC `resource_exhausted` before decode/execution | B |
-| B35 | bounded in-flight permits (reuse #426; never a second semaphore) | B |
+| B34 | **real bounds only**: pool count/bytes/share/rate → HTTP **429** + `Retry-After`, gRPC `RESOURCE_EXHAUSTED`; memory is never a 503 (Law 86a) | B / #477 |
+| B35 | headroom-derived execution and exploration permit budgets: execution takes the floor, exploration the surplus; 429 when spent (Law 86d) | B / #477 |
 | B36 | atomic duplicate reservation + byte-based pool accounting | B |
 | B37 | `Normal → Throttled → Critical` (+`Unavailable`) fallback state machine with propose/attest gates; `Halt` remains the operator/integrity `HaltRecord`, never automatic on pressure | C |
-| B38 | status/metrics visibility: public `degraded`/`acceptsDeploys`, operator headroom/provenance | A1 |
+| B38 | status visibility: public `acceptsDeploys` = pool capacity, `degraded` = advisory word; operator headroom/floors/recovery and permit limits (resource gauges on `/metrics` are owed) | A1 / #477 |
 | B39 | idempotent rewind cleanup + start-up derived-index audit/repair | D2 |
 | B40 | `CURRENT_ROOT` published only after block acceptance | D1 |
 | B41 | memory-pressure and restart/replay evidence arms | E |
+| B42 | **pending-work relay**: an admitted deploy is copied to peers' deploy service, so a constrained node does not bottleneck the network; opt-in, bounded seen set (Law 86e) | #477 |
 
 **Consequences:** an accepted deploy that is not durable or whose acceptance is ambiguous; API/read
 timeouts and clients losing the chain; height divergence and finality lag; a joiner that cannot sync; a
@@ -61,26 +62,28 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | ID | Threat | Existing barrier | New barrier | Consequence | Residual | Evidence |
 |---|---|---|---|---|---|---|
 | H-RS-01 | T-RS-1 a host below the replay floor starts and OOMs during the DAG rebuild | none | B31 | C-RS-1, C-RS-5 | the policy floor is overridable and is not a measured curve above ~5k blocks | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
-| H-RS-02 | T-RS-2 a burst of concurrent decoded/executed deploys and explores | B20 (429), bounded queues | B33, B34, B35 | C-RS-2 | a fast spike can beat the sample interval; body limits bound it | node/src/web/http.rs::a_deploy_is_refused_503_before_the_body_is_decoded |
+| H-RS-02 | T-RS-2 a burst of concurrent decoded/executed deploys and explores | B20 (429), bounded queues | B33, B34, B35 | C-RS-2 | a fast spike can beat the sample interval; the body/term caps and the pool byte bound still hold | node/src/web/http.rs::a_bounded_deploy_refusal_is_429_with_retry_after |
 | H-RS-03 | T-RS-3 pool amplification: count-only caps, duplicate re-parse, body/term asymmetry | B21, B22 | B36 | C-RS-1 | the HTTP body cap still allows a 2 MiB decode before the 64 KiB term bound | casper/src/dag.rs::a_pool_at_its_byte_cap_refuses_before_the_store |
-| H-RS-04 | T-RS-4 the replay/merge peak exceeds headroom mid-run | none | B33, B37 | C-RS-3 | replay is superlinear and unmeasured at target height | node/src/resources/fallback.rs::critical_stops_production |
+| H-RS-04 | T-RS-4 the replay/merge peak exceeds headroom mid-run | none | B33, B35, B37 | C-RS-3 | replay is superlinear and unmeasured at target height; the permit budget bounds concurrent execution, not replay | node/src/resources/fallback.rs::critical_stops_production |
 | H-RS-05 | T-RS-5 data-dir/disk exhaustion; LMDB map full | LMDB map sizes, sparse reservations | B31 | C-RS-3 | free space is checked at start, not bounded at runtime | node/src/resources/disk.rs::a_missing_data_dir_is_an_error_not_zero_free |
 | H-RS-06 | T-RS-6 no cgroup/ringfence; external host pressure or kernel OOM | devnet memory ceiling (deployment only) | B32, B33, B38 | C-RS-5 | the node cannot set cgroup limits or choose the OOM victim | node/src/resources/cgroup.rs::parses_v2_memory_cpu_and_events |
 | H-RS-07 | T-RS-7 co-located validators: one host loss defeats quorum | none | B32, B38 (advisory) | C-RS-5 | host topology is the operator's; containers may hide siblings | node/src/resources/colocation.rs::counts_only_processes_named_rnode |
 | H-RS-08 | T-RS-8 CPU-quota starvation; replay/finality lag | `available_parallelism` (workers) | B31, B33 | C-RS-3 | worker capping is deferred; the quota is only reported | node/src/resources/cgroup.rs::parses_v1_memory_and_cpu_limits |
-| H-RS-09 | T-RS-9 a degraded node still accepts work or advertises healthy | `is_node_read_only` (config) | B34, B37, B38 | C-RS-1, C-RS-5 | one status snapshot is not an independent read | node/src/resources/fallback.rs::normal_to_throttled_needs_hysteresis |
+| H-RS-09 | T-RS-9 a degraded node advertises that it is healthy, or silently loses work | `is_node_read_only` (config) | B34, B37, B38 | C-RS-1, C-RS-5 | accepting work under pressure is **correct** now; the hazard is a false readiness claim or a silent drop, and one status snapshot is not an independent read | node/src/api/conversion.rs::degraded_is_advisory_and_accepts_deploys_is_pool_capacity |
 | H-RS-10 | T-RS-10 a restart replays into the same OOM | supervisor restart | B31, B32 | C-RS-6 | the supervisor can always restart anyway; the preflight must refuse first | spec/audit/evidence/n420-restart-20261024/restart.json |
 | H-RS-11 | T-RS-11 ambiguous acceptance, an orphan root or a stale derived index | root-pair write, reset bracket | B39, B40 | C-RS-1 | no cross-store WAL; D1/D2 reduce and repair the known windows | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
-| H-RS-12 | T-RS-12 peers cannot route around a degraded validator | none | none — out of node-local scope | C-RS-4 | needs #427/M3 protocol work and peer failover | owed: #427/#428 M3 |
+| H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port, not a protocol-level routing guarantee; the four-validator relay arm records a critical node's deploy included by a healthy peer, and the shared-host cgroup topology remains owed | spec/audit/evidence/n477-relay-arm-20261028/README.md |
 
 ## Barrier independence
 
 These are stated rather than assumed, because several barriers share an input or a surface:
 
-- **B33/B34 share one signal.** If the watchdog is starved, admission cannot see pressure. Mitigation:
-  sample on a dedicated `std::thread`, and treat a stale sample as `Unavailable`/throttled, never normal.
-- **B34/B35 are two gates on one path.** Admit only if headroom **and** a permit are available; a permit
-  is a concurrency bound, not a memory bound, and headroom is not a concurrency bound.
+- **B33/B35 share one signal.** If the watchdog is starved, the permit budgets cannot see pressure;
+  admission still works (it reads the pool), and a stale sample is advisory. The watchdog runs on a
+  dedicated `std::thread` so the executor it protects cannot starve it.
+- **B34/B35 are different questions on one path.** B34 admits into the bounded pool (count/bytes/
+  share/rate); B35 bounds how much executes at once. A deploy is admitted by B34 and executed under
+  B35; neither is the other, and memory is an input only to B35.
 - **B31 is a start-up barrier only**; B33–B37 cover runtime.
 - **B32 is advisory only.** The node cannot set cgroups, prevent co-location or choose the OOM victim;
   the operator owns the ringfence ([ringfence page](../node/resource-ringfence.md)).

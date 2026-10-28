@@ -28,6 +28,7 @@ use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::block_metadata_store::BlockMetadataStore;
 use crate::merging::BlockIndex;
+use crate::pool::{self, PoolError, PoolLimits};
 
 /// Upper bound on the number of distinct deploys held in the pending pool. Reached by the
 /// `add_deploy` chokepoint so a remote flood cannot exhaust the deploy store (documented Scala
@@ -1597,24 +1598,30 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
     /// read and the write and the bound is therefore exact. Making the early check the only one would
     /// reintroduce the C113 overshoot the lock exists to close.
     async fn admit_deploy(&self, deployer: &[u8]) -> Result<DeployPermit, String> {
-        if !self.deploy_rate.allow(deployer) {
-            return Err("deploy rate limit exceeded for this deployer".to_string());
+        let limits = PoolLimits {
+            max_deploys: MAX_POOLED_DEPLOYS,
+            max_bytes: MAX_POOLED_DEPLOY_BYTES,
+            per_deployer: MAX_POOLED_DEPLOYS_PER_DEPLOYER,
+        };
+        let rate_ok = self.deploy_rate.allow(deployer);
+        let count = self.deploy_store.count().await?;
+        // **The policy is shared with the conformance corpus** (`casper/src/pool.rs`): a free slot
+        // admits, and each real bound refuses by name. The count here is an early read; the exact
+        // count is re-checked under the admission lock in `commit_deploy`.
+        let held = {
+            let pooled = self.pooled_by_deployer.lock().unpoison();
+            pooled.get(deployer).copied().unwrap_or(0)
+        };
+        if let Err(e) = pool::check_admission(&limits, count, held, rate_ok) {
+            return Err(e.to_string());
         }
 
-        // The check and the claim are one operation under the map's own lock, so two concurrent
-        // admits for one deployer cannot both see the last place.
+        // The claim is one operation under the map's own lock, so two concurrent admits for one
+        // deployer cannot both see the last place.
         {
             let mut pooled = self.pooled_by_deployer.lock().unpoison();
             let held = pooled.get(deployer).copied().unwrap_or(0);
-            if held >= MAX_POOLED_DEPLOYS_PER_DEPLOYER {
-                return Err("this deployer holds its share of the deploy pool".to_string());
-            }
             pooled.insert(deployer.to_vec(), held + 1);
-        }
-
-        if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
-            release_deployer_slot(&self.pooled_by_deployer, deployer);
-            return Err("deploy pool is full".to_string());
         }
         Ok(DeployPermit::holding(
             self.pooled_by_deployer.clone(),
@@ -1644,23 +1651,31 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         // its own row while `permit.commit()` kept the second per-deployer place and the second term
         // bytes, and the single eventual release returned one of each — a permanent lockout of the
         // deployer's share and a byte budget that never drains.
-        if self.contains_deploy_in_pool(&deploy.sig).await? {
-            return Err(format!(
-                "deploy {} is already in the pool",
-                rchain_shared::base16::encode(&deploy.sig)
-            ));
-        }
-        if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
-            return Err("deploy pool is full".to_string());
-        }
+        let limits = PoolLimits {
+            max_deploys: MAX_POOLED_DEPLOYS,
+            max_bytes: MAX_POOLED_DEPLOY_BYTES,
+            per_deployer: MAX_POOLED_DEPLOYS_PER_DEPLOYER,
+        };
+        let duplicate = self.contains_deploy_in_pool(&deploy.sig).await?;
+        let count = self.deploy_store.count().await?;
         let term_bytes = deploy.data.term.len();
         let in_use = self
             .pooled_term_bytes
             .load(std::sync::atomic::Ordering::Relaxed);
-        if in_use.saturating_add(term_bytes) > MAX_POOLED_DEPLOY_BYTES {
-            return Err(format!(
-                "deploy pool is full: {in_use} of {MAX_POOLED_DEPLOY_BYTES} term bytes in use"
-            ));
+        match pool::check_commit(&limits, count, in_use, term_bytes, duplicate) {
+            Ok(()) => {}
+            Err(PoolError::Duplicate) => {
+                return Err(format!(
+                    "deploy {} is already in the pool",
+                    rchain_shared::base16::encode(&deploy.sig)
+                ))
+            }
+            Err(PoolError::ByteFull) => {
+                return Err(format!(
+                    "deploy pool is full: {in_use} of {MAX_POOLED_DEPLOY_BYTES} term bytes in use"
+                ))
+            }
+            Err(e) => return Err(e.to_string()),
         }
         self.deploy_store
             .put(&[(deploy.sig.clone(), deploy)])
@@ -1696,6 +1711,14 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
 
     async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String> {
         self.deploy_store.to_map().await
+    }
+
+    async fn deploy_pool_stats(&self) -> Result<(usize, usize), String> {
+        Ok((
+            self.deploy_store.count().await?,
+            self.pooled_term_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
     }
 
     async fn contains_deploy_in_pool(&self, deploy_id: &DeployId) -> Result<bool, String> {

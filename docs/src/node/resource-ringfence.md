@@ -4,10 +4,11 @@ A node cannot set its own memory, CPU or disk limits — that is the operator's 
 that is not bounded competes with everything else on the host for memory. The #420 incident is the
 worked example: two validators on each 1 GB host, a deploy burst, host memory exhausted, and the kernel
 chose which processes died. This page is the operator half of the
-[resource safety case](../spec/resource-safety-case.md). The start-up preflight is shipped (unit A2);
-memory-aware admission and the pressure/fallback states are tracked there (HAZOP study node U17) and are
-**not yet shipped**, so the limits on this page are still the runtime barrier between a busy node and the
-host.
+[resource safety case](../spec/resource-safety-case.md). The start-up preflight (A2), the fallback state
+machine and the headroom permit budget are shipped (Law 86); memory pressure bounds **execution
+concurrency**, not admission, so the limits on this page remain the runtime barrier between a busy node
+and the host. A node on an undersized host keeps accepting and relaying work; it does not become
+healthy.
 
 One validator per host is the default. Two validators may share a host only when the host is sized for
 both and the failure-domain risk is accepted: a host loss then removes **both** validators' stake at
@@ -115,18 +116,22 @@ df -h /var/lib/rnode
 ```
 
 The external `testnet.rhobot.net/health` snapshot carries `mem_available_mb`/`disk_free_mb`; the node's
-own `/api/status` now carries `degraded`/`acceptsDeploys`, and `/api/status/operator` carries the sampled
-headroom with its source and sample age (unit A1). The pressure state machine that moves `degraded` on
-its own is unit C and has not landed, so today `degraded` reports whether the host facts could be read,
-not a throttle state. Neither surface is a certificate: a `degraded = normal` sample means the node is
-not reporting pressure at that instant, not that it is healthy.
+own `/api/status` carries `degraded`/`acceptsDeploys`, and `/api/status/operator` carries the sampled
+headroom, floors, recovery boundary, permit limits, source and sample age (unit A1).
+
+**`acceptsDeploys` is the deploy pool's count and term-byte capacity, not a memory reading** (Law 86).
+A throttled node with a free pool slot accepts; `degraded` is the fallback state machine's **advisory**
+word, and it is not a readiness signal. A **429 with `Retry-After`** is a real bound — a full pool, a
+deployer share or rate, or the explore permit budget — and the work can be retried; a **503** is a node
+that cannot serve at all. Neither surface is a certificate: a `degraded = normal` sample means the node
+was not reporting pressure at that instant, not that it is healthy.
 
 ## What the node cannot do
 
 The node cannot raise a cgroup limit, prevent co-location, or choose the kernel's OOM victim. It can
-detect a limit, refuse to start below a policy floor, shed work before the limit, degrade to read-only,
-and report the state and the reason. Those are the safety-case barriers B31–B41; this page is the
-operator barrier they depend on.
+detect a limit, refuse to start below a policy floor, bound execution concurrency with the headroom
+permit budget, hold pending work in the pool, relay it to peers, and report the state and the reason.
+Those are the safety-case barriers B31–B42; this page is the operator barrier they depend on.
 
 ---
 

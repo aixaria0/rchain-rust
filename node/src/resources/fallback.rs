@@ -60,11 +60,6 @@ impl ResourceState {
         }
     }
 
-    /// Refuse new deploy/explore work? Every state but `Normal`.
-    pub fn refuses_ingress(self) -> bool {
-        self != ResourceState::Normal
-    }
-
     /// Stop proposing and attesting? Only the states where the node is not fit to produce.
     pub fn stops_production(self) -> bool {
         matches!(self, ResourceState::Critical | ResourceState::Unavailable)
@@ -93,6 +88,13 @@ pub fn critical_floor_mb(sample: &super::state::ResourceSnapshot) -> u64 {
 /// The floor at which the node announces `Throttled`: one margin above the critical floor.
 pub fn throttle_floor_mb(sample: &super::state::ResourceSnapshot) -> u64 {
     critical_floor_mb(sample).saturating_add(margin_mb(sample))
+}
+
+/// **The headroom at which the node may leave `Throttled`**: the throttle floor plus one margin — the
+/// same exit rule `observe` applies after three good samples. Exposed so an operator can see how far
+/// below recovery a node is, rather than inferring it from a word (issue #477).
+pub fn recovery_floor_mb(sample: &super::state::ResourceSnapshot) -> u64 {
+    throttle_floor_mb(sample).saturating_add(margin_mb(sample))
 }
 
 /// The hysteresis tracker. Owned by the watchdog thread and read through the snapshot.
@@ -286,7 +288,6 @@ mod tests {
         );
         fb.observe(&low, 1_001);
         assert_eq!(fb.state(), ResourceState::Throttled);
-        assert!(fb.state().refuses_ingress());
         assert!(!fb.state().stops_production());
     }
 
@@ -328,7 +329,6 @@ mod tests {
         observe_n(&mut fb, &sample(100), ENTER_SAMPLES, 1_000);
         assert_eq!(fb.state(), ResourceState::Critical);
         assert!(fb.state().stops_production());
-        assert!(fb.state().refuses_ingress());
     }
 
     #[test]

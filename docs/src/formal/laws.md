@@ -1,6 +1,6 @@
 # The laws — what they guarantee
 
-rholo's behaviour is pinned by **<!-- counts:laws -->85 laws<!-- counts:end -->** — one invariant per layer of
+rholo's behaviour is pinned by **<!-- counts:laws -->86 laws<!-- counts:end -->** — one invariant per layer of
 the system. A law says what must be true of the node (or of the model it is proved over), why it matters,
 and what would falsify it. This page is the **reading**: one line per law, grouped by layer. The checked
 register is the authority for status, declarations and falsifiers; where this page and the register
@@ -8,11 +8,11 @@ disagree, the register is right.
 
 > **How to read a law number**
 >
-> - **`Law N`** — a stable number, 1–85. Numbers are never reused; a new law takes the next one.
+> - **`Law N`** — a stable number, 1–86. Numbers are never reused; a new law takes the next one.
 > - **`Law Nx`** — a *clause* of a law whose parts have different proofs or statuses (`16a`, `16b`, …).
->   <!-- counts:clause-laws -->16<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
-> - **Entry** — one row of the register. **<!-- counts:laws -->85 laws<!-- counts:end --> = <!-- counts:entries -->109 entries<!-- counts:end -->**, and the
->   status counts are per entry. Laws 14 and 16 have clauses on both sides of `proved-tied`/`proved-model`,
+>   <!-- counts:clause-laws -->17<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
+> - **Entry** — one row of the register. **<!-- counts:laws -->86 laws<!-- counts:end --> = <!-- counts:entries -->114 entries<!-- counts:end -->**, and the
+>   status counts are per entry. Laws 14, 16 and 86 have clauses on both sides of `proved-tied`/`proved-model`,
 >   which is why the number of *laws* proved is smaller than the sum of the two status columns.
 > - **`C###`** — an audit finding (`spec/audit/passes.md`), never a law. HAZOP rows are `F-U…`/`H-U…`,
 >   wargame rows `W-N…`, and an audit pass is `§N`. They are different namespaces.
@@ -43,6 +43,7 @@ disagree, the register is right.
 | 72–77 | **Durability** | the reset bracket, its request, checkpoints, dependent actions, the stop, the reset's projection |
 | 78–79 | **Genesis** | the developer allocation and its vesting schedule |
 | 80–85 | **The join and the chain's identity** | root publication, the verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state |
+| 86 | **Admission and the pool** | the pool is the throttle: a bounded queue, no silent loss, independent work in parallel, one permit progresses, pending work relays |
 
 ## Rholang — the language (Laws 1–6)
 
@@ -212,24 +213,34 @@ catalog does not silently shrink.
 | 84 | The genesis anchor is a function of the genesis inputs: the first bond signs and is the sender, and any other key refuses to create a genesis. |
 | 85 | The finalized fringe's root is a **claim about a fringe** (the one a member finalises), not a field of the named block — so it cannot be pinned to that block's pre/post-state. |
 
+## Admission and the pool (Law 86)
+
+| Law | What it guarantees |
+|---|---|
+| 86a | Admission is a bounded queue: a free slot admits, a full pool refuses with a reason; the memory word is not an input to the decision. |
+| 86b | No admitted work is silently lost: a step advances a status and never removes the row; a refusal changes nothing. |
+| 86c | Independent work commutes and may run concurrently (disjoint **closures**, not footprints); conflicting work serialises. |
+| 86d | One permit progresses; the permit budget bounds the batch, never the admission answer. |
+| 86e | Pending work is relocatable: a relay copies to a peer and leaves the sender's row intact. |
+
 ## Proved, assumed, and open
 
 The register classifies every entry; the words mean different things:
 
 - **proved-tied** — proved, *and* tied to the node by a conformance corpus the Rust consumer runs.
-  <!-- counts:proved-tied-entries -->23<!-- counts:end --> entries.
+  <!-- counts:proved-tied-entries -->25<!-- counts:end --> entries.
 - **proved-model** — proved about a model that a person keeps in sync with the Rust.
-  <!-- counts:proved-model-entries -->77<!-- counts:end --> entries.
+  <!-- counts:proved-model-entries -->80<!-- counts:end --> entries.
 - **axiom-by-design** — a primitive assumed rather than proved (cryptography): <!-- counts:axioms -->10 axioms<!-- counts:end --> across the tree.
 - **owed / deferred** — stated, with the proof or the decision outstanding; **open** — a recorded design
   question, not a proof gap; **vacuous** — proved but restating its own definition (kept visible, never
   counted as coverage); **orphaned** — out of scope (the Rosette rows); **retired** — the port has no
   rule of that shape, evidenced by naming the code that was read.
 
-The count arithmetic, in one sentence: **<!-- counts:laws -->85 laws<!-- counts:end -->, <!-- counts:entries -->109 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->16<!-- counts:end --> laws
-carry clauses; **<!-- counts:proved-laws -->78<!-- counts:end --> laws are proved in at least one clause**, split over entries as
-<!-- counts:proved-tied-entries -->23<!-- counts:end --> tied and <!-- counts:proved-model-entries -->77<!-- counts:end --> over the model. The two status columns overlap on
-laws 14 and 16, which is why they do not add up to the law-level union. No total on this page is
+The count arithmetic, in one sentence: **<!-- counts:laws -->86 laws<!-- counts:end -->, <!-- counts:entries -->114 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->17<!-- counts:end --> laws
+carry clauses; **<!-- counts:proved-laws -->79<!-- counts:end --> laws are proved in at least one clause**, split over entries as
+<!-- counts:proved-tied-entries -->25<!-- counts:end --> tied and <!-- counts:proved-model-entries -->80<!-- counts:end --> over the model. The two status columns overlap on
+laws 14, 16 and 86, which is why they do not add up to the law-level union. No total on this page is
 hand-written: the spans are emitted from the register.
 
 ## Where the detail lives

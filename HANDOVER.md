@@ -50,6 +50,12 @@ refuses a page that says otherwise.
 (C339, Law 85's fringe-state residual), 372 `done`, 1 `in progress` (C301)**. The 2026-10-14 line
 above is the record as it stood then, not a description of the tree.
 
+**Correction, 2026-10-28, after the #477 close-out.** The register reads **375 findings — 0 `todo`,
+373 `done`, 2 `in progress` (C301, C339)**. C340 is the admission row (Law 86) and pass 142 is its
+account. The admission and relay arms are recorded in
+`spec/audit/evidence/n477-live-arm-20261028/` and `n477-relay-arm-20261028/`; the public testnet's
+shared-host cgroup topology remains owed and is named there.
+
 **Correction, 2026-10-09, after this handover was written.** §2's first entry below — "C215's fix is
 unproven, and the proof attempt is the evidence" — was true when written and is not any more. The
 full-path test was made to bite (the shortfall was `incompatible_with_final`'s asymmetry, and the

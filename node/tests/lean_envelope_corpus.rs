@@ -27,8 +27,8 @@ use rchain_models::casper::protocol::deploy_service::{
     BondInfo, DeployInfo, FinalityAttestation, LightBlockInfo, RawBlock,
 };
 use rchain_node::api::dto::{
-    ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, HaltStatusDto, NodeCapabilities,
-    OperatorStatus, PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
+    DeployPoolStatus, ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, HaltStatusDto,
+    NodeCapabilities, OperatorStatus, PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
@@ -266,6 +266,12 @@ fn dto_by_name(name: &str) -> Value {
             dev_mode: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: DeployPoolStatus {
+                deploys: 0,
+                bytes: 0,
+                max_deploys: 10_000,
+                max_bytes: 64 * 1024 * 1024,
+            },
         }),
         // The operator envelope, which is the public one flattened plus its own keys (W-N3-01). Both
         // rows are in the catalog because both are served, and a row that was not would be the
@@ -289,6 +295,12 @@ fn dto_by_name(name: &str) -> Value {
                 dev_mode: false,
                 degraded: "normal".to_string(),
                 accepts_deploys: true,
+                pool: DeployPoolStatus {
+                    deploys: 0,
+                    bytes: 0,
+                    max_deploys: 10_000,
+                    max_bytes: 64 * 1024 * 1024,
+                },
             },
             admin_http: false,
             consecutive_self_validation_failures: 0,

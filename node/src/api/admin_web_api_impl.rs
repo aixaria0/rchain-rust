@@ -84,7 +84,13 @@ impl AdminWebApi for AdminWebApiImpl {
         // **Every member shard's health** (W-N10-04), which is what makes a non-primary shard's halt
         // visible: the flat fields above are the primary's, and only this map reaches the others.
         let shards = self.block_api.health_by_shard().await;
-        let core = super::conversion::to_public_status(&status, &caps, &self.resources.snapshot());
+        let pool = self
+            .block_api
+            .deploy_pool_stats()
+            .await
+            .map_err(super::dto::BlockApiException)?;
+        let core =
+            super::conversion::to_public_status(&status, &caps, &self.resources.snapshot(), &pool);
         Ok(super::conversion::to_operator_status(
             core,
             &caps,

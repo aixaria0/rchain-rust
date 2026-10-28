@@ -24,6 +24,10 @@ pub struct ResourceSnapshot {
     pub cgroup_limit_mb: Option<u64>,
     pub cgroup_current_mb: Option<u64>,
     pub cgroup_oom_kills: u64,
+    /// **This process's resident set**, in MiB, from `/proc/self/status` `VmRSS`; 0 when it could not
+    /// be read. The host's `MemAvailable` is the admission input; this is the node's own share, which
+    /// is what an operator needs to tell the node from everything else on the box (issue #477).
+    pub rss_mb: u64,
     /// `(quota, period)` from `cpu.max`/`cpu.cfs_quota_us`.
     pub cpu_quota: Option<(u64, u64)>,
     pub data_dir_free_mb: Option<u64>,
@@ -52,6 +56,7 @@ impl Default for ResourceSnapshot {
             cgroup_limit_mb: None,
             cgroup_current_mb: None,
             cgroup_oom_kills: 0,
+            rss_mb: 0,
             cpu_quota: None,
             data_dir_free_mb: None,
             rnode_processes: 0,
@@ -71,6 +76,22 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// This process's resident set in MiB, from `/proc/self/status` `VmRSS`. `None` when the file is
+/// unreadable (a non-Linux host, a hardened `/proc`), which is not an error: the host facts still
+/// carry the admission signal, and the operator status says the figure is unavailable.
+pub fn read_rss_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_rss_kb(&status).map(|kb| kb / 1024)
+}
+
+fn parse_rss_kb(status: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        line.strip_prefix("VmRSS:")
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|v| v.parse().ok())
+    })
+}
+
 fn gather(data_dir: &Path) -> ResourceSnapshot {
     let mem = meminfo::read_meminfo().ok();
     let cg = cgroup::read_cgroup_facts();
@@ -85,6 +106,10 @@ fn gather(data_dir: &Path) -> ResourceSnapshot {
     if disk.is_some() {
         source.push("disk");
     }
+    let rss = read_rss_mb();
+    if rss.is_some() {
+        source.push("proc-self");
+    }
     ResourceSnapshot {
         state: if mem.is_some() {
             "normal"
@@ -97,6 +122,7 @@ fn gather(data_dir: &Path) -> ResourceSnapshot {
         cgroup_limit_mb: cg.memory_max.map(|b| b / (1024 * 1024)),
         cgroup_current_mb: cg.memory_current.map(|b| b / (1024 * 1024)),
         cgroup_oom_kills: cg.oom_kill.unwrap_or(0),
+        rss_mb: rss.unwrap_or(0),
         cpu_quota: cg.cpu_quota,
         data_dir_free_mb: disk.map(|d| d.free_bytes / (1024 * 1024)),
         rnode_processes: colocation::count_rnode_processes(Path::new("/proc")),
@@ -213,6 +239,13 @@ impl ResourceGuard {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_vmrss_from_proc_status() {
+        let status = "Name:\trnode\nVmRSS:\t 12345 kB\n";
+        assert_eq!(super::parse_rss_kb(status), Some(12_345));
+        assert_eq!(super::parse_rss_kb("Name:\trnode\n"), None);
+    }
+
     use super::*;
 
     #[test]
