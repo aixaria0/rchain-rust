@@ -4638,7 +4638,8 @@ def lawsC : List Law := [
       `Rchain.Admission.relay_preserves_both_pools,
       `Rchain.Admission.a_moving_relay_loses_work],
     axioms := [],
-    rust := ["casper/src/dag.rs"],
+    rust := ["casper/src/dag.rs", "casper/src/api/block_api_impl.rs",
+      "node/src/runtime/node_runtime.rs", "casper/src/protocol/client.rs"],
     rustWitness := [],
     witness := [`Rchain.Admission.relay_preserves_the_sender,
       `Rchain.Admission.relay_preserves_both_pools,
@@ -4646,10 +4647,14 @@ def lawsC : List Law := [
     falsifiable := "`moveRelay` deletes from the sender and drops when the receiver is full; \
       `a_moving_relay_loses_work` exhibits the id absent from both pools. A relay that removed the \
       sender's row would make `relay_preserves_the_sender` unprovable.",
-    note := "The Rust relay (`DeployGossip`, one hop, bounded fanout and dedup) is the next unit; \
-      this row anchors to the local pool it copies from. The model's receiver bound is the count \
-      bound; the Rust receiver re-runs the same signature, shard, rate, share, byte and count checks. \
-      The relay is a protocol extension, registered as a Scala deviation in `AUDIT.md` §6." },
+    note := "**The Rust relay is a copy over the deploy service, not a new wire message.** After an \
+      admission, `BlockApiImpl` calls the operator-enabled `RelayFunction`, which offers the signed \
+      deploy to each connected peer's external deploy service (`GrpcDeployService::deploy`). The \
+      receiver runs the same signature, shard, rate, share, count and byte checks as a direct \
+      submission, because it is the same `deploy` path; the sender keeps its own pool row. A bounded \
+      seen set suppresses a relay circulating; the switch is `RNODE_DEPLOY_RELAY` (default off, API \
+      port 40401, `RNODE_DEPLOY_RELAY_PORT` to change it). The model's receiver bound is the count \
+      bound; the Rust's is the receiver's own pool." },
 
 ]
 
