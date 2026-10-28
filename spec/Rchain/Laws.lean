@@ -322,8 +322,9 @@ def lawsA : List Law := [
       **not** a theorem here, and neither are canonicalization, exact `+ - * /`, division's \
       exact-or-error condition, the wire's minimal-byte form, the reducer's dispatch, or the cost \
       model. Those are carried today by the Rust refinement (`Decimal::new`/`from_wire`, private \
-      fields) and its unit and corpus tests; a standalone `Rchain/Decimal.lean` plus a `decimal` \
-      corpus is the follow-up that would prove them" },
+      fields) and its unit and corpus tests; the standalone `Rchain/Decimal.lean` plus the `decimal` \
+      corpus is **Law 87** (87a–e), whose boundary is the same: wire bytes/tag 35, serde ingress, the \
+      literal surface, reducer dispatch and the cost model remain Rust-tested, not modelled" },
   { number := 1, clause := "b", layer := "Rholang",
     rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
@@ -4659,6 +4660,156 @@ def lawsC : List Law := [
       seen set suppresses a relay circulating; the switch is `RNODE_DEPLOY_RELAY` (default off, API \
       port 40401, `RNODE_DEPLOY_RELAY_PORT` to change it). The model's receiver bound is the count \
       bound; the Rust's is the receiver's own pool." },
+
+  { number := 87, clause := "a", layer := "Decimal",
+    statement := "**Canonicalisation is a normal form.** `canonicalize` strips trailing zeros while \
+      the scale is positive and sends every zero to `(0,0)`; `new` canonicalises **before** the \
+      scale bound, and `fromParts` bounds **first** and then refuses a zero-with-scale or a \
+      trailing-zero pair **by name**",
+    status := .provedTied,
+    corpus := some "decimal",
+    declarations := [`Rchain.Decimal.Canonical, `Rchain.Decimal.canonicalize,
+      `Rchain.Decimal.new, `Rchain.Decimal.fromParts,
+      `Rchain.Decimal.canonicalize_idempotent, `Rchain.Decimal.canonicalize_cross,
+      `Rchain.Decimal.scaledValue_canonicalize, `Rchain.Decimal.new_ok_iff,
+      `Rchain.Decimal.new_error_iff, `Rchain.Decimal.fromParts_ok_iff,
+      `Rchain.Decimal.fromParts_zero_with_scale,
+      `Rchain.Decimal.fromParts_trailing_zero],
+    axioms := [],
+    rust := ["models/src/decimal.rs"],
+    rustWitness := ["models/src/decimal.rs:canonicalisation_strips_trailing_zeros_and_normalises_zero",
+      "models/src/decimal.rs:the_scale_bound_is_inclusive",
+      "models/src/decimal.rs:strict_construction_refuses_a_noncanonical_pair",
+      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
+    witness := [`Rchain.Decimal.canonicalize_idempotent,
+      `Rchain.Decimal.new_ok_iff,
+      `Rchain.Decimal.fromParts_ok_iff,
+      `Rchain.Decimal.fromParts_zero_with_scale,
+      `Rchain.Decimal.fromParts_trailing_zero],
+    falsifiable := "`new 10^39,39` is accepted as `(1,0)` while `new 1,39` is \
+      `ScaleOutOfRange 39`: the bound is applied after canonicalisation. `new 0,39` is `(0,0)` \
+      because the zero is canonicalised before the bound is read. `fromParts 0,3` is \
+      `ZeroWithScale 3` and `fromParts 110,2` is `TrailingZero 2`; a constructor that classified by \
+      the wrong test fails those rows, and deleting canonicalisation before the bound flips the \
+      `10^39,39` row.",
+    note := "The model's `Int`/`Nat` stand for the Rust `BigInt`/`u32`. The wire's minimal-byte form \
+      and tag 35, serde ingress, the literal surface, reducer dispatch and the cost model are \
+      outside Law 87 and remain Rust-tested. The corpus's `new`/`parts` rows take the raw pair, \
+      because those are the constructors where a non-canonical input is legal (and refused by name)." },
+
+  { number := 87, clause := "b", layer := "Decimal",
+    statement := "**`scaledValue` is the value embedding.** On canonical values it is injective, \
+      and `cmpNumeric` is the order of the scaled payload: `cmpNumeric a b = cmp (scaledValue a) \
+      (scaledValue b)` with `eq_iff`, `swap` and `lt_trans`",
+    status := .provedTied,
+    corpus := some "decimal",
+    declarations := [`Rchain.Decimal.scaledValue, `Rchain.Decimal.cmpNumeric,
+      `Rchain.Decimal.canonical_zero_unique, `Rchain.Decimal.scaledValue_injective,
+      `Rchain.Decimal.cmpNumeric_eq_scaled, `Rchain.Decimal.cmpNumeric_eq_iff,
+      `Rchain.Decimal.cmpNumeric_swap, `Rchain.Decimal.cmpNumeric_lt_trans],
+    axioms := [],
+    rust := ["models/src/decimal.rs", "models/src/sorter.rs"],
+    rustWitness := ["models/src/decimal.rs:scaled_value_is_unique_for_canonical_values",
+      "models/src/decimal.rs:comparison_is_numeric_across_scales",
+      "models/src/sorter.rs:smaller_decimal_values_come_first_across_scales",
+      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
+    witness := [`Rchain.Decimal.scaledValue_injective,
+      `Rchain.Decimal.cmpNumeric_eq_scaled,
+      `Rchain.Decimal.cmpNumeric_eq_iff,
+      `Rchain.Decimal.cmpNumeric_swap,
+      `Rchain.Decimal.cmpNumeric_lt_trans],
+    falsifiable := "The pair `(10,1)` and `(1,0)` has one `scaledValue` and is not equal, so the \
+      `Canonical` hypothesis is load-bearing. `cmp 15:1 2:0` is `lt`; a lexicographic \
+      `(coefficient, scale)` order would say `gt`, which is the defect the sorter's DECIMAL score \
+      avoids. `cmp -15:1 -2:0` is `gt`, pinning the sign against an absolute-value comparator.",
+    note := "`scaledValue d = coefficient × 10^(MAX_SCALE − scale)`; `MAX_SCALE = 38` is the sorter's \
+      score and the `Expr.edecimal` payload (`spec/Rchain/Par.lean`). The row is tied to the decimal \
+      corpus for the value algebra and to `sort.tsv` rows 43–50 for the payload's class order." },
+
+  { number := 87, clause := "c", layer := "Decimal",
+    statement := "**`+`, `-` and `*` are exact.** The result is canonical; addition and \
+      subtraction satisfy `scaledValue (add a b) = scaledValue a + scaledValue b` and its \
+      subtraction dual, and a successful product satisfies `scaledValue q × 10^38 = scaledValue a × \
+      scaledValue b`. `add` commutes and `sub (add a b) b = a`",
+    status := .provedTied,
+    corpus := some "decimal",
+    declarations := [`Rchain.Decimal.add, `Rchain.Decimal.sub, `Rchain.Decimal.mul,
+      `Rchain.Decimal.add_canonical, `Rchain.Decimal.sub_canonical,
+      `Rchain.Decimal.scaledValue_add, `Rchain.Decimal.scaledValue_sub,
+      `Rchain.Decimal.add_new, `Rchain.Decimal.sub_new,
+      `Rchain.Decimal.add_comm, `Rchain.Decimal.add_sub_cancel,
+      `Rchain.Decimal.mul_ok_iff, `Rchain.Decimal.mul_error_iff,
+      `Rchain.Decimal.scaledValue_mul],
+    axioms := [],
+    rust := ["models/src/decimal.rs"],
+    rustWitness := ["models/src/decimal.rs:arithmetic_is_exact",
+      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
+    witness := [`Rchain.Decimal.add_canonical, `Rchain.Decimal.scaledValue_add,
+      `Rchain.Decimal.mul_ok_iff, `Rchain.Decimal.scaledValue_mul,
+      `Rchain.Decimal.add_sub_cancel],
+    falsifiable := "`9:38 + 1:38 = 1:37` and `5:1 + 5:1 = 1:0` pin carry and strip; `25:20 × 4:20 = \
+      1:38` while `1:20 × 1:20` is `ScaleOutOfRange 40`, so canonicalisation before the bound is \
+      observable. The product identity is `q.scaledValue × 10^38 = a.scaledValue × b.scaledValue`; \
+      dropping the `10^38` is false by that factor, and the corpus's `mul` rows catch it.",
+    note := "The Rust `add`/`sub` return `Result` because `Decimal::new` is fallible in general, but \
+      for canonical operands the aligned scale is at most 38 and the result is always `Ok`; the model \
+      is total and `add_new`/`sub_new` are the bridge. `mul` is `Except`: the only model error is \
+      `ScaleOutOfRange` after canonicalisation; the u32-only `ScaleOverflow` is outside. Mixed \
+      `Int`/`BigInt` promotion and the cost model are reducer concerns, Rust-tested, not modelled." },
+
+  { number := 87, clause := "d", layer := "Decimal",
+    statement := "**Division is exact or an explicit error.** A zero divisor is \
+      `DivisionByZero`; a nonzero divisor returns a canonical quotient exactly when one exists \
+      within `MAX_SCALE`, and otherwise `InexactDivision`. The quotient satisfies \
+      `q.scaledValue × b.scaledValue = a.scaledValue × 10^38`",
+    status := .provedTied,
+    corpus := some "decimal",
+    declarations := [`Rchain.Decimal.divAt, `Rchain.Decimal.divUpTo, `Rchain.Decimal.div,
+      `Rchain.Decimal.divAt_spec, `Rchain.Decimal.divUpTo_none_iff,
+      `Rchain.Decimal.divUpTo_some_spec, `Rchain.Decimal.div_zero,
+      `Rchain.Decimal.div_ok_spec, `Rchain.Decimal.div_error_iff],
+    axioms := [],
+    rust := ["models/src/decimal.rs"],
+    rustWitness := ["models/src/decimal.rs:division_is_exact_or_refused",
+      "rholang/src/reduce.rs:decimal_division_is_exact_or_an_explicit_error",
+      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
+    witness := [`Rchain.Decimal.divAt_spec, `Rchain.Decimal.divUpTo_none_iff,
+      `Rchain.Decimal.div_ok_spec, `Rchain.Decimal.div_error_iff,
+      `Rchain.Decimal.div_zero],
+    falsifiable := "`1/3` and `1/2^39` are `InexactDivision`; `1/2` and `1/2^38` are exact; `1/0` \
+      is `DivisionByZero`. A rounding division, or a 39th digit, changes one of those. The division \
+      corpus pins the inclusive 38-digit bound and the negative case `-1/2 = -5:1`.",
+    note := "The theorem is the **exactness criterion**, not the algorithm: the Rust computes the \
+      quotient one decimal digit at a time, while the model scans `divAt` over scales `0..=38`. The \
+      corpus is the tie between them. `Int`'s Euclidean `/` and `%` agree with the Rust's truncating \
+      `BigInt` on the only uses here — a divisibility test and an exact quotient — and the negative \
+      corpus rows pin it." },
+
+  { number := 87, clause := "e", layer := "Decimal",
+    statement := "**The `edecimal` payload bridge.** `edecimalOf d = Expr.edecimal d.scaledValue`; \
+      on canonical values it is injective, and `cmpExpr` on two payloads is `cmpNumeric`, so the \
+      model's value order is the sorter's DECIMAL class order",
+    status := .provedTied,
+    corpus := some "sort",
+    declarations := [`Rchain.Decimal.edecimalOf, `Rchain.Decimal.cmpExpr_edecimalOf,
+      `Rchain.Decimal.edecimalOf_eq_iff,
+      `Rchain.Decimal.cmpNumeric_eq_cmpExpr_edecimalOf],
+    axioms := [],
+    rust := ["models/src/sorter.rs"],
+    rustWitness := ["models/src/sorter.rs:smaller_decimal_values_come_first_across_scales",
+      "models/src/sorter.rs:decimal_keys_normalise_within_the_class_but_not_against_an_int",
+      "rholang/tests/lean_sort_corpus.rs:the_canonical_order_is_the_lean_models_pairwise"],
+    witness := [`Rchain.Decimal.cmpExpr_edecimalOf,
+      `Rchain.Decimal.edecimalOf_eq_iff,
+      `Rchain.Decimal.cmpNumeric_eq_cmpExpr_edecimalOf],
+    falsifiable := "`sort.tsv` rows 43–50 put the Decimal class at rank 14 and order `1.5d` before \
+      `2d`; a payload that carried the `(coefficient, scale)` pair instead of `scaledValue` flips \
+      those rows, and a two-field `Expr.edecimal` would make the comparator's `eq_iff` false for \
+      `(10,1)` and `(1,0)`.",
+    note := "This clause is tied to the existing **`sort`** corpus (rows 43–50), not to the decimal \
+      corpus: the value algebra is tied by `decimal.tsv`, while `Expr.edecimal` is compared by the \
+      sorter corpus and `models/src/sorter.rs`'s DECIMAL score. Law 1a's note is updated to point \
+      here; its statement, status and declarations are not widened." },
 
 ]
 
