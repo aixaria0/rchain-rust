@@ -11712,3 +11712,32 @@ serve a block's post-state. A singleton pin against the named block's pre- or po
 implemented and the restore suite refuted it; it was removed rather than kept as false assurance. A
 peer that sends no ancestry rows keeps the existing per-block WARN fallback, so the check does not
 refuse older implementations. Law 83 is the trust model this is an instance of.
+
+## 142. A memory gate in front of a bounded pool (C340, #477)
+
+The public testnet settled into `degraded: throttled` at height 1688 with 547 MiB available and
+refused every deploy **and** every explore request with a 503. On its own arithmetic the gate was
+right — 547 MiB is below the 4 GiB host's `critical + 2×margin` recovery boundary — and the watchdog
+kept sampling every five seconds. The defect was the shape, not the arithmetic: a boolean verdict in
+front of a real mempool. A free pool slot was no help, explore shared the deploy refusal, there was no
+deploy relay so the receiving node was the only proposer, and block deploys executed one at a time.
+One undersized host therefore became a network-wide liveness failure, and the chain could not advance
+because the only node holding the work refused to take it.
+
+The close-out is Law 86 (`spec/Rchain/Admission.lean`), five clauses: admission is a bounded queue and
+reads only the pool's bounds (86a); an admitted entry is never silently lost (86b); independent work
+commutes and conflicting work serialises (86c); one permit progresses and the budget bounds the
+schedule, not the queue (86d); and pending work is relocatable without loss (86e). The Rust follows:
+the memory 503 is gone (`resources::admission` keeps only the policy inputs), a full pool/share/rate
+is 429 + `Retry-After`, `acceptsDeploys` is pool capacity, the headroom permit budget bounds execution
+and exploration, a certified cross-deploy batch runs independent deploys on forks and merges their
+chains with a sequential `verify` and a whole-block fallback, and an admitted deploy is offered to
+peers' external deploy service (off by default, `RNODE_DEPLOY_RELAY=1`).
+
+**Measured in this unit:** the Lean register builds and checks 86 laws / 114 entries; the pool, budget,
+HTTP-refusal and batch suites pass; the batch's state hash and every `ProcessedDeploy` equal the
+sequential fold's for both an independent and a conflicting pair; `cargo test -p rchain-node --lib`
+passes 331 tests. **Owed:** the 4 GiB/two-validator live arm (two validators per host, ~547 MiB
+available, a deploy accepted and included by the other validator, no 503) and the resource gauges on
+`/metrics`; the serving behaviour is unit- and engine-tested but not yet measured on the incident
+topology.

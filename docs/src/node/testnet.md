@@ -7,6 +7,14 @@ The **generalised** procedure — standing up a testnet of your own, from the st
 is [Running a node: testnet now, mainnet later](validator-observer-setup.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets.
 
+> **Capacity-limited (2026-10-28, [#477](https://github.com/rhovision-org/rholo/issues/477)).** Both
+> hosts are `s-2vcpu-4gb` and each runs two validators: about 2 GiB per validator, below the 8 GiB
+> per-validator minimum (16 GB per host for this layout). The node now keeps serving under memory
+> pressure — the pool is the throttle, independent work is batched, pending work relays to peers, and
+> HTTP refusals are **429** with `Retry-After`, never a memory 503 — but this topology is **not a valid
+> surface for application conformance or throughput claims** until it is resized. See
+> [the per-host table](validator-requirements.md#the-minimum-is-per-validator-a-host-running-two-must-size-for-both).
+>
 > **Status: four bonded validators at 250 each, pool 1000, and the chain finalises.**
 > A brand-new key can be funded, deploy, be trusted and bond into the pool. **Losing one validator is
 > survivable** — the other three keep finalising at 75 %; losing two leaves 50 %, which is not a quorum
