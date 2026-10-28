@@ -7,9 +7,10 @@ gates it) is in [`../docs/src/contributor/laws-to-rust.md`](../docs/src/contribu
 
 **Scope note.** This long-form table ends at **Law 77**. The register
 ([`LAWS.md`](LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate) is the authority
-for **Laws 1–85**: rows 78–85 — the developer allocation and its vesting, root publication, the
-verified-answer join, the validator lifecycle, the trust model, the genesis anchor and the fringe
-state — are in the register and read in [`../docs/src/formal/laws.md`](../docs/src/formal/laws.md).
+for **Laws 1–86**: rows 78–86 — the developer allocation and its vesting, root publication, the
+verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state
+and admission/concurrency (86) — are in the register and read in
+[`../docs/src/formal/laws.md`](../docs/src/formal/laws.md).
 Backfilling them here is open work; where this page and the register disagree, the register is right.
 
 **Type system.** The port's own type discipline — the ρ-calculus embedded as the base sort of a

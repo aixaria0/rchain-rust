@@ -4511,6 +4511,146 @@ def lawsC : List Law := [
       **not** supply `stateAt` (the merge), which is why C339 stays open. Recomputing the merge on the \
       join path, or carrying a proof for the root, is the closing option; a pin is not." },
 
+  { number := 86, clause := "a", layer := "Admission",
+    statement := "**Admission is a bounded queue, and the decision reads only the pool's bounds.** A \
+      free slot with a new id admits; a full pool refuses with a named reason. The resource word \
+      (`normal`/`throttled`/`critical`/`unavailable`) is not an input to `enqueue`: it is an input to \
+      the execution budget (86d). The legacy boolean gate is modelled as `legacyAdmit`, and \
+      `the_legacy_gate_refuses_an_empty_slot` is the height-1688 state as a theorem",
+    status := .provedModel,
+    declarations := [`Rchain.Admission.Pool, `Rchain.Admission.enqueue,
+      `Rchain.Admission.legacyAdmit, `Rchain.Admission.an_empty_slot_admits,
+      `Rchain.Admission.a_full_pool_refuses,
+      `Rchain.Admission.the_legacy_gate_refuses_an_empty_slot],
+    axioms := [],
+    rust := ["casper/src/dag.rs", "node/src/resources/fallback.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Admission.an_empty_slot_admits,
+      `Rchain.Admission.a_full_pool_refuses,
+      `Rchain.Admission.the_legacy_gate_refuses_an_empty_slot],
+    falsifiable := "The live height-1688 state: an empty pool, a free slot, `throttled`, and a 503. \
+      `the_legacy_gate_refuses_an_empty_slot` is that state proved; deleting the resource parameter \
+      from `enqueue` is the change that would make it unprovable. A rule that admitted only above the \
+      throttle floor would instead fail `an_empty_slot_admits`.",
+    note := "The model's `capacity` is the count bound; the Rust's byte and per-deployer bounds are \
+      the same `hasSlot` shape and are driven by the admission corpus when it lands. The row is \
+      `proved-model` in this unit because the Rust's typed refusal path is the next unit; the \
+      register's note is updated to `proved-tied` when `spec/conformance/admission.tsv` and its \
+      consumer exist. The law does **not** say a node must accept unbounded work: a full pool is a \
+      real bound and refuses, with a retry condition." },
+
+  { number := 86, clause := "b", layer := "Admission",
+    statement := "**No admitted work is silently lost.** A pool step advances an entry's status \
+      (pending → running → done, or pending → expired) and never removes the row; every refusal \
+      returns the pool it was given. `no_admitted_work_is_lost` proves every accepted id is in the \
+      ledger at every reachable state, so a retirement is observable",
+    status := .provedModel,
+    declarations := [`Rchain.Admission.Accepted, `Rchain.Admission.StatusStep,
+      `Rchain.Admission.Step, `Rchain.Admission.accepted_of_step,
+      `Rchain.Admission.no_admitted_work_is_lost,
+      `Rchain.Admission.a_dropping_pool_loses_work],
+    axioms := [],
+    rust := ["casper/src/dag.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Admission.no_admitted_work_is_lost,
+      `Rchain.Admission.a_refusal_changes_nothing],
+    falsifiable := "`dropOnPressure` is the defect variant: it filters the entry out and \
+      `a_dropping_pool_loses_work` exhibits the accepted id that is then absent. A step that removed \
+      a row instead of advancing its status would make `no_admitted_work_is_lost` unprovable. The \
+      expiry rule is the stated `pending → expired` transition, not an unobserved deletion.",
+    note := "The ledger keeps `done` and `expired` rows rather than deleting them, so 'what happened \
+      to this deploy?' is answerable after retirement. The Rust pool currently deletes an included \
+      deploy on block insertion (`casper/src/dag.rs:1380-1417`) and keeps the deploy index; the model \
+      states the property the index supplies, and the note names the difference. A rewind/reset is \
+      outside this step relation and is Law 72's subject." },
+
+  { number := 86, clause := "c", layer := "Admission",
+    statement := "**Independent work commutes; conflicting work serialises.** At the effect level the \
+      criterion is disjoint **closures** (`Independent`), not disjoint footprints; \
+      `independent_pair_commutes` is the existing Law 9 theorem, and `independent_prefix_commutes` \
+      moves an independent effect across a fold. At the state-change level, \
+      `independent_change_commutes_with_a_fold` moves a `NonConflicting` change past a fold and \
+      `independent_folds_commute` swaps two independent batches",
+    status := .provedModel,
+    declarations := [`Rchain.Admission.Independent,
+      `Rchain.Admission.independent_pair_commutes,
+      `Rchain.Admission.independent_prefix_commutes,
+      `Rchain.Admission.independent_change_commutes_with_a_fold,
+      `Rchain.Admission.independent_folds_commute,
+      `Rchain.Admission.independent_batches_commute],
+    axioms := [],
+    rust := ["casper/src/runtime_manager.rs", "casper/src/merging.rs",
+      "rspace/src/merger/state_change.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Admission.independent_prefix_commutes,
+      `Rchain.Admission.independent_change_commutes_with_a_fold,
+      `Rchain.Admission.independent_folds_commute],
+    falsifiable := "`effectA`/`effectB` have disjoint footprints and overlapping closures; \
+      `effect_reorder_diverges` reaches different states in the two orders, so a footprint partition \
+      is unsound. `nonConflicting_not_necessary` keeps the criterion honest: the law claims a \
+      sufficient condition, not the port's conflict predicate.",
+    note := "**The bridge is the obligation.** The Lean model's `NonConflicting` is over the \
+      modelled `StateChange`; the Rust executor certifies a batch from its **dynamic** read/write \
+      `TouchLog` (channels and native slots, read or written). That the touch log implies \
+      `NonConflicting` is a refinement obligation, not a theorem here, which is why this row is \
+      `proved-model` and never silently `proved-tied`. The first Rust release keeps \
+      `batch.verify = true` (re-execute sequentially and compare state hash and every \
+      `ProcessedDeploy`) with a circuit breaker; the differential batch suite is the witness." },
+
+  { number := 86, clause := "d", layer := "Admission",
+    statement := "**One permit progresses; capacity changes the schedule, not the queue.** A \
+      non-empty pending pool with at least one permit has a step (`one_permit_progresses`), and \
+      `next` takes at most `permits` ids (`the_batch_is_bounded_by_the_permits`). The defect shape is \
+      `needsTwoPermits`: a non-empty pool with one permit and no step",
+    status := .provedModel,
+    declarations := [`Rchain.Admission.Node, `Rchain.Admission.scheduleBatch,
+      `Rchain.Admission.next, `Rchain.Admission.NodeStep,
+      `Rchain.Admission.one_permit_progresses,
+      `Rchain.Admission.scheduleBatch_length_le_permits,
+      `Rchain.Admission.the_batch_is_bounded_by_the_permits,
+      `Rchain.Admission.a_scheduler_that_needs_two_permits_stalls],
+    axioms := [],
+    rust := ["casper/src/blocks/proposer/proposer.rs",
+      "node/src/instances/proposer_instance.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Admission.one_permit_progresses,
+      `Rchain.Admission.the_batch_is_bounded_by_the_permits,
+      `Rchain.Admission.a_scheduler_that_needs_two_permits_stalls],
+    falsifiable := "`needsTwoPermits` is the defect: a step relation that requires two permits \
+      leaves a non-empty pool with one permit with no step, which \
+      `a_scheduler_that_needs_two_permits_stalls` exhibits. The live node's boolean gate had the \
+      stronger defect — no step even with every permit — and `the_legacy_gate_refuses_an_empty_slot` \
+      is that half.",
+    note := "The permit count is the headroom budget (64 MiB per execution in the first cut), never \
+      a permission to enqueue. `enqueue` has no permit parameter; `next` does, so a smaller budget makes \
+      a smaller batch and cannot change an admission answer. Critical/Unavailable may stop block \
+      production; they do not stop admission or relay." },
+
+  { number := 86, clause := "e", layer := "Admission",
+    statement := "**Pending work is relocatable without loss.** A relay **copies** an entry to a peer \
+      and leaves the sender's row alone (`relay_preserves_the_sender`); when the receiver has room \
+      the copy is accepted (`relay_copies_to_the_receiver`); both pools keep every accepted id \
+      (`relay_preserves_both_pools`). The defect shape is a **moving** relay, which loses work",
+    status := .provedModel,
+    declarations := [`Rchain.Admission.TwoNodes, `Rchain.Admission.relay,
+      `Rchain.Admission.relay_preserves_the_sender,
+      `Rchain.Admission.relay_copies_to_the_receiver,
+      `Rchain.Admission.relay_preserves_both_pools,
+      `Rchain.Admission.a_moving_relay_loses_work],
+    axioms := [],
+    rust := ["casper/src/dag.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Admission.relay_preserves_the_sender,
+      `Rchain.Admission.relay_preserves_both_pools,
+      `Rchain.Admission.a_moving_relay_loses_work],
+    falsifiable := "`moveRelay` deletes from the sender and drops when the receiver is full; \
+      `a_moving_relay_loses_work` exhibits the id absent from both pools. A relay that removed the \
+      sender's row would make `relay_preserves_the_sender` unprovable.",
+    note := "The Rust relay (`DeployGossip`, one hop, bounded fanout and dedup) is the next unit; \
+      this row anchors to the local pool it copies from. The model's receiver bound is the count \
+      bound; the Rust receiver re-runs the same signature, shard, rate, share, byte and count checks. \
+      The relay is a protocol extension, registered as a Scala deviation in `AUDIT.md` §6." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
