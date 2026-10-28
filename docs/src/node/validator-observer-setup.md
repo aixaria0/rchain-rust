@@ -67,8 +67,9 @@ The bootstrap must additionally be reachable outbound for the fringe request. `p
 fallback is to **seed it from a synced node** (copy the data directory excluding `node.key.pem` and
 `node.certificate.pem`) rather than to admit only the bootstrap.
 
-The join path's failure modes and their fixes are tracked in
-[#457](https://github.com/rhovision-org/rholo/issues/457).
+The join path's fixes are recorded in Law 81 and register C337; the remaining live arms — the
+blocked-inbound regression and the fresh join on the current binary — are tracked in
+[#479](https://github.com/rhovision-org/rholo/issues/479).
 
 ## 4. Validator identity
 
