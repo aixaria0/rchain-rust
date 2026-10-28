@@ -544,7 +544,11 @@ mod tests {
             // The primary's depth is distinct so a router that answered the trait default (0/MAX)
             // or a child's figure is caught.
             Ok(DeployPoolStats {
-                deploys: if self.shard_id.ends_with("root") { 7 } else { 9 },
+                deploys: if self.shard_id.ends_with("root") {
+                    7
+                } else {
+                    9
+                },
                 bytes: 10,
                 max_deploys: 10_000,
                 max_bytes: 64 * 1024 * 1024,
@@ -794,12 +798,11 @@ mod tests {
     async fn the_router_forwards_the_primary_pools_capacity() {
         let (api, primary, _child) = router();
         let stats = api.deploy_pool_stats().await.expect("the primary answers");
-        assert_eq!(stats.deploys, 7, "the primary's depth, not the default or a child's");
-        assert!(primary
-            .calls
-            .lock()
-            .unwrap()
-            .contains(&"deploy_pool_stats"));
+        assert_eq!(
+            stats.deploys, 7,
+            "the primary's depth, not the default or a child's"
+        );
+        assert!(primary.calls.lock().unwrap().contains(&"deploy_pool_stats"));
     }
 
     /// **The map reaches every member, and a non-primary's halt is in it** (W-N10-04).
