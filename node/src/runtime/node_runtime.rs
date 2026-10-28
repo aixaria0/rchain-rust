@@ -2183,6 +2183,86 @@ fn fire_autopropose_tap(health: &ProposeHealth, enqueue: impl FnOnce()) -> bool 
 /// ([`shard_data_dir`]): the primary shard keeps the data-directory root, every additional shard
 /// nests under `shard/…`. Node-level resources (the transport, the ports, the eval runtime, the
 /// validator identity) are assembled once by [`setup_node_program`], not here.
+/// **The pending-work relay** (Law 86e, issue #477). Opt in with
+/// `RNODE_DEPLOY_RELAY=1`; the API port defaults to the external gRPC port (40401) and can be
+/// overridden with `RNODE_DEPLOY_RELAY_PORT`. After a deploy is admitted, the signed deploy is
+/// offered to each connected peer's deploy service, which re-runs the full ingress validation.
+/// The sender keeps its own pool row (copy, not move), and a bounded seen set stops a relay
+/// from circulating. Off by default: a node whose peers do not expose the API port would spend
+/// a dial per deploy for nothing.
+fn deploy_relay_from_env(
+    connections: rchain_casper::protocol::comm_util::ConnectionsCell,
+) -> Option<rchain_casper::api::block_api_impl::RelayFunction> {
+    let flag = |name: &str| std::env::var(name).ok();
+    let enabled = flag("RNODE_DEPLOY_RELAY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    let port: i32 = flag("RNODE_DEPLOY_RELAY_PORT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40401);
+    let fanout: usize = flag("RNODE_DEPLOY_RELAY_FANOUT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(usize::MAX);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashSet::<Vec<u8>>::new(),
+    ));
+    Some(std::sync::Arc::new(move |deploy: SignedDeployData| {
+        let connections = connections.clone();
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            {
+                let mut seen = seen.lock().unpoison();
+                if !seen.insert(deploy.sig.clone()) {
+                    return;
+                }
+                if seen.len() > 100_000 {
+                    seen.clear();
+                    seen.insert(deploy.sig.clone());
+                }
+            }
+            let peers = connections.read().await.clone();
+            for peer in peers.into_iter().take(fanout) {
+                let host = peer.endpoint.host.clone();
+                let Ok(client) = rchain_casper::protocol::client::GrpcDeployService::connect(
+                    &host,
+                    port,
+                    16 * 1024 * 1024,
+                )
+                .await
+                else {
+                    continue;
+                };
+                let _ =
+                    rchain_casper::protocol::client::DeployService::deploy(&client, &deploy).await;
+            }
+        });
+    }))
+}
+
+// **The cross-deploy batch switch** (Law 86c). Off by default: the sequential path is the
+// reference. `RNODE_CROSS_DEPLOY_BATCHING=1` turns it on; verification defaults on and refuses a
+// mismatch by falling back to the whole-block sequential run; `_MAX` caps the fork count.
+fn cross_deploy_batch_policy() -> rchain_casper::runtime_manager::BatchPolicy {
+    let flag = |name: &str| std::env::var(name).ok();
+    let enabled = flag("RNODE_CROSS_DEPLOY_BATCHING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let verify = flag("RNODE_CROSS_DEPLOY_BATCH_VERIFY")
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true);
+    let max_batch = flag("RNODE_CROSS_DEPLOY_BATCH_MAX")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    rchain_casper::runtime_manager::BatchPolicy {
+        enabled,
+        verify,
+        max_batch,
+    }
+}
+
 pub async fn setup_shard(
     conf: &NodeConf,
     spec: &ShardSpec,
@@ -2353,87 +2433,6 @@ pub async fn setup_shard(
         Some(d) => (d.pos_genesis, d.vaults),
         None => (Default::default(), Vec::new()),
     };
-    /// **The pending-work relay** (Law 86e, issue #477). Opt in with
-    /// `RNODE_DEPLOY_RELAY=1`; the API port defaults to the external gRPC port (40401) and can be
-    /// overridden with `RNODE_DEPLOY_RELAY_PORT`. After a deploy is admitted, the signed deploy is
-    /// offered to each connected peer's deploy service, which re-runs the full ingress validation.
-    /// The sender keeps its own pool row (copy, not move), and a bounded seen set stops a relay
-    /// from circulating. Off by default: a node whose peers do not expose the API port would spend
-    /// a dial per deploy for nothing.
-    fn deploy_relay_from_env(
-        connections: rchain_casper::protocol::comm_util::ConnectionsCell,
-    ) -> Option<rchain_casper::api::block_api_impl::RelayFunction> {
-        let flag = |name: &str| std::env::var(name).ok();
-        let enabled = flag("RNODE_DEPLOY_RELAY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !enabled {
-            return None;
-        }
-        let port: i32 = flag("RNODE_DEPLOY_RELAY_PORT")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(40401);
-        let fanout: usize = flag("RNODE_DEPLOY_RELAY_FANOUT")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(usize::MAX);
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashSet::<Vec<u8>>::new(),
-        ));
-        Some(std::sync::Arc::new(move |deploy: SignedDeployData| {
-            let connections = connections.clone();
-            let seen = seen.clone();
-            tokio::spawn(async move {
-                {
-                    let mut seen = seen.lock().unpoison();
-                    if !seen.insert(deploy.sig.clone()) {
-                        return;
-                    }
-                    if seen.len() > 100_000 {
-                        seen.clear();
-                        seen.insert(deploy.sig.clone());
-                    }
-                }
-                let peers = connections.read().await.clone();
-                for peer in peers.into_iter().take(fanout) {
-                    let host = peer.endpoint.host.clone();
-                    let Ok(client) = rchain_casper::protocol::client::GrpcDeployService::connect(
-                        &host,
-                        port,
-                        16 * 1024 * 1024,
-                    )
-                    .await
-                    else {
-                        continue;
-                    };
-                    let _ =
-                        rchain_casper::protocol::client::DeployService::deploy(&client, &deploy)
-                            .await;
-                }
-            });
-        }))
-    }
-
-    // **The cross-deploy batch switch** (Law 86c). Off by default: the sequential path is the
-    // reference. `RNODE_CROSS_DEPLOY_BATCHING=1` turns it on; verification defaults on and refuses a
-    // mismatch by falling back to the whole-block sequential run; `_MAX` caps the fork count.
-    fn cross_deploy_batch_policy() -> rchain_casper::runtime_manager::BatchPolicy {
-        let flag = |name: &str| std::env::var(name).ok();
-        let enabled = flag("RNODE_CROSS_DEPLOY_BATCHING")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let verify = flag("RNODE_CROSS_DEPLOY_BATCH_VERIFY")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true);
-        let max_batch = flag("RNODE_CROSS_DEPLOY_BATCH_MAX")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
-        rchain_casper::runtime_manager::BatchPolicy {
-            enabled,
-            verify,
-            max_batch,
-        }
-    }
-
     let runtime_manager = Arc::new(
         RuntimeManager::new(
             rho_runtime,
