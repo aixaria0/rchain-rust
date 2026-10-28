@@ -15,7 +15,7 @@ use rchain_models::casper::protocol::deploy_service::{
 use rchain_shared::base16;
 
 use super::dto::{
-    DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
+    DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployPoolStatus, DeployRequest,
     ExploratoryDeployResponse, FinalityHealthDto, HaltStatusDto, NodeCapabilities, OperatorStatus,
     PooledDeploy, ProposerHealthDto, PublicStatus, ResourceStatusDto, RhoDataResponse,
     RhoExprWithBlock, ShardHealthDto, SignatureException, SyncStatus, VersionInfo,
@@ -89,6 +89,12 @@ pub fn to_public_status(
         // **The pool's capacity, not the advisory resource word** (Law 86a). A throttled node with a
         // free slot accepts; a node whose pool is full refuses with 429 until work drains or relays.
         accepts_deploys: pool.has_room(),
+        pool: DeployPoolStatus {
+            deploys: pool.deploys,
+            bytes: pool.bytes,
+            max_deploys: pool.max_deploys,
+            max_bytes: pool.max_bytes,
+        },
     }
 }
 
@@ -157,6 +163,10 @@ pub fn to_operator_status(
                 .collect()
         }),
         resources: {
+            let available = effective_available_mb(resource);
+            let critical = crate::resources::fallback::critical_floor_mb(resource);
+            let throttle = crate::resources::fallback::throttle_floor_mb(resource);
+            let recovery = crate::resources::fallback::recovery_floor_mb(resource);
             let cap = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
@@ -188,6 +198,11 @@ pub fn to_operator_status(
                 source: resource.source.clone(),
                 execution_permits: permits.exec,
                 explore_permits: permits.explore,
+                rss_mb: resource.rss_mb,
+                headroom_mb: available,
+                critical_floor_mb: critical,
+                throttle_floor_mb: throttle,
+                recovery_floor_mb: recovery,
             }
         },
     }
@@ -586,6 +601,7 @@ mod tests {
             dev_mode: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: DeployPoolStatus::default(),
         };
         let sync = SyncHealth {
             attempts: 4,
@@ -652,6 +668,7 @@ mod tests {
             dev_mode: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: DeployPoolStatus::default(),
         };
         // The shard's history as a restarted node reads it back: non-zero, and the store answered.
         let finality = FinalityHealth {
@@ -727,6 +744,7 @@ mod tests {
             dev_mode: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: DeployPoolStatus::default(),
         };
         let caps = Capabilities {
             autopropose: true,

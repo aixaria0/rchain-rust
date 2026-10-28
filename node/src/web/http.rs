@@ -642,6 +642,32 @@ fn deploy_response(result: Result<String, BlockApiException>) -> Response {
     }
 }
 
+/// **`GET /health` on the node's own API** (issue #477): a readiness-shaped body that is 200 while
+/// the router serves. It is **not** a host snapshot and **not** a pressure gate: `degraded` is
+/// advisory, `acceptsDeploys` is pool capacity, and low memory is not an unhealthy node. The external
+/// nginx snapshot on the public testnet can proxy this route; a host-level `mem_available_mb` still
+/// belongs on the operator surface.
+async fn api_health(State(state): State<HttpState>) -> Response {
+    match state.web_api.status().await {
+        Ok(status) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "degraded": status.degraded,
+                "acceptsDeploys": status.accepts_deploys,
+                "height": status.latest_block_number,
+                "pool": status.pool,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": e.0})),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
     deploy_response(state.web_api.deploy(&req).await)
 }
@@ -1656,6 +1682,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/status", get(status))
         .route("/api/status", get(api_status))
         .route("/api/v1/admission", get(api_admission_status))
+        .route("/health", get(api_health))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/shards", get(api_shards))
         .route("/api/deploys", get(api_deploys))
@@ -1935,7 +1962,45 @@ pub async fn acquire_http_server(
     // listener instead of silently disabling admission control.
     let deploy_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_DEPLOY")?;
     let explore_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_EXPLORE")?;
-    let budget = Arc::new(CapacityBudget::new(resources));
+    let budget = Arc::new(CapacityBudget::new(resources.clone()));
+    // **The resource and pool gauges** (issue #477): a five-second publisher over the same snapshot
+    // the watchdog writes and the live budget/pool counters. It stops with the listener.
+    {
+        let metrics_registry = metrics.clone();
+        let metrics_resources = resources.clone();
+        let metrics_budget = budget.clone();
+        let metrics_web_api = web_api.clone();
+        let mut metrics_stop = stop.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = metrics_stop.changed() => break,
+                    _ = tick.tick() => {
+                        let snapshot = metrics_resources.snapshot();
+                        let pool = metrics_web_api
+                            .status()
+                            .await
+                            .map(|s| s.pool)
+                            .unwrap_or_default();
+                        metrics_registry.set_resource_gauges(
+                            crate::resources::admission::effective_available_mb(&snapshot),
+                            crate::resources::fallback::critical_floor_mb(&snapshot),
+                            crate::resources::fallback::throttle_floor_mb(&snapshot),
+                            crate::resources::fallback::recovery_floor_mb(&snapshot),
+                            snapshot.rss_mb,
+                            metrics_budget.execution.limit(),
+                            metrics_budget.execution.in_flight(),
+                            metrics_budget.explore.limit(),
+                            metrics_budget.explore.in_flight(),
+                            pool.deploys,
+                            pool.bytes,
+                        );
+                    }
+                }
+            }
+        });
+    }
     let app = router(HttpState {
         reporter,
         metrics,
@@ -2134,6 +2199,12 @@ mod tests {
             dev_mode: true,
             degraded: "normal".to_string(),
             accepts_deploys: true,
+            pool: crate::api::dto::DeployPoolStatus {
+                deploys: 0,
+                bytes: 0,
+                max_deploys: 10_000,
+                max_bytes: 64 * 1024 * 1024,
+            },
         }
     }
 
@@ -2680,6 +2751,31 @@ mod tests {
             "a deploy must not spend the explore budget"
         );
         assert_ne!(deploy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// **`/health` is a readiness body, not a pressure gate** (issue #477): 200 while the router
+    /// serves, with the advisory word and the pool's capacity. Low memory is not an unhealthy node.
+    #[tokio::test]
+    async fn health_reports_readiness_and_pool_capacity() {
+        use tower::ServiceExt;
+        let reply = router(state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["ok"], true);
+        assert!(json["acceptsDeploys"].is_boolean());
+        assert!(json["pool"].is_object());
+        assert_eq!(json["pool"]["maxDeploys"], 10_000);
     }
 
     /// **A full pool is a 429 with a retry; a malformed deploy stays a 400** (Law 86a).

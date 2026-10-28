@@ -90,6 +90,13 @@ pub fn throttle_floor_mb(sample: &super::state::ResourceSnapshot) -> u64 {
     critical_floor_mb(sample).saturating_add(margin_mb(sample))
 }
 
+/// **The headroom at which the node may leave `Throttled`**: the throttle floor plus one margin — the
+/// same exit rule `observe` applies after three good samples. Exposed so an operator can see how far
+/// below recovery a node is, rather than inferring it from a word (issue #477).
+pub fn recovery_floor_mb(sample: &super::state::ResourceSnapshot) -> u64 {
+    throttle_floor_mb(sample).saturating_add(margin_mb(sample))
+}
+
 /// The hysteresis tracker. Owned by the watchdog thread and read through the snapshot.
 #[derive(Clone, Debug)]
 pub struct Fallback {
