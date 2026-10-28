@@ -2353,6 +2353,27 @@ pub async fn setup_shard(
         Some(d) => (d.pos_genesis, d.vaults),
         None => (Default::default(), Vec::new()),
     };
+    // **The cross-deploy batch switch** (Law 86c). Off by default: the sequential path is the
+    // reference. `RNODE_CROSS_DEPLOY_BATCHING=1` turns it on; verification defaults on and refuses a
+    // mismatch by falling back to the whole-block sequential run; `_MAX` caps the fork count.
+    fn cross_deploy_batch_policy() -> rchain_casper::runtime_manager::BatchPolicy {
+        let flag = |name: &str| std::env::var(name).ok();
+        let enabled = flag("RNODE_CROSS_DEPLOY_BATCHING")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let verify = flag("RNODE_CROSS_DEPLOY_BATCH_VERIFY")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        let max_batch = flag("RNODE_CROSS_DEPLOY_BATCH_MAX")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        rchain_casper::runtime_manager::BatchPolicy {
+            enabled,
+            verify,
+            max_batch,
+        }
+    }
+
     let runtime_manager = Arc::new(
         RuntimeManager::new(
             rho_runtime,
@@ -2363,7 +2384,8 @@ pub async fn setup_shard(
             effect_mode,
         )
         .with_genesis_pos(genesis_pos)
-        .with_genesis_vaults(genesis_vaults),
+        .with_genesis_vaults(genesis_vaults)
+        .with_batch_policy(cross_deploy_batch_policy()),
     );
 
     // The eval runtime for the Repl service is node-level (it holds no chain state), and the
