@@ -1,0 +1,139 @@
+name: N480 paired startup RSS qualification
+
+on:
+  push:
+    branches:
+      - validation/n480-startup-benchmark-20261029
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    name: Same-run old/new/old persisted-state replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify runner capacity
+        run: |
+          set -euo pipefail
+          free -m
+          df -h /
+          test "$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo)" -ge 13000
+      - name: Wait for candidate release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 100); do
+            outcome=$(gh api repos/rhovision-org/rholo/actions/runs/40768935703 --jq '.status + ":" + (.conclusion // "pending")')
+            echo "candidate build $i: $outcome"
+            if [ "$outcome" = "completed:success" ]; then exit 0; fi
+            if [[ "$outcome" == completed:* ]]; then exit 2; fi
+            sleep 12
+          done
+          echo "candidate build did not complete in the pinned window"
+          exit 3
+      - name: Download verified old and candidate binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p old-bin new-bin fixture
+          gh run download 40754851864 --repo rhovision-org/rholo --name rnode-x86_64-unknown-linux-musl --dir old-bin
+          gh run download 40768935703 --repo rhovision-org/rholo --name rnode-x86_64-unknown-linux-musl --dir new-bin
+          (cd old-bin && sha256sum -c rnode.sha256)
+          (cd new-bin && sha256sum -c rnode.sha256)
+          chmod +x old-bin/rnode new-bin/rnode
+          old-bin/rnode --version
+          new-bin/rnode --version
+          old-bin/rnode --version | grep -F 'd1af45d1db3f5fe2fa6047ad6c8a72b654d041df'
+          new-bin/rnode --version | grep -F '6963bf39a981414c238a061f8c916801472f1a54'
+      - name: Retrieve and verify keyless testnet fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download n480-stored-state-benchmark-20261029 --repo aixaria0/rchain-rust --pattern d-validator-public-state-only.tar.gz --dir fixture
+          echo 'd00c0b3f5e66fb70d8abfc35439a79ea85ee9ce1211691dde0b0e0f8802d7cb1  fixture/d-validator-public-state-only.tar.gz' | sha256sum -c -
+          tar -tzf fixture/d-validator-public-state-only.tar.gz > fixture/manifest.txt
+          if grep -Ei 'private|secret|node[.]key|node[.]certificate|validator[.]key|[.]pem$' fixture/manifest.txt; then exit 4; fi
+      - name: Run paired old-new-old startup and restart tests
+        run: |
+          set -euo pipefail
+          for variant in old1 new old2; do
+            mkdir -p "$variant/stored-real-testnet" "$variant/bin"
+            tar -xzf fixture/d-validator-public-state-only.tar.gz -C "$variant/stored-real-testnet"
+            if [ "$variant" = new ]; then
+              cp new-bin/rnode "$variant/bin/rnode"
+            else
+              cp old-bin/rnode "$variant/bin/rnode"
+            fi
+            cp tools/n457_stored_history_runner.py "$variant/qualify.py"
+            python3 - "$variant/qualify.py" "$variant" <<'PY'
+          import pathlib, sys
+          p=pathlib.Path(sys.argv[1])
+          s=p.read_text().replace("time.sleep(20)","time.sleep(0.25)")
+          if sys.argv[2]=="new":
+              s=s.replace('BINARY_SHA="d1af45d1db3f5fe2fa6047ad6c8a72b654d041df"', 'BINARY_SHA="6963bf39a981414c238a061f8c916801472f1a54"')
+          p.write_text(s)
+          PY
+            echo "RUNNING_VARIANT=$variant"
+            (cd "$variant" && python3 qualify.py > execution.out 2>&1) || { tail -50 "$variant/execution.out"; exit 5; }
+            tail -8 "$variant/execution.out"
+          done
+      - name: Compare height, finalized identity, peak RSS and readiness
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,statistics
+          samples=[]
+          for name in ("old1","new","old2"):
+              a=json.loads(pathlib.Path(name,"stored-replay.json").read_text())
+              b=json.loads(pathlib.Path(name,"stored-restart.json").read_text())
+              assert a["status"]=="PASS" and b["status"]=="PASS", name
+              assert a["height"]>=1688 and b["height"]>=1688, name
+              assert a["finality"]["blockNumber"]>=1684 and b["finality"]["blockNumber"]>=1684, name
+              assert a["finality"]["blockHash"]==b["finality"]["blockHash"], name
+              samples.append({"name":name,"start_peak_rss_mib":a["peakRSSMiB"],"restart_peak_rss_mib":b["peakRSSMiB"],
+                "start_seconds":a["elapsedSeconds"],"restart_seconds":b["elapsedSeconds"],
+                "height":a["height"],"finality_height":a["finality"]["blockNumber"],"finality_hash":a["finality"]["blockHash"]})
+          assert len({x["finality_hash"] for x in samples})==1, "finality mismatch"
+          for metric in ("start_peak_rss_mib","restart_peak_rss_mib","start_seconds","restart_seconds"):
+              baseline=statistics.mean((samples[0][metric],samples[2][metric]))
+              value=samples[1][metric]
+              print(metric, "baseline_mean",baseline,"candidate",value,"delta",round(value-baseline,2),
+                "pct",round(100*(value-baseline)/max(1,baseline),2))
+          result={"source_base":"d1af45d1db3f5fe2fa6047ad6c8a72b654d041df",
+             "source_candidate":"6963bf39a981414c238a061f8c916801472f1a54",
+             "fixture_sha256":"d00c0b3f5e66fb70d8abfc35439a79ea85ee9ce1211691dde0b0e0f8802d7cb1",
+             "samples":samples,"status":"CORRECTNESS_PASS__MEMORY_EFFECT_REQUIRES_INTERPRETATION"}
+          pathlib.Path("paired-results.json").write_text(json.dumps(result,indent=2))
+          print("CORRECTNESS_PASS")
+          PY
+      - name: Upload paired measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: n480-paired-startup-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            paired-results.json
+            old1/execution.out
+            old1/stored-replay.json
+            old1/stored-restart.json
+            old1/stored-replay.log
+            old1/stored-restart.log
+            new/execution.out
+            new/stored-replay.json
+            new/stored-restart.json
+            new/stored-replay.log
+            new/stored-restart.log
+            old2/execution.out
+            old2/stored-replay.json
+            old2/stored-restart.json
+            old2/stored-replay.log
+            old2/stored-restart.log
