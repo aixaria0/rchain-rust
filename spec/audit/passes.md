@@ -11743,7 +11743,11 @@ rchain-node --lib` passes 334 tests. **The live arm is recorded** in
 `spec/audit/evidence/n477-live-arm-20261028/`: a two-validator devnet with validator-1 constrained to
 a 320 MiB cgroup (`degraded: throttled`, ~285 MiB effective headroom) accepted a signed deploy
 (`Success!`), included it in block 112 (`ProcessedWithSuccess`), and advanced the chain 105 → 139,
-with the healthy bootstrap agreeing at 139. **Owed:** the same reading on the public testnet's exact
-shared-host topology (two validators in one ~4 GiB host cgroup, which Docker cannot express as
-nested container limits), the relay end-to-end arm, and finality on a supermajority set; the batch
-and relay remain off for the recorded arm.
+with the healthy bootstrap agreeing at 139. **The relay arm is recorded** in `spec/audit/evidence/n477-relay-arm-20261028/`: four validators,
+relay enabled, `validator-1` at 280 MiB (`degraded: critical`, `stops_production()` true — it does not
+propose). A signed deploy submitted to that validator returns `Success!`; `deploy-status` on it shows
+`ProcessedWithSuccess` in block 44 with **sender validator 3**, and finality reaches block 49 with
+three of four validators. The only path from the critical node's pool to a healthy proposer was the
+`RNODE_DEPLOY_RELAY` callback. **Owed:** the same reading on the public testnet's exact shared-host
+topology (two validators in one ~4 GiB host cgroup, which Docker cannot express as nested container
+limits) and a batch-path live arm; the batch and relay remain off by default.

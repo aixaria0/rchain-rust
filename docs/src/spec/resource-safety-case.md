@@ -72,7 +72,7 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | H-RS-09 | T-RS-9 a degraded node advertises that it is healthy, or silently loses work | `is_node_read_only` (config) | B34, B37, B38 | C-RS-1, C-RS-5 | accepting work under pressure is **correct** now; the hazard is a false readiness claim or a silent drop, and one status snapshot is not an independent read | node/src/api/conversion.rs::degraded_is_advisory_and_accepts_deploys_is_pool_capacity |
 | H-RS-10 | T-RS-10 a restart replays into the same OOM | supervisor restart | B31, B32 | C-RS-6 | the supervisor can always restart anyway; the preflight must refuse first | spec/audit/evidence/n420-restart-20261024/restart.json |
 | H-RS-11 | T-RS-11 ambiguous acceptance, an orphan root or a stale derived index | root-pair write, reset bracket | B39, B40 | C-RS-1 | no cross-store WAL; D1/D2 reduce and repair the known windows | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
-| H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port; it is not a protocol-level routing guarantee, and the live 4 GiB arm is still owed | node/src/runtime/node_runtime.rs::deploy_relay_from_env |
+| H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port, not a protocol-level routing guarantee; the four-validator relay arm records a critical node's deploy included by a healthy peer, and the shared-host cgroup topology remains owed | spec/audit/evidence/n477-relay-arm-20261028/README.md |
 
 ## Barrier independence
 
