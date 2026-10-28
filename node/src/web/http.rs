@@ -43,7 +43,7 @@ use crate::api::grpc::{DEFAULT_API_RATE_LIMIT_PER_SEC, MAX_TRACKED_PEERS};
 use crate::api::web_api::WebApi;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
-use crate::resources::ResourceGuard;
+use crate::resources::{CapacityBudget, ResourceGuard};
 use crate::runtime::shutdown::stop_requested;
 use crate::web::pos_read::PosReadApi;
 use crate::web::reporting::transform_result;
@@ -199,6 +199,9 @@ pub struct HttpState {
     /// estimate or claim to prevent OOM; the operator must set each separately.
     pub deploy_admission: Option<InFlightAdmission>,
     pub explore_admission: Option<InFlightAdmission>,
+    /// **The execution permit budget** (Law 86d): headroom bounds concurrent execution, never
+    /// admission. Explore takes an explore permit; the proposer takes execution permits.
+    pub budget: Arc<CapacityBudget>,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<KeyedRateLimiter>,
     /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
@@ -1539,6 +1542,28 @@ async fn in_flight_admission(
     next.run(request).await
 }
 
+/// **The exploratory read's budget** (Law 86d): a read runs a term and pays from the explore share.
+/// The fixed in-flight bound is the operator's optional extra; the memory-derived budget is the
+/// node's own. A refusal is 429 — the node is serving, and the caller may come back.
+async fn explore_in_flight(
+    State((fixed, capacity)): State<(Option<InFlightAdmission>, Arc<CapacityBudget>)>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let _permit = match capacity.explore.try_acquire() {
+        Some(permit) => permit,
+        None => return in_flight_refused("explore execution budget exhausted"),
+    };
+    let _fixed: Option<OwnedSemaphorePermit> = match fixed {
+        Some(fixed) => match fixed.semaphore.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => return in_flight_refused("HTTP in-flight capacity exhausted"),
+        },
+        None => None,
+    };
+    next.run(request).await
+}
+
 fn admission_field(budget: &Option<InFlightAdmission>) -> serde_json::Value {
     match budget {
         Some(budget) => {
@@ -1600,8 +1625,8 @@ pub fn router(state: HttpState) -> Router {
             post(api_explore_deploy_by_block_hash),
         )
         .route_layer(middleware::from_fn_with_state(
-            state.explore_admission.clone(),
-            in_flight_admission,
+            (state.explore_admission.clone(), state.budget.clone()),
+            explore_in_flight,
         ))
         .route_layer(middleware::from_fn_with_state(
             (
@@ -1891,7 +1916,7 @@ pub async fn acquire_http_server(
     shards: Arc<ShardRegistry>,
     status_provider: Option<StatusProvider>,
     pos: Arc<dyn PosReadApi>,
-    _resources: Arc<ResourceGuard>,
+    resources: Arc<ResourceGuard>,
     max_connection_idle: Duration,
     enable_reporting: bool,
     // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
@@ -1910,6 +1935,7 @@ pub async fn acquire_http_server(
     // listener instead of silently disabling admission control.
     let deploy_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_DEPLOY")?;
     let explore_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_EXPLORE")?;
+    let budget = Arc::new(CapacityBudget::new(resources));
     let app = router(HttpState {
         reporter,
         metrics,
@@ -1929,6 +1955,7 @@ pub async fn acquire_http_server(
         )),
         deploy_admission,
         explore_admission,
+        budget,
         faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
             FAUCET_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
@@ -2027,6 +2054,7 @@ mod tests {
         RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
+    use crate::resources::{ResourceGuard, ResourceSnapshot, ResourceState};
     use crate::web::transaction::TransactionResponse;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -2276,6 +2304,17 @@ mod tests {
             )),
             deploy_admission: None,
             explore_admission: None,
+            budget: Arc::new(CapacityBudget::new(ResourceGuard::inert(
+                ResourceSnapshot {
+                    state: "normal",
+                    fallback: ResourceState::Normal,
+                    mem_available_mb: 8_000,
+                    mem_total_mb: 8_192,
+                    sampled_at_ms: 1,
+                    source: "test".to_string(),
+                    ..ResourceSnapshot::default()
+                },
+            ))),
             // On by default in the tests, because the router tests drive the faucet route; the
             // off case is pinned by its own test below.
             faucet_enabled: true,
@@ -2582,6 +2621,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.status(), StatusCode::OK);
+    }
+
+    /// **Explore spends the explore budget; a deploy does not** (Law 86d).
+    ///
+    /// On a host below the policy floor the explore share is zero, so a read is refused 429 with a
+    /// retry — but a deploy with a free pool slot still reaches the extractor, because admission is
+    /// the pool's decision and memory only bounds execution.
+    #[tokio::test]
+    async fn explore_is_budgeted_while_a_deploy_is_not() {
+        use tower::ServiceExt;
+        let mut s = state();
+        s.budget = Arc::new(CapacityBudget::new(ResourceGuard::inert(
+            ResourceSnapshot {
+                state: "normal",
+                fallback: ResourceState::Normal,
+                mem_available_mb: 100,
+                mem_total_mb: 8_192,
+                sampled_at_ms: 1,
+                source: "test".to_string(),
+                ..ResourceSnapshot::default()
+            },
+        )));
+        let explore = router(s.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/explore-deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("\"new return in { return!(1) }\""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explore.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            explore
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .expect("Retry-After"),
+            "1"
+        );
+
+        let deploy = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{ not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            deploy.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a deploy must not spend the explore budget"
+        );
+        assert_ne!(deploy.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// **A full pool is a 429 with a retry; a malformed deploy stays a 400** (Law 86a).

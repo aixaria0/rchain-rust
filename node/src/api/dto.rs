@@ -377,6 +377,10 @@ pub struct ResourceStatusDto {
     pub sample_age_ms: u64,
     /// Which readers contributed, e.g. `meminfo+cgroup+disk`.
     pub source: String,
+    /// **The execution permit budget** (Law 86d): how many concurrent executions the headroom pays
+    /// for, and the explore share. Limits only; the in-flight count is a live node quantity.
+    pub execution_permits: usize,
+    pub explore_permits: usize,
 }
 
 /// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).

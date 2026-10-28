@@ -10,6 +10,7 @@ pub mod block_random_seed;
 pub mod block_status;
 pub mod blocks;
 pub mod bonds_parser;
+pub mod budget;
 pub mod conf;
 pub mod construct_deploy;
 pub mod dag;

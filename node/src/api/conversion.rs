@@ -21,7 +21,8 @@ use super::dto::{
     RhoExprWithBlock, ShardHealthDto, SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
-use crate::resources::ResourceSnapshot;
+use crate::resources::admission::{effective_available_mb, threshold_mb};
+use crate::resources::{AdmissionPolicy, ResourceSnapshot};
 
 /// **The scope of a counter that is the process's own running total** (W-N10-02). A string on the wire
 /// rather than a boolean, because it names *what* the number counts — a reader comparing it with the
@@ -155,23 +156,39 @@ pub fn to_operator_status(
                 .map(|(k, v)| (k.clone(), to_shard_health_dto(v)))
                 .collect()
         }),
-        resources: ResourceStatusDto {
-            state: resource.state.to_string(),
-            fallback_state: resource.fallback.as_str().to_string(),
-            fallback_reason: resource.fallback_reason.to_string(),
-            fallback_since_ms: resource.fallback_since_ms,
-            mem_available_mb: resource.mem_available_mb,
-            mem_total_mb: resource.mem_total_mb,
-            cgroup_version: resource.cgroup_version.to_string(),
-            cgroup_limit_mb: resource.cgroup_limit_mb,
-            cgroup_current_mb: resource.cgroup_current_mb,
-            cgroup_oom_kills: resource.cgroup_oom_kills,
-            cpu_quota: resource.cpu_quota,
-            data_dir_free_mb: resource.data_dir_free_mb,
-            rnode_processes: u64::try_from(resource.rnode_processes).unwrap_or(u64::MAX),
-            sampled_at_ms: resource.sampled_at_ms,
-            sample_age_ms: now_ms().saturating_sub(resource.sampled_at_ms),
-            source: resource.source.clone(),
+        resources: {
+            let cap = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(8);
+            let total = rchain_casper::budget::permits_for(
+                effective_available_mb(resource),
+                threshold_mb(resource, &AdmissionPolicy::default()),
+                rchain_casper::budget::DEFAULT_PER_EXECUTION_MB,
+                cap,
+            );
+            let permits =
+                rchain_casper::budget::split(total, rchain_casper::budget::DEFAULT_MAX_EXPLORE);
+            ResourceStatusDto {
+                state: resource.state.to_string(),
+                fallback_state: resource.fallback.as_str().to_string(),
+                fallback_reason: resource.fallback_reason.to_string(),
+                fallback_since_ms: resource.fallback_since_ms,
+                mem_available_mb: resource.mem_available_mb,
+                mem_total_mb: resource.mem_total_mb,
+                cgroup_version: resource.cgroup_version.to_string(),
+                cgroup_limit_mb: resource.cgroup_limit_mb,
+                cgroup_current_mb: resource.cgroup_current_mb,
+                cgroup_oom_kills: resource.cgroup_oom_kills,
+                cpu_quota: resource.cpu_quota,
+                data_dir_free_mb: resource.data_dir_free_mb,
+                rnode_processes: u64::try_from(resource.rnode_processes).unwrap_or(u64::MAX),
+                sampled_at_ms: resource.sampled_at_ms,
+                sample_age_ms: now_ms().saturating_sub(resource.sampled_at_ms),
+                source: resource.source.clone(),
+                execution_permits: permits.exec,
+                explore_permits: permits.explore,
+            }
         },
     }
 }

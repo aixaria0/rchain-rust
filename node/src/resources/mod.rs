@@ -12,6 +12,7 @@
 //! `unavailable`, never as `normal` (unit C turns that into admission behaviour).
 
 pub mod admission;
+pub mod budget;
 pub mod cgroup;
 pub mod colocation;
 pub mod disk;
@@ -22,6 +23,7 @@ pub mod preflight;
 pub mod state;
 
 pub use admission::AdmissionPolicy;
+pub use budget::CapacityBudget;
 pub use cgroup::CgroupFacts;
 pub use fallback::{Fallback, ResourceState};
 pub use meminfo::MemInfo;
