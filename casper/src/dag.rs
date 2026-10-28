@@ -1698,6 +1698,14 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.deploy_store.to_map().await
     }
 
+    async fn deploy_pool_stats(&self) -> Result<(usize, usize), String> {
+        Ok((
+            self.deploy_store.count().await?,
+            self.pooled_term_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
     async fn contains_deploy_in_pool(&self, deploy_id: &DeployId) -> Result<bool, String> {
         let vals = self.deploy_store.contains(&[deploy_id.clone()]).await?;
         Ok(vals.into_iter().next().unwrap_or(false))

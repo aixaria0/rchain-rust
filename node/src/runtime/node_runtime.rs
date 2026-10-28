@@ -579,10 +579,6 @@ impl NodeProgram {
             deploy,
             grpc_external_addr,
             grpc_max_recv_message_size,
-            crate::resources::PressureGate::new(
-                resources.clone(),
-                crate::resources::AdmissionPolicy::default(),
-            ),
             stop.clone(),
         ));
         let mut grpc_internal = tokio::spawn(serve_internal(

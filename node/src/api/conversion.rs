@@ -1,7 +1,7 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
 use rchain_casper::api::block_api::{
-    Capabilities, FinalityHealth, ProposerHealth, ShardHealthEntry, SyncHealth,
+    Capabilities, DeployPoolStats, FinalityHealth, ProposerHealth, ShardHealthEntry, SyncHealth,
 };
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
@@ -66,6 +66,7 @@ pub fn to_public_status(
     status: &Status,
     caps: &Capabilities,
     resource: &ResourceSnapshot,
+    pool: &DeployPoolStats,
 ) -> PublicStatus {
     PublicStatus {
         version: VersionInfo {
@@ -84,8 +85,9 @@ pub fn to_public_status(
         manual_propose: caps.manual_propose,
         dev_mode: caps.dev_mode,
         degraded: resource.fallback.as_str().to_string(),
-        // The contract, now backed by the state machine: only `normal` accepts new work.
-        accepts_deploys: !resource.fallback.refuses_ingress(),
+        // **The pool's capacity, not the advisory resource word** (Law 86a). A throttled node with a
+        // free slot accepts; a node whose pool is full refuses with 429 until work drains or relays.
+        accepts_deploys: pool.has_room(),
     }
 }
 
@@ -300,11 +302,13 @@ mod tests {
         BondInfo, Status, VersionInfo as CasperVersionInfo,
     };
 
-    /// **The public contract follows the fallback state** (unit C, B38): `degraded` is the state
-    /// machine's word, and `acceptsDeploys` is true only in `normal`. A throttled or critical node must
-    /// not advertise that it will take work.
+    /// **`degraded` follows the fallback word; `acceptsDeploys` follows the pool** (Law 86a).
+    ///
+    /// The two answer different questions. A throttled node with a free slot accepts work: memory
+    /// pressure is an execution budget now, not an ingress verdict (issue #477). Only a pool at its
+    /// count or byte bound makes `acceptsDeploys` false.
     #[test]
-    fn accepts_deploys_is_false_under_pressure() {
+    fn degraded_is_advisory_and_accepts_deploys_is_pool_capacity() {
         let status = Status {
             version: CasperVersionInfo {
                 api: "1".to_string(),
@@ -325,20 +329,38 @@ mod tests {
             admin_http: false,
             dev_mode: false,
         };
-        for (state, word, accepts) in [
-            (ResourceState::Normal, "normal", true),
-            (ResourceState::Throttled, "throttled", false),
-            (ResourceState::Critical, "critical", false),
-            (ResourceState::Unavailable, "unavailable", false),
+        let roomy = DeployPoolStats {
+            deploys: 1,
+            max_deploys: 10,
+            bytes: 10,
+            max_bytes: 100,
+        };
+        let full = DeployPoolStats {
+            deploys: 10,
+            max_deploys: 10,
+            bytes: 100,
+            max_bytes: 100,
+        };
+        for (state, word) in [
+            (ResourceState::Normal, "normal"),
+            (ResourceState::Throttled, "throttled"),
+            (ResourceState::Critical, "critical"),
+            (ResourceState::Unavailable, "unavailable"),
         ] {
             let snapshot = ResourceSnapshot {
                 fallback: state,
                 ..ResourceSnapshot::default()
             };
-            let public = to_public_status(&status, &caps, &snapshot);
+            let public = to_public_status(&status, &caps, &snapshot, &roomy);
             assert_eq!(public.degraded, word);
-            assert_eq!(public.accepts_deploys, accepts, "{word}");
+            assert!(
+                public.accepts_deploys,
+                "{word} with a free pool must accept; memory is not an ingress verdict"
+            );
         }
+        let snap = ResourceSnapshot::default();
+        let public = to_public_status(&status, &caps, &snap, &full);
+        assert!(!public.accepts_deploys, "a full pool refuses");
     }
 
     fn light_block_info() -> LightBlockInfo {
@@ -421,7 +443,12 @@ mod tests {
         // **Two constructors, and which one a field lives on is the subject of the split** (W-N3-01):
         // `to_public_status` cannot see the health, the finality counters or the reporter counts, so a
         // field moved into the operator half by mistake is a compile error rather than a leak.
-        let core = to_public_status(&status, &caps, &ResourceSnapshot::default());
+        let core = to_public_status(
+            &status,
+            &caps,
+            &ResourceSnapshot::default(),
+            &DeployPoolStats::default(),
+        );
         let api = to_operator_status(
             core.clone(),
             &caps,
@@ -786,6 +813,7 @@ mod tests {
             &status,
             &caps,
             &ResourceSnapshot::default(),
+            &DeployPoolStats::default(),
         ))
         .expect("serializes");
         let keys: Vec<&str> = json

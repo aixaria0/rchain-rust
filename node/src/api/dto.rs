@@ -123,12 +123,13 @@ pub struct PublicStatus {
     /// Dev mode is on. Public: it is a configuration fact, and a client that must not be handed
     /// dev-only answers has to be able to see it.
     pub dev_mode: bool,
-    /// **The sampled resource state** (A1): `normal` while the host facts are readable, `unavailable`
-    /// when they are not. A word, not a number — numeric host data stays on the operator surface. The
-    /// pressure states (`throttled`/`critical`) arrive with the fallback-state unit.
+    /// **The sampled resource state, advisory** (A1, Law 86): `normal` while the host facts are
+    /// readable, `unavailable` when they are not, and `throttled`/`critical` when the fallback state
+    /// machine latches them. It is a word, not a number, and it no longer gates admission: a throttled
+    /// node with a free pool accepts work.
     pub degraded: String,
-    /// Whether the node is accepting deploys right now. True until the admission/fallback units land;
-    /// the field is the contract, and a node under pressure will make it false.
+    /// Whether the deploy pool has room under its count and term-byte bounds (Law 86a). A throttled
+    /// node with a free slot accepts; memory pressure bounds execution concurrency, not admission.
     pub accepts_deploys: bool,
 }
 

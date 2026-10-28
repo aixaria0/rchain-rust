@@ -30,8 +30,8 @@ use rchain_rspace::trace::event::Event as REvent;
 use rchain_shared::base16;
 
 use crate::api::block_api::{
-    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployerInfo,
-    FinalityHealth, ProposeHealth, ProposerHealth, ShardHealthEntry,
+    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployPoolStats,
+    DeployerInfo, FinalityHealth, ProposeHealth, ProposerHealth, ShardHealthEntry,
 };
 use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
@@ -478,6 +478,16 @@ impl BlockApi for BlockApiImpl {
     async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
         let pooled = self.dag.pooled_deploys().await?;
         Ok(pooled.into_values().collect())
+    }
+
+    async fn deploy_pool_stats(&self) -> ApiErr<DeployPoolStats> {
+        let (deploys, bytes) = self.dag.deploy_pool_stats().await?;
+        Ok(DeployPoolStats {
+            deploys,
+            max_deploys: crate::dag::MAX_POOLED_DEPLOYS,
+            bytes,
+            max_bytes: crate::dag::MAX_POOLED_DEPLOY_BYTES,
+        })
     }
 
     async fn capabilities(&self) -> Capabilities {

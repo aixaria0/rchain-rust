@@ -21,7 +21,7 @@ pub mod policy;
 pub mod preflight;
 pub mod state;
 
-pub use admission::{AdmissionPolicy, AdmissionVerdict, PressureGate};
+pub use admission::AdmissionPolicy;
 pub use cgroup::CgroupFacts;
 pub use fallback::{Fallback, ResourceState};
 pub use meminfo::MemInfo;

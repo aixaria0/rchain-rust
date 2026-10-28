@@ -1113,7 +1113,17 @@ impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<crate::api::dto::PublicStatus, BlockApiException> {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
-        Ok(to_public_status(&status, &caps, &self.resources.snapshot()))
+        let pool = self
+            .block_api
+            .deploy_pool_stats()
+            .await
+            .map_err(BlockApiException)?;
+        Ok(to_public_status(
+            &status,
+            &caps,
+            &self.resources.snapshot(),
+            &pool,
+        ))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {

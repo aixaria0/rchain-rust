@@ -43,7 +43,6 @@ use crate::api::grpc::{DEFAULT_API_RATE_LIMIT_PER_SEC, MAX_TRACKED_PEERS};
 use crate::api::web_api::WebApi;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
-use crate::resources::admission::PressureGate;
 use crate::resources::ResourceGuard;
 use crate::runtime::shutdown::stop_requested;
 use crate::web::pos_read::PosReadApi;
@@ -99,7 +98,7 @@ const RESUME_RESOURCE_RATE_LIMIT_PER_SEC: u64 = 1;
 const UNATTRIBUTED_PEER: &[u8] = b"unattributed-peer";
 
 /// An opt-in bound on executing HTTP requests, separate from the per-peer rate limit.
-/// One zero-delay admission attempt is made before JSON extraction; refusal is 503.
+/// One zero-delay admission attempt is made before JSON extraction; refusal is 429.
 /// No default number is guessed for a validator without resource measurements.
 const MAX_CONFIGURED_HTTP_INFLIGHT: usize = 1024;
 
@@ -200,13 +199,6 @@ pub struct HttpState {
     /// estimate or claim to prevent OOM; the operator must set each separately.
     pub deploy_admission: Option<InFlightAdmission>,
     pub explore_admission: Option<InFlightAdmission>,
-    /// **The memory gate** (unit B34): evaluated before a deploy or explore body is decoded.
-    ///
-    /// It reads the watchdog's newest sample and refuses when headroom is below the admission floor,
-    /// when the sample is stale, or when the facts could not be read. The optional semaphores above
-    /// are a *concurrency* bound; this is a *memory* bound — they answer different questions, and
-    /// neither substitutes for the other.
-    pub pressure: PressureGate,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<KeyedRateLimiter>,
     /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
@@ -635,8 +627,20 @@ async fn api_txn_list(State(state): State<AdminState>) -> Response {
     }
 }
 
+/// **The deploy response: a bound is a 429, a malformed request is a 400** (Law 86a). Extracted so
+/// the classification is testable without a listener.
+fn deploy_response(result: Result<String, BlockApiException>) -> Response {
+    match result {
+        Ok(id) => (StatusCode::OK, Json(id)).into_response(),
+        Err(err) if rchain_casper::api::block_api::deploy_refusal_is_bounded(&err.0) => {
+            in_flight_refused(&err.0)
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(err.0)).into_response(),
+    }
+}
+
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
-    json_result(state.web_api.deploy(&req).await)
+    deploy_response(state.web_api.deploy(&req).await)
 }
 
 async fn api_faucet(State(state): State<HttpState>, Json(req): Json<FaucetRequest>) -> Response {
@@ -875,7 +879,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Deploy accepted", "content": { "application/json": { "schema": { "type": "string" } } } },
           "400": { "description": "Invalid deploy" },
-          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
+          "429": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
@@ -897,7 +901,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Result expression", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploratoryDeployResponse" } } } },
           "400": { "description": "Deploy failed" },
-          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
+          "429": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
@@ -909,7 +913,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Result expression", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploratoryDeployResponse" } } } },
           "400": { "description": "Deploy failed" },
-          "503": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
+          "429": { "$ref": "#/components/responses/HttpAdmissionExhausted" }
         }
       }
     },
@@ -973,7 +977,7 @@ pub const OPENAPI_JSON: &str = r##"{
   "components": {
     "responses": {
       "HttpAdmissionExhausted": {
-        "description": "Work refused before the request body is decoded: memory headroom below the node's admission floor, the resource sample stale or unreadable, or the operator's HTTP in-flight budget exhausted",
+        "description": "Work refused before the request body is decoded because the operator's HTTP in-flight concurrency budget is exhausted. A full deploy pool is a separate 429 from the deploy handler; memory pressure is never an HTTP refusal (Law 86).",
         "headers": {
           "Retry-After": {
             "description": "Delay in seconds before retry; currently 1",
@@ -982,7 +986,7 @@ pub const OPENAPI_JSON: &str = r##"{
         },
         "content": { "application/json": {
           "schema": { "type": "string" },
-          "example": "memory headroom below the admission floor: available memory is 10 MiB (cgroup-aware), below the 819 MiB admission floor"
+          "example": "HTTP in-flight capacity exhausted"
         } }
       }
     },
@@ -1063,7 +1067,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable (a stale or unreadable sample reports unavailable). A word, not a number; the numbers are on the operator surface" },
-          "acceptsDeploys": { "type": "boolean", "description": "Whether the node is accepting deploys right now. True until the admission/fallback units land" }
+          "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" }
         }
       },
       "OperatorStatus": {
@@ -1083,7 +1087,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable. A word, not a number; the numbers are on the operator surface" },
-          "acceptsDeploys": { "type": "boolean", "description": "Whether the node is accepting deploys right now. True until the admission/fallback units land" },
+          "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
           "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped. Two things restart it: the process (the halt is durable, re-seeded at boot), and POST /api/v1/autopropose/resume on the admin listener, which clears the record and wakes the parked timer in-process. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
@@ -1117,7 +1121,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "description": "The sampled host-resource snapshot (A1), on the operator surface only. A reading with a source and an age, not a certificate: state=normal means the node did not see pressure at the sample, not that it is healthy",
         "properties": {
           "state": { "type": "string", "description": "The raw read: normal | unavailable" },
-          "fallbackState": { "type": "string", "description": "The pressure state machine: normal | throttled | critical | unavailable. Only normal accepts new deploy/explore work; critical also stops proposing and attesting" },
+          "fallbackState": { "type": "string", "description": "The advisory pressure state machine: normal | throttled | critical | unavailable. It no longer gates deploy/explore admission (Law 86); critical also stops proposing and attesting" },
           "fallbackReason": { "type": "string", "description": "Why the fallback state is what it is" },
           "fallbackSinceMs": { "type": "integer", "format": "int64", "description": "When the fallback state last changed (ms since the Unix epoch)" },
           "memAvailableMb": { "type": "integer", "format": "int64" },
@@ -1501,9 +1505,12 @@ async fn peer_rate_limit(
     next.run(request).await
 }
 
-/// The one `503` shape both gates answer with: a reason and a `Retry-After`, before any body work.
-fn admission_refused(message: &str) -> Response {
-    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(message.to_string())).into_response();
+/// The one refusal shape the concurrency bound answers with: a reason and a `Retry-After`, before
+/// any body work. **429, not 503**: the node is serving and the pool is the throttle; a full
+/// in-flight budget is a request to come back, not a statement that the service is unavailable
+/// (issue #477, Law 86).
+fn in_flight_refused(message: &str) -> Response {
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(message.to_string())).into_response();
     response.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
         axum::http::HeaderValue::from_static("1"),
@@ -1511,26 +1518,21 @@ fn admission_refused(message: &str) -> Response {
     response
 }
 
-/// **The two gates on the deploy/explore path** (B34 memory, B35 concurrency).
+/// **The concurrency bound on the deploy/explore path** (B35).
 ///
-/// The memory gate is always present and is checked first: it reads the watchdog's newest sample and
-/// refuses when headroom is below the floor, the sample is stale, or the facts could not be read. A
-/// permit is a *concurrency* bound and cannot substitute for it. The permit is optional (the operator's
-/// configured in-flight budget) and lives through the whole handler future, including exploratory
-/// Rholang execution, so a busy route fails quickly without decoding a body or queuing unbounded work.
-/// Other routes (status, finality, admin) borrow neither gate.
+/// The permit is optional (the operator's configured in-flight budget) and lives through the whole
+/// handler future, including exploratory Rholang execution, so a busy route fails quickly without
+/// decoding a body or queuing unbounded work. Memory pressure is a **permit budget** now (Law 86);
+/// it no longer refuses here. Other routes (status, finality, admin) borrow no permit.
 async fn in_flight_admission(
-    State((budget, pressure)): State<(Option<InFlightAdmission>, PressureGate)>,
+    State(budget): State<Option<InFlightAdmission>>,
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some((reason, detail)) = pressure.evaluate_now().refusal() {
-        return admission_refused(&format!("{reason}: {detail}"));
-    }
     let _permit: Option<OwnedSemaphorePermit> = match budget {
         Some(budget) => match budget.semaphore.try_acquire_owned() {
             Ok(permit) => Some(permit),
-            Err(_) => return admission_refused("HTTP in-flight capacity exhausted"),
+            Err(_) => return in_flight_refused("HTTP in-flight capacity exhausted"),
         },
         None => None,
     };
@@ -1576,7 +1578,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/deploy", post(api_deploy))
         .route("/api/v1/deploy", post(api_deploy))
         .route_layer(middleware::from_fn_with_state(
-            (state.deploy_admission.clone(), state.pressure.clone()),
+            state.deploy_admission.clone(),
             in_flight_admission,
         ))
         .route_layer(middleware::from_fn_with_state(
@@ -1598,7 +1600,7 @@ pub fn router(state: HttpState) -> Router {
             post(api_explore_deploy_by_block_hash),
         )
         .route_layer(middleware::from_fn_with_state(
-            (state.explore_admission.clone(), state.pressure.clone()),
+            state.explore_admission.clone(),
             in_flight_admission,
         ))
         .route_layer(middleware::from_fn_with_state(
@@ -1889,7 +1891,7 @@ pub async fn acquire_http_server(
     shards: Arc<ShardRegistry>,
     status_provider: Option<StatusProvider>,
     pos: Arc<dyn PosReadApi>,
-    resources: Arc<ResourceGuard>,
+    _resources: Arc<ResourceGuard>,
     max_connection_idle: Duration,
     enable_reporting: bool,
     // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
@@ -1908,10 +1910,6 @@ pub async fn acquire_http_server(
     // listener instead of silently disabling admission control.
     let deploy_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_DEPLOY")?;
     let explore_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_EXPLORE")?;
-    // The memory gate is not opt-in: a node that cannot read its own headroom is exactly the node
-    // this programme exists for. The policy is a documented floor (resources/admission.rs), not a
-    // guessed concurrency number.
-    let pressure = PressureGate::new(resources, crate::resources::AdmissionPolicy::default());
     let app = router(HttpState {
         reporter,
         metrics,
@@ -1931,7 +1929,6 @@ pub async fn acquire_http_server(
         )),
         deploy_admission,
         explore_admission,
-        pressure,
         faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
             FAUCET_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
@@ -2030,7 +2027,6 @@ mod tests {
         RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
-    use crate::resources::{AdmissionPolicy, ResourceSnapshot, ResourceState};
     use crate::web::transaction::TransactionResponse;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -2245,27 +2241,6 @@ mod tests {
         }
     }
 
-    /// A snapshot sampled now with headroom: the default for the router tests, so an unrelated route
-    /// test is not refused by the memory gate. A pressured or stale arm replaces it.
-    fn healthy_snapshot() -> ResourceSnapshot {
-        ResourceSnapshot {
-            state: "normal",
-            fallback: ResourceState::Normal,
-            mem_available_mb: 4_096,
-            mem_total_mb: 8_192,
-            sampled_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or(0),
-            source: "test".to_string(),
-            ..ResourceSnapshot::default()
-        }
-    }
-
-    fn gate_over(snapshot: ResourceSnapshot) -> PressureGate {
-        PressureGate::new(ResourceGuard::inert(snapshot), AdmissionPolicy::default())
-    }
-
     fn state() -> HttpState {
         HttpState {
             reporter: Arc::new(NewPrometheusReporter::new(Configuration::default())),
@@ -2301,7 +2276,6 @@ mod tests {
             )),
             deploy_admission: None,
             explore_admission: None,
-            pressure: gate_over(healthy_snapshot()),
             // On by default in the tests, because the router tests drive the faucet route; the
             // off case is pinned by its own test below.
             faucet_enabled: true,
@@ -2349,7 +2323,7 @@ mod tests {
                 .body(axum::body::Body::from("{ invalid JSON"))
                 .unwrap();
             let reply = router(s.clone()).oneshot(request).await.unwrap();
-            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
             assert_eq!(
                 reply
                     .headers()
@@ -2419,7 +2393,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
         }
         let status = router(s.clone())
             .oneshot(
@@ -2475,7 +2449,7 @@ mod tests {
                 }),
             )
             .route_layer(middleware::from_fn_with_state(
-                (Some(budget.clone()), gate_over(healthy_snapshot())),
+                Some(budget.clone()),
                 in_flight_admission,
             ));
 
@@ -2507,7 +2481,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
         release.notify_one();
         assert_eq!(running.await.unwrap().status(), StatusCode::OK);
         assert_eq!(budget.semaphore.available_permits(), 1);
@@ -2558,26 +2532,15 @@ mod tests {
         assert!(json.get("degraded").is_none());
     }
 
-    /// **A node below its admission floor refuses the work before it decodes the body** (unit B34,
-    /// B34/H-RS-02).
+    /// **A deploy is not refused by a memory verdict** (issue #477, Law 86).
     ///
-    /// The body is deliberately invalid JSON: a `503` proves the gate answered before axum's `Json`
-    /// extractor ran, and the `Retry-After` proves a caller is told how to come back rather than
-    /// being left to guess. Every deploy and explore alias is covered, because a gate on one alias is
-    /// a gate an attacker walks around; `/api/status` stays reachable, because shedding work must not
-    /// blind the operator.
-    ///
-    /// Falsifier: with a healthy snapshot the same requests reach the extractor and the replies are
-    /// `400`s (the control assertion below).
+    /// The body is deliberately invalid JSON: with the memory gate gone, the request reaches axum's
+    /// extractor and answers `400`, never the old `503`. Every alias is covered; the status route
+    /// stays reachable. A re-added gate would have to change `HttpState`, and this test would fail
+    /// on the 503 the new field produced.
     #[tokio::test]
-    async fn a_deploy_is_refused_503_before_the_body_is_decoded() {
+    async fn a_deploy_reaches_the_extractor_without_a_memory_verdict() {
         use tower::ServiceExt;
-        let mut pressured = healthy_snapshot();
-        pressured.mem_available_mb = 10;
-
-        let mut shed = state();
-        shed.pressure = gate_over(pressured);
-
         for uri in [
             "/api/deploy",
             "/api/v1/deploy",
@@ -2586,7 +2549,7 @@ mod tests {
             "/api/explore-deploy-by-block-hash",
             "/api/v1/explore-deploy-by-block-hash",
         ] {
-            let reply = router(shed.clone())
+            let reply = router(state())
                 .oneshot(
                     axum::http::Request::builder()
                         .method("POST")
@@ -2597,22 +2560,19 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(
+            assert_ne!(
                 reply.status(),
                 StatusCode::SERVICE_UNAVAILABLE,
-                "{uri}: a pressured node must refuse before decode, not answer a parse error"
+                "{uri}: the body must reach the extractor, not a memory 503"
             );
-            assert_eq!(
-                reply
-                    .headers()
-                    .get(axum::http::header::RETRY_AFTER)
-                    .expect("Retry-After"),
-                "1"
+            assert!(
+                reply.status().is_client_error(),
+                "{uri}: the extractor's refusal is a client error, got {}",
+                reply.status()
             );
         }
 
-        // The operator can still see the node while admission is shed.
-        let status = router(shed)
+        let status = router(state())
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/api/status")
@@ -2622,47 +2582,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.status(), StatusCode::OK);
-
-        // The control: on a healthy sample the same body reaches the extractor and is a `400`.
-        let healthy = router(state())
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/deploy")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from("{ not json"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_ne!(
-            healthy.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "a healthy node must not refuse the request"
-        );
     }
 
-    /// **A stale sample is a refusal, not a pass** (B33/B34): a stopped watchdog must not leave
-    /// admission open on a reading nobody refreshed.
-    #[tokio::test]
-    async fn a_stale_resource_sample_refuses_deploys() {
-        use tower::ServiceExt;
-        let mut stale = healthy_snapshot();
-        stale.sampled_at_ms = 1;
-        let mut s = state();
-        s.pressure = gate_over(stale);
-        let reply = router(s)
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/deploy")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+    /// **A full pool is a 429 with a retry; a malformed deploy stays a 400** (Law 86a).
+    #[test]
+    fn a_bounded_deploy_refusal_is_429_with_retry_after() {
+        let full = deploy_response(Err(BlockApiException(
+            "deploy pool is full: 67108864 of 67108864 term bytes in use".to_string(),
+        )));
+        assert_eq!(full.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            full.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .expect("Retry-After"),
+            "1"
+        );
+
+        let share = deploy_response(Err(BlockApiException(
+            "this deployer holds its share of the deploy pool".to_string(),
+        )));
+        assert_eq!(share.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let malformed = deploy_response(Err(BlockApiException(
+            "deploy signature is invalid".to_string(),
+        )));
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
     }
 
     /// **AUDIT C148**: the PoS read has a route, and the route renders what it was handed. The
@@ -2942,7 +2886,7 @@ mod tests {
         assert!(doc["paths"]["/admission"]["get"]["servers"].is_null());
 
         let documented = &doc["components"]["responses"]["HttpAdmissionExhausted"];
-        assert!(documented.is_object(), "shared 503 response missing");
+        assert!(documented.is_object(), "shared 429 response missing");
         assert_eq!(
             documented["headers"]["Retry-After"]["schema"]["type"],
             "integer"
@@ -2954,10 +2898,10 @@ mod tests {
         );
         let example = documented["content"]["application/json"]["example"]
             .as_str()
-            .expect("the 503 example is a string");
+            .expect("the 429 example is a string");
         assert!(
-            example.contains("admission floor"),
-            "the served example must describe the memory gate's refusal, got {example}"
+            example.contains("in-flight"),
+            "the served example must describe the concurrency refusal, got {example}"
         );
 
         let mut s = state();
@@ -2998,9 +2942,9 @@ mod tests {
         ] {
             let operation = &doc["paths"][logical_path]["post"];
             assert_eq!(
-                operation["responses"]["503"]["$ref"],
+                operation["responses"]["429"]["$ref"],
                 "#/components/responses/HttpAdmissionExhausted",
-                "{route} has no documented 503"
+                "{route} has no documented 429"
             );
             let servers = operation["servers"]
                 .as_array()
@@ -3024,7 +2968,7 @@ mod tests {
                 .body(axum::body::Body::from("{ invalid JSON"))
                 .unwrap();
             let reply = router(s.clone()).oneshot(request).await.unwrap();
-            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE, "{route}");
+            assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS, "{route}");
             assert_eq!(
                 reply
                     .headers()

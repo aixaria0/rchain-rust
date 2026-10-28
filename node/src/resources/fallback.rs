@@ -60,11 +60,6 @@ impl ResourceState {
         }
     }
 
-    /// Refuse new deploy/explore work? Every state but `Normal`.
-    pub fn refuses_ingress(self) -> bool {
-        self != ResourceState::Normal
-    }
-
     /// Stop proposing and attesting? Only the states where the node is not fit to produce.
     pub fn stops_production(self) -> bool {
         matches!(self, ResourceState::Critical | ResourceState::Unavailable)
@@ -286,7 +281,6 @@ mod tests {
         );
         fb.observe(&low, 1_001);
         assert_eq!(fb.state(), ResourceState::Throttled);
-        assert!(fb.state().refuses_ingress());
         assert!(!fb.state().stops_production());
     }
 
@@ -328,7 +322,6 @@ mod tests {
         observe_n(&mut fb, &sample(100), ENTER_SAMPLES, 1_000);
         assert_eq!(fb.state(), ResourceState::Critical);
         assert!(fb.state().stops_production());
-        assert!(fb.state().refuses_ingress());
     }
 
     #[test]
