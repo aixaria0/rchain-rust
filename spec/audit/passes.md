@@ -11736,8 +11736,14 @@ peers' external deploy service (off by default, `RNODE_DEPLOY_RELAY=1`).
 
 **Measured in this unit:** the Lean register builds and checks 86 laws / 114 entries; the pool, budget,
 HTTP-refusal and batch suites pass; the batch's state hash and every `ProcessedDeploy` equal the
-sequential fold's for both an independent and a conflicting pair; `cargo test -p rchain-node --lib`
-passes 331 tests. **Owed:** the 4 GiB/two-validator live arm (two validators per host, ~547 MiB
-available, a deploy accepted and included by the other validator, no 503) and the resource gauges on
-`/metrics`; the serving behaviour is unit- and engine-tested but not yet measured on the incident
-topology.
+sequential fold's for both an independent and a conflicting pair; the `admission` corpus (five cases)
+is emitted and consumed by `casper/tests/lean_admission_corpus.rs`, and 86a/86d are `proved-tied` on
+it; `/metrics` carries the resource gauges and `/health` is a readiness body; `cargo test -p
+rchain-node --lib` passes 334 tests. **The live arm is recorded** in
+`spec/audit/evidence/n477-live-arm-20261028/`: a two-validator devnet with validator-1 constrained to
+a 320 MiB cgroup (`degraded: throttled`, ~285 MiB effective headroom) accepted a signed deploy
+(`Success!`), included it in block 112 (`ProcessedWithSuccess`), and advanced the chain 105 → 139,
+with the healthy bootstrap agreeing at 139. **Owed:** the same reading on the public testnet's exact
+shared-host topology (two validators in one ~4 GiB host cgroup, which Docker cannot express as
+nested container limits), the relay end-to-end arm, and finality on a supermajority set; the batch
+and relay remain off for the recorded arm.

@@ -52,7 +52,9 @@ above is the record as it stood then, not a description of the tree.
 
 **Correction, 2026-10-28, after the #477 close-out.** The register reads **375 findings — 0 `todo`,
 373 `done`, 2 `in progress` (C301, C339)**. C340 is the admission row (Law 86) and pass 142 is its
-account; the live 4 GiB/two-validator arm remains owed and is named there.
+account. The local two-validator arm is recorded in
+`spec/audit/evidence/n477-live-arm-20261028/`; the public testnet's shared-host topology and the relay
+end-to-end arm remain owed and are named there.
 
 **Correction, 2026-10-09, after this handover was written.** §2's first entry below — "C215's fix is
 unproven, and the proof attempt is the evidence" — was true when written and is not any more. The
