@@ -21,6 +21,7 @@ pub struct SeenSet<M>(Vec<M>);
 
 impl<M> Default for SeenSet<M> {
     fn default() -> Self {
+        // The empty vector is sorted and unique by construction.
         Self(Vec::new())
     }
 }
