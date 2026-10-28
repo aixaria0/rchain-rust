@@ -12,6 +12,53 @@ use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 
 use super::message_map;
 
+/// Sorted, unique ancestry ids stored contiguously rather than as one tree
+/// allocation per id. Iteration and ordering match `BTreeSet` exactly.
+///
+/// This changes representation only; all ancestor closure rules are unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeenSet<M>(Vec<M>);
+
+impl<M> Default for SeenSet<M> {
+    fn default() -> Self {
+        // The empty vector is sorted and unique by construction.
+        Self(Vec::new())
+    }
+}
+
+impl<M: Ord> FromIterator<M> for SeenSet<M> {
+    fn from_iter<T: IntoIterator<Item = M>>(values: T) -> Self {
+        let mut sorted: Vec<M> = values.into_iter().collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        Self(sorted)
+    }
+}
+
+impl<M> SeenSet<M> {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, M> {
+        self.0.iter()
+    }
+}
+
+impl<M: Ord> SeenSet<M> {
+    pub fn contains(&self, value: &M) -> bool {
+        self.0.binary_search(value).is_ok()
+    }
+
+    pub fn difference<'a>(&'a self, other: &'a Self) -> impl Iterator<Item = &'a M> {
+        self.0.iter().filter(move |item| !other.contains(item))
+    }
+}
+
 /// A message (view) carrying all data the finalizer needs.
 ///
 /// `hashCode` is overridden to `id.hashCode()` in the Scala (identity for set/map membership);
@@ -41,7 +88,7 @@ pub struct Message<M, S> {
     /// both inclusion halves proved. The representation is not what the law constrains, which is why
     /// this is not a register event — the Θ(N²) *residency* it implies is H6, still registered as an
     /// accepted-faithful residual, and still what a future pass would have to decide about.
-    pub seen: Arc<BTreeSet<M>>,
+    pub seen: Arc<SeenSet<M>>,
 }
 
 impl<M: Hash, S> Hash for Message<M, S> {
@@ -867,5 +914,67 @@ mod tests {
             steps > 1,
             "the fixture must make the walk advance more than once, or it is not exercising the bound"
         );
+    }
+}
+
+#[cfg(test)]
+mod seen_set_value_tests {
+    use super::SeenSet;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn sorted_set_preserves_tree_value_and_order() {
+        let input = [19, 0, 4, 19, 1, 100, -2, 4, 9, 0];
+        let expected: BTreeSet<_> = input.into_iter().collect();
+        let actual: SeenSet<_> = input.into_iter().collect();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(
+            actual.iter().copied().collect::<Vec<_>>(),
+            expected.iter().copied().collect::<Vec<_>>()
+        );
+        for n in -3..=101 {
+            assert_eq!(actual.contains(&n), expected.contains(&n), "id {n}");
+        }
+    }
+
+    #[test]
+    fn difference_matches_tree_set_for_divergent_parent_closures() {
+        let left: SeenSet<_> = [9, 4, 1, 3, 3, 2].into_iter().collect();
+        let right: SeenSet<_> = [2, 3, 8, 9, 9].into_iter().collect();
+        let tree_left: BTreeSet<_> = [9, 4, 1, 3, 3, 2].into_iter().collect();
+        let tree_right: BTreeSet<_> = [2, 3, 8, 9, 9].into_iter().collect();
+        assert_eq!(
+            left.difference(&right).copied().collect::<Vec<_>>(),
+            tree_left
+                .difference(&tree_right)
+                .copied()
+                .collect::<Vec<_>>()
+        );
+        assert!(left.difference(&left).next().is_none());
+    }
+
+    #[test]
+    fn many_history_prefixes_match_the_canonical_tree_set() {
+        let mut closure = BTreeSet::<[u8; 32]>::new();
+        let mut checkpoints = Vec::new();
+        // Deliberately non-monotone order of ids; a height-ordered vec would be wrong.
+        for i in 0..384_u32 {
+            let mut id = [0_u8; 32];
+            id[0..4].copy_from_slice(&(i.wrapping_mul(2_654_435_761)).to_be_bytes());
+            closure.insert(id);
+            let compact: SeenSet<_> = closure.iter().copied().collect();
+            assert_eq!(compact.len(), closure.len());
+            assert_eq!(
+                compact.iter().copied().collect::<BTreeSet<_>>(),
+                closure,
+                "height {i}"
+            );
+            checkpoints.push(compact);
+        }
+        let newest = checkpoints.last().unwrap();
+        for (height, earlier) in checkpoints.iter().enumerate() {
+            assert!(earlier.difference(newest).next().is_none());
+            assert_eq!(newest.difference(earlier).count(), 383 - height);
+        }
     }
 }

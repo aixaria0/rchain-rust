@@ -826,6 +826,7 @@ REFINEMENT_FILES=(
   "models/src/block/state_hash.rs"             # StateHash
   "models/src/validator.rs"                    # Validator
   "models/src/sorted.rs"                       # Sorted
+  "block-storage/src/dag/finalizer.rs"          # SeenSet
   "models/src/types.rs"                        # Closed, WellScoped, FreeCount
   "rspace/src/history/radix_tree.rs"           # SerializedNode
   "rspace/src/history/key_segment.rs"          # KeySegment
@@ -848,7 +849,7 @@ REFINEMENT_FILES=(
 # them by their macro invocation.
 REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId NonNegI64 WireLen SerializedRandom \
   SerializedNode Blake2b256Hash BlockHash StateHash Validator Sorted Closed WellScoped FreeCount \
-  KeySegment Address RevAddress VersionSchedule)
+  KeySegment Address RevAddress VersionSchedule SeenSet)
 
 # A public `.get()` on a refinement: matched *inside* an `impl` block that names one of
 # `REFINEMENT_TYPES`, not file-wide — these files also hold error types with public fields
@@ -899,7 +900,7 @@ BEGIN { n = split(TYPES, t, ","); in_impl = 0; depth = 0 }
 # written reason. Measured with the split: 23 sites in 5 files; without it, the total-inner homes add
 # `Self(Hash32::new(…))`-shaped false positives.
 REFINEMENT_NARROW=(ShardId BlockHeight SeqNum NonNegI64 FreeCount KeySegment Sorted Closed WellScoped \
-  SerializedRandom SerializedNode Address VersionSchedule)
+  SerializedRandom SerializedNode Address VersionSchedule SeenSet)
 REFINEMENT_TOTAL=(Port Hash32 WireLen BlockHash StateHash Blake2b256Hash Validator RevAddress)
 
 # The forms: `T(…)` (C78's), `Self(…)` (the same thing one token later — a legal rewrite that must
@@ -1067,6 +1068,9 @@ ESCAPE_CTOR_ALLOW=(
   'models/src/sorted.rs|Sorted\(sort_par_term\(&par\)\)|Invariant: .self\.0 == sort_par_term|the canonicalizer runs on the way in — the construction *is* the sort'
   'models/src/sorted.rs|Sorted\(Par::default\(\)\)|The empty process is already canonical|the empty `Par` is a fixed point of the canonicalizer'
   'models/src/block_version.rs|Self\(rows\)|assert!\(!rows.is_empty\(\)|the const constructor checks the genesis row and strictly increasing heights and versions before construction'
+  # --- block-storage/src/dag/finalizer.rs ------------------------------------------------------
+  'block-storage/src/dag/finalizer.rs|Self\(Vec::new\(\)\)|The empty vector is sorted and unique|the empty closure is sorted and duplicate-free by construction'
+  'block-storage/src/dag/finalizer.rs|Self\(sorted\)|sorted\.dedup\(\)|sorting followed by deduplication establishes the strictly ascending unique-id invariant'
   # --- models/src/types.rs ---------------------------------------------------------------------
   'models/src/types.rs|Some\(Closed\(par\)\)|is_closed\(&par\)|the `Closed::new` guard: the construction is inside the branch that proved closure'
   'models/src/types.rs|Some\(WellScoped \{ ctx, par \}\)|well_scoped\(&ctx, &par\)|the `WellScoped::new` guard, same shape as `Closed`'

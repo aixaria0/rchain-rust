@@ -2015,7 +2015,7 @@ mod effectful_tests {
                         bonds_map: BTreeMap::new(),
                         parents: BTreeSet::new(),
                         fringe: BTreeSet::new(),
-                        seen: Arc::new(BTreeSet::new()),
+                        seen: Arc::new(std::iter::empty().collect()),
                     },
                 )
             })

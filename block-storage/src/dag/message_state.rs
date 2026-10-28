@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 
-use super::finalizer::{Finalizer, Message};
+use super::finalizer::{Finalizer, Message, SeenSet};
 use super::message_map;
 use crate::errors::StorageError;
 
@@ -251,7 +251,7 @@ where
             bonds_map: fin_bonds_map,
             parents: justification_keys,
             fringe: new_fringe_ids,
-            seen: Arc::new(new_seen),
+            seen: Arc::new(new_seen.into_iter().collect::<SeenSet<M>>()),
         }
     }
 
