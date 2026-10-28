@@ -55,6 +55,20 @@ pub fn block_metadata_to_info(meta: &BlockMetadata) -> BlockInfo {
     }
 }
 
+/// Project stored metadata into the DAG index without cloning its justification set.
+///
+/// The bulk startup path owns each decoded metadata record. Moving the fields lets
+/// the original record be released as the index is built, instead of retaining two
+/// full maps of the same history through reconstruction.
+pub fn block_metadata_into_info(meta: BlockMetadata) -> BlockInfo {
+    BlockInfo {
+        hash: meta.block_hash,
+        parents: meta.justifications,
+        block_num: meta.block_num,
+        validation_failed: meta.validation_failed,
+    }
+}
+
 pub fn add_block_to_dag_state(block: &BlockInfo, state: &DagState) -> DagState {
     let mut next = state.clone();
     add_block_to_dag_state_mut(block, &mut next);
