@@ -648,7 +648,8 @@ membership and content hash before updating state, retries `Received` keys, and 
 `init/requested/received` breakdown (Law 81, register C337). The 28-block in-process join
 and local reset regression passed ([evidence](../../../spec/audit/evidence/n457-mature-join-20261025/README.md)).
 The later hash-specific request/delivery diagnostic is on `dev` via #469; the asymmetric
-firewall regression and live re-check still belong to #457. A joiner's trust boundary is
+firewall regression and live re-check are tracked in
+[#479](https://github.com/rhovision-org/rholo/issues/479). A joiner's trust boundary is
 described in [what a joining node trusts](../spec/trust-model.md): content is checked,
 but finality is not thereby proven.
 
