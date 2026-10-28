@@ -230,7 +230,10 @@ mod tests {
         block.slashable = true;
         let expected = block_metadata_to_info(&block);
         let actual = block_metadata_into_info(block);
-        assert_eq!(actual, expected, "moving fields must preserve every DAG value");
+        assert_eq!(
+            actual, expected,
+            "moving fields must preserve every DAG value"
+        );
         assert_eq!(actual.parents.len(), 2);
         assert!(actual.validation_failed);
     }
