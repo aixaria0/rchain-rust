@@ -504,6 +504,39 @@ pub async fn apply<F, Fut>(
 mod tests {
     use super::*;
 
+    /// A minimal block for the fault/deadline tests. `block-storage`'s shared fixture is
+    /// `#[cfg(test)]` inside that crate, so it is not reachable from here (CI caught exactly that).
+    fn sample_block() -> BlockMessage {
+        use rchain_models::block::state_hash::StateHash;
+        use rchain_models::casper::protocol::casper_message::RholangState;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::SeqNum;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: BlockHash::new([0xab; 32]),
+            block_number: BlockHeight::zero(),
+            sender: Validator::new([0x11; 65]),
+            seq_num: SeqNum::zero(),
+            pre_state_hash: StateHash::new([1u8; 32]),
+            post_state_hash: StateHash::new([2u8; 32]),
+            justifications: vec![],
+            bonds: BTreeMap::new(),
+            rejected_deploys: BTreeSet::new(),
+            rejected_blocks: BTreeSet::new(),
+            rejected_senders: BTreeSet::new(),
+            state: RholangState {
+                deploys: vec![],
+                system_deploys: vec![],
+            },
+            sig_algorithm: "secp256k1".to_string(),
+            sig: vec![1],
+            timestamp: 0,
+        }
+    }
+
     #[tokio::test]
     async fn a_stalled_hash_announcement_does_not_hold_the_next_one() {
         let mut announcements = BlockHashAnnouncements::new(Arc::new(rchain_shared::log::NopLog));
@@ -538,7 +571,7 @@ mod tests {
         use rchain_block_storage::dag::codecs::BlockHashCodec;
         use rchain_shared::store_manager::{database, InMemoryStoreManager};
 
-        let block = rchain_block_storage::test_support::block();
+        let block = sample_block();
         let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
         let kv = database(
             &InMemoryStoreManager::default(),
@@ -596,7 +629,7 @@ mod tests {
     /// unaffected.
     #[tokio::test]
     async fn a_validation_that_returns_before_the_deadline_is_delivered() {
-        let block = rchain_block_storage::test_support::block();
+        let block = sample_block();
         let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
         let handle = tokio::spawn(async { 7u8 });
         let outcome = validation_within_deadline(
