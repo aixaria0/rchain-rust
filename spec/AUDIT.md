@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 2 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 3 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  171 of 377 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  172 of 378 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 377 are settled: **313 name the evidence that holds them** and **64 do not** — the
+All 378 are settled: **314 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -124,12 +124,13 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### IN PROGRESS (2)
+### IN PROGRESS (3)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 | `C339` | The transfer path formerly retained the bootstrap fringe-state claims without recomputing their merges. RecoveryReplay now validates downloaded history in a staging DAG using the existing validator, compares supplied per-block claims and the Law 85 target root, probes active bonds, and publishes only locally derived metadata. A persistent pending marker prevents an interrupted publication from bypassing LFS on restart; checkpoint write/read-back/delete failures cannot signal completion. Store format 2 prevents a v1 reader ignoring that marker. No target-finality proof or retroactive certification of legacy populated stores is claimed. | Closes after the new exact-source replay and transport/restart controls pass and the mature-chain replay cost/compatibility is measured. Prior f3eef292 live positives do not certify the added replay path. Quorum finality remains the separately named Law 83 assumption. | §141 |
+| `C343` | **A stored block can have no acceptance disposition and a proposer can run a private chain.** The live build stored block bodies through height 250 on B/C/D while its DAG stayed at height 5, and A reached 267 against finality 3. The RCA found the processor's no-insert arms, the partial-insert short-circuit, the missing failed-parent release and the absent finality gate; dev #494 already closed the receiver begin-lease leak. This pass adds U19/U20 and §9, completes the insert short-circuit, adds a pipeline-fault/readiness surface, and adds the proposer finality-gap latch with an operator resume. The durable disposition ledger, full boot audit, watchdog and failed-parent release remain owed. | U19/U20 disposition ledger, boot/periodic audit, validation watchdog, failed-parent release and halt falsifiers; operator status/operator on B/C/D | §145 |
 
 ### DONE (375)
 
