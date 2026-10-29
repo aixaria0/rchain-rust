@@ -274,6 +274,9 @@ it — and there is no programme that shares the income either, which is the ris
 returns to. That is an observation about the code, not a theorem about incentives: it says what the
 protocol does, not that the balance is the one a rational operator would choose.
 
+> The operator-facing consequences, hardware floor and the staged liveness policy are in
+> [Validator risk, hardware and participation](operator-risk.md) and the [operator terms](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md).
+
 ## Slashing: behavioural, trustless, and graded
 
 A slash is decided by **what the block did**, not by who is watching, and every node checks the

@@ -12,6 +12,9 @@
   a laptop that sleeps is a fine node and a bad validator.
 - Sizing is an estimate from the code's storage envelope; there is no in-repo production benchmark.
 
+A validator is **bonded and slashable for invalid behaviour**; absence is not currently slashed, but it
+holds finality back. Read the [operator risk notice](operator-risk.md) and the [operator terms](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md) before bonding.
+
 A validator is **storage-bound and uptime-bound**, not CPU-bound. The compute envelope is modest; the
 binding constraints are the synchronous-write storage layer (LMDB) and being online continuously. This
 page gives a grounded sizing estimate derived from the code's storage envelope and execution model —
@@ -227,8 +230,9 @@ the RSpace trie + block store perform many small writes, so a spinning disk domi
 
 ## In practice
 
-Any modern general-purpose desktop or laptop with an NVMe SSD is enough to *run* a validator — the
-CPU/RAM needs are modest. Four caveats matter more than raw specs:
+Any modern general-purpose desktop or laptop with an NVMe SSD **and the per-validator floor above** is
+enough to *run* a validator — the CPU/RAM needs are modest, but the floor is per validator and a
+below-floor host is refused. An observer can be smaller. Four caveats matter more than raw specs:
 
 1. **Uptime, not horsepower.** A validator that sleeps, hibernates, or is shut down falls out of sync
    and stops proposing. That costs it nothing directly — this tree has **no inactivity leak**, so a

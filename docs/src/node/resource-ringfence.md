@@ -75,6 +75,7 @@ host can still serve its user while a starved validator harms quorum.
 resource-guard {
   enforce-startup = auto          # auto: validators enforce, observers warn; or enforce / warn
   allow-under-minimum = false     # true accepts a floor breach, logged
+  accept-under-minimum-risk = false  # a validator's explicit acceptance; required with the line above
   min-available-mb = 0            # 0 = the chain-length policy table; a positive value is your floor
   min-data-dir-free-mb = 1024
 }
@@ -83,9 +84,11 @@ resource-guard {
 The policy table is 1 GiB up to 100 persisted blocks, 2 GiB to 1,000, 4 GiB to 5,000, and 4 GiB
 (labeled **unmeasured**) above that. It is a conservative floor with its provenance in
 `node/src/resources/policy.rs`, **not** a per-block replay model; the refusal names the band it used.
-`--allow-under-minimum` (or the config key) is the explicit override and is logged, so a host known to
-be adequate can start without editing the table. A full data directory is refused regardless of role
-unless overridden, because the next write fails rather than the next allocation.
+`--allow-under-minimum` (or the config key) is the explicit override and is logged. For a validator it
+must be paired with `--accept-under-minimum-risk`; read [validator risk](operator-risk.md) and the
+[operator terms](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md). A host known to be adequate
+can start without editing the table. A full data directory is refused regardless of role unless overridden, because the next write fails
+rather than the next allocation; for a validator the override also needs `--accept-under-minimum-risk`.
 
 ## Give the data directory its own disk
 

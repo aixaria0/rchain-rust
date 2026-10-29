@@ -91,6 +91,8 @@ impl StartupEnforcement {
 pub struct ResourcePolicy {
     pub enforcement: StartupEnforcement,
     pub allow_under_minimum: bool,
+    /// Accept the below-floor validator risk; required with `allow_under_minimum`.
+    pub accept_under_minimum_risk: bool,
     /// `None` uses [`minimum_for_chain`]; `Some(mb)` is an operator-declared floor.
     pub min_available_mb: Option<u64>,
     pub min_data_dir_free_mb: u64,
@@ -101,6 +103,7 @@ impl Default for ResourcePolicy {
         ResourcePolicy {
             enforcement: StartupEnforcement::Auto,
             allow_under_minimum: false,
+            accept_under_minimum_risk: false,
             min_available_mb: None,
             min_data_dir_free_mb: 1024,
         }
@@ -159,11 +162,24 @@ pub fn evaluate_startup(
         let required = policy.min_data_dir_free_mb.saturating_mul(MIB);
         if free < required {
             if policy.allow_under_minimum {
+                if is_validator && !policy.accept_under_minimum_risk {
+                    return StartupVerdict::Refuse(format!(
+                        "data directory has {} MiB free, below the {} MiB floor; --allow-under-minimum \
+                         for a validator requires --accept-under-minimum-risk (read TERMS.md)",
+                        free / MIB,
+                        policy.min_data_dir_free_mb
+                    ));
+                }
                 warnings.push(format!(
                     "data directory has {} MiB free, below the {} MiB floor; --allow-under-minimum \
-                     overrides it",
+                     overrides it{}",
                     free / MIB,
-                    policy.min_data_dir_free_mb
+                    policy.min_data_dir_free_mb,
+                    if is_validator {
+                        "; operator risk accepted (TERMS.md)"
+                    } else {
+                        ""
+                    }
                 ));
             } else {
                 return StartupVerdict::Refuse(format!(
@@ -198,7 +214,19 @@ pub fn evaluate_startup(
                 available, floor.mb, chain_blocks, floor.provenance, floor.confidence
             );
             if policy.allow_under_minimum {
-                warnings.push(format!("{detail}; --allow-under-minimum overrides it"));
+                if is_validator && !policy.accept_under_minimum_risk {
+                    return StartupVerdict::Refuse(format!(
+                        "{detail}; --allow-under-minimum for a validator requires                          --accept-under-minimum-risk (read TERMS.md)"
+                    ));
+                }
+                warnings.push(format!(
+                    "{detail}; --allow-under-minimum overrides it{}",
+                    if is_validator {
+                        "; operator risk accepted (TERMS.md)"
+                    } else {
+                        ""
+                    }
+                ));
             } else if policy.enforcement.enforces(is_validator) {
                 return StartupVerdict::Refuse(format!(
                     "{detail}; allow-under-minimum is the explicit override"
@@ -289,6 +317,7 @@ mod tests {
     fn an_explicit_override_is_accepted_and_marked() {
         let policy = ResourcePolicy {
             allow_under_minimum: true,
+            accept_under_minimum_risk: true,
             ..ResourcePolicy::default()
         };
         match evaluate_startup(&facts(512), 5_000, &policy, true) {
@@ -300,6 +329,26 @@ mod tests {
             }
             other => panic!("expected a warned override, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_validator_override_needs_the_explicit_risk_acceptance() {
+        let policy = ResourcePolicy {
+            allow_under_minimum: true,
+            ..ResourcePolicy::default()
+        };
+        match evaluate_startup(&facts(512), 5_000, &policy, true) {
+            StartupVerdict::Refuse(reason) => {
+                assert!(reason.contains("accept-under-minimum-risk"), "{reason}");
+                assert!(reason.contains("TERMS.md"), "{reason}");
+            }
+            other => panic!("a validator override without acceptance must be refused: {other:?}"),
+        }
+        // An observer is not held to the validator floor and does not need the acceptance.
+        assert!(matches!(
+            evaluate_startup(&facts(512), 5_000, &policy, false),
+            StartupVerdict::Warn(_)
+        ));
     }
 
     #[test]

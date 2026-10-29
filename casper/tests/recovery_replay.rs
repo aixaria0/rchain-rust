@@ -228,7 +228,16 @@ fn independent_recovery_replays_epoch_boundaries_and_refuses_forged_claims() {
                         .await
                         .unwrap();
                         let BlockCreatorResult::Created(block) = creator
-                            .create(&runtime, &source, &pre, &[], &BTreeMap::new(), true, false)
+                            .create(
+                                &runtime,
+                                &source,
+                                &pre,
+                                &[],
+                                &BTreeMap::new(),
+                                true,
+                                false,
+                                None,
+                            )
                             .await
                             .unwrap()
                         else {
@@ -393,7 +402,16 @@ fn independent_recovery_replays_epoch_boundaries_and_refuses_forged_claims() {
                         .await
                         .unwrap();
                         let BlockCreatorResult::Created(next) = creator
-                            .create(&runtime, &source, &pre, &[], &BTreeMap::new(), true, false)
+                            .create(
+                                &runtime,
+                                &source,
+                                &pre,
+                                &[],
+                                &BTreeMap::new(),
+                                true,
+                                false,
+                                None,
+                            )
                             .await
                             .unwrap()
                         else {

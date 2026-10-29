@@ -191,6 +191,11 @@ pub struct BlockDagKeyValueStorage {
     /// restart forgets: the *evidence* is what has to be checkable, and it is checked by the receiver
     /// against its own DAG, not against a store this node happens to keep.
     equivocations: tokio::sync::Mutex<BTreeMap<Validator, Vec<u8>>>,
+    /// **Insert reservations** (F-U9-01): a block hash and a `(sender, seq_num)` key are reserved
+    /// while the slow store writes run outside `self.lock`. The H-1 gate and the duplicate check
+    /// therefore stay atomic without holding the global insertion lock across LMDB I/O.
+    insert_hashes: std::sync::Mutex<BTreeSet<BlockHash>>,
+    insert_equivocations: std::sync::Mutex<BTreeSet<(Validator, SeqNum)>>,
     /// **Deployer public key (hashed) → a block containing a deploy it signed** (the first one this node
     /// inserted). Attached by [`Self::with_deployer_index`]; `None` in tests and tools that never
     /// ask, and then `lookup_by_deployer` refuses. Serves the wallet's quantum key-hygiene check
@@ -217,6 +222,22 @@ pub struct BlockDagKeyValueStorage {
     /// [`HaltRecord`] for why this one is not, and [`HealthCounters`] for why its three counters are
     /// persisted on a transition rather than on every observation.
     reset_marker: Option<Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>>,
+}
+
+/// A reservation removed on every exit path (F-U9-01). The hashes/equivocations cells are `std`
+/// mutexes because `Drop` cannot await; they only cover the short reservation critical section.
+struct InsertReservation<'a> {
+    hashes: &'a std::sync::Mutex<BTreeSet<BlockHash>>,
+    equivocations: &'a std::sync::Mutex<BTreeSet<(Validator, SeqNum)>>,
+    hash: BlockHash,
+    key: (Validator, SeqNum),
+}
+
+impl Drop for InsertReservation<'_> {
+    fn drop(&mut self) {
+        self.hashes.lock().unpoison().remove(&self.hash);
+        self.equivocations.lock().unpoison().remove(&self.key);
+    }
 }
 
 /// The deployer index's one non-key entry: the `indexed_from` height, big-endian `i64`. Deployer
@@ -299,6 +320,8 @@ impl BlockDagKeyValueStorage {
             deploy_store,
             metrics: Arc::new(MetricsNop),
             equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
+            insert_hashes: std::sync::Mutex::new(BTreeSet::new()),
+            insert_equivocations: std::sync::Mutex::new(BTreeSet::new()),
             deployer_index: None,
             deployer_indexed_from: AtomicI64::new(0),
             merge_divergence_injection: 0,
@@ -1256,7 +1279,8 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         block_metadata: BlockMetadata,
         block: BlockMessage,
     ) -> Result<(), String> {
-        let _guard = self.lock.lock().await;
+        // The idempotence check is a store read and does not need the global insertion lock; the
+        // pending-hash reservation below covers a same-hash insert already in flight (F-U9-01).
         if self
             .block_metadata_store
             .contains(&block_metadata.block_hash)
@@ -1265,68 +1289,103 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             return Ok(());
         }
 
-        // H-1: equivocation detection — a second, distinct block by the same sender reusing a
-        // `seq_num`. Reject it before any partial write so an equivocating validator can neither
-        // enter the DAG nor stall finalization.
-        {
-            let repr = self.representation.read().await;
-            let equivocating = repr.dag_message_state.msg_map.values().any(|m| {
-                m.sender == block_metadata.sender && m.sender_seq == block_metadata.seq_num
-            });
-            if equivocating {
-                // **Record the refused block's header before refusing it** (AUDIT C200). This is the
-                // only copy of the offence that will ever exist — the gate returns before any write —
-                // and it is what a proposer attaches as evidence so that every other node can check the
-                // offence against its own DAG. The header and not the block: the payload lands in a
-                // block's *state*, and a refused block's size is whatever its sender chose. A second
-                // offence by the same sender replaces the first — one piece of evidence takes the bond,
-                // and holding more would be unbounded.
-                self.equivocations.lock().await.insert(
+        let (reservation, fringe_diff, fringe_hash) = {
+            let _guard = self.lock.lock().await;
+
+            // H-1: equivocation detection — a second, distinct block by the same sender reusing a
+            // `seq_num`. Reject it before any partial write so an equivocating validator can neither
+            // enter the DAG nor stall finalization.
+            {
+                let repr = self.representation.read().await;
+                let equivocating = repr.dag_message_state.msg_map.values().any(|m| {
+                    m.sender == block_metadata.sender && m.sender_seq == block_metadata.seq_num
+                });
+                if equivocating {
+                    // **Record the refused block's header before refusing it** (AUDIT C200). This is the
+                    // only copy of the offence that will ever exist — the gate returns before any write —
+                    // and it is what a proposer attaches as evidence so that every other node can check the
+                    // offence against its own DAG. The header and not the block: the payload lands in a
+                    // block's *state*, and a refused block's size is whatever its sender chose. A second
+                    // offence by the same sender replaces the first — one piece of evidence takes the bond,
+                    // and holding more would be unbounded.
+                    self.equivocations.lock().await.insert(
                     block_metadata.sender,
                     rchain_models::casper::protocol::casper_message::EquivocationEvidence::from_block(
                         &block,
                     )
                     .encode(),
                 );
-                return Err(format!(
+                    return Err(format!(
                     "{EQUIVOCATION_PREFIX}: sender produced two blocks with the same sequence number"
                 ));
+                }
             }
-        }
 
-        // The fringe a block belongs to — the key its `member_of_fringe` mark uses, and the name the
-        // readers find a fringe's blocks by (Law 66/68; C250's residue, C270).
-        let fringe_hash = rchain_models::block_metadata::fringe_hash_of(&block_metadata.fringe);
+            // Reserve the block hash and the `(sender, seq_num)` claim while the store writes below run
+            // outside `self.lock`. A second insert of the same hash is already in flight; a second claim
+            // by the same sender is an equivocation, exactly as the H-1 gate above.
+            let key = (block_metadata.sender, block_metadata.seq_num);
+            {
+                let mut hashes = self.insert_hashes.lock().unpoison();
+                if !hashes.insert(block_metadata.block_hash) {
+                    return Ok(());
+                }
+            }
+            {
+                let mut claims = self.insert_equivocations.lock().unpoison();
+                if !claims.insert(key) {
+                    self.insert_hashes
+                        .lock()
+                        .unpoison()
+                        .remove(&block_metadata.block_hash);
+                    return Err(format!(
+                    "{EQUIVOCATION_PREFIX}: sender produced two blocks with the same sequence number"
+                ));
+                }
+            }
+            let reservation = InsertReservation {
+                hashes: &self.insert_hashes,
+                equivocations: &self.insert_equivocations,
+                hash: block_metadata.block_hash,
+                key,
+            };
 
-        // One read of the representation, and the guard is a *block expression* rather than a
-        // binding: everything below is synchronous, so the copy this used to take
-        // (`dag_message_state.clone()`, Θ(N²) in the messages' `seen` sets, once per block) bought
-        // nothing except releasing the lock — and a binding left in scope would hold the read lock
-        // across the metadata write at the end of this function, making that write wait on itself.
-        // The borrow checker cannot catch a stale guard; the block can.
-        let fringe_diff: BTreeSet<BlockHash> = {
-            let repr = self.representation.read().await;
-            let msg_map = &repr.dag_message_state.msg_map;
-            let mut justifications: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
-            for j in &block_metadata.justifications {
-                let msg = msg_map
-                    .get(j)
-                    .ok_or_else(|| "justification not present in message map".to_string())?;
-                justifications.insert(msg.clone());
-            }
-            let prev_fringe = message_map::latest_fringe(msg_map, &justifications);
-            let mut fringe_seen: BTreeSet<BlockHash> = BTreeSet::new();
-            for f in &block_metadata.fringe {
-                let msg = msg_map
-                    .get(f)
-                    .ok_or_else(|| "fringe block not present in message map".to_string())?;
-                fringe_seen.extend(msg.seen.iter().copied());
-            }
-            let prev_seen: BTreeSet<BlockHash> = prev_fringe
-                .iter()
-                .flat_map(|m| m.seen.iter().copied())
-                .collect();
-            fringe_seen.difference(&prev_seen).copied().collect()
+            // The fringe a block belongs to — the key its `member_of_fringe` mark uses, and the name the
+            // readers find a fringe's blocks by (Law 66/68; C250's residue, C270).
+            let fringe_hash = rchain_models::block_metadata::fringe_hash_of(&block_metadata.fringe);
+
+            // One read of the representation, and the guard is a *block expression* rather than a
+            // binding: everything below is synchronous, so the copy this used to take
+            // (`dag_message_state.clone()`, Θ(N²) in the messages' `seen` sets, once per block) bought
+            // nothing except releasing the lock — and a binding left in scope would hold the read lock
+            // across the metadata write at the end of this function, making that write wait on itself.
+            // The borrow checker cannot catch a stale guard; the block can.
+            let fringe_diff: BTreeSet<BlockHash> = {
+                let repr = self.representation.read().await;
+                let msg_map = &repr.dag_message_state.msg_map;
+                let mut justifications: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
+                for j in &block_metadata.justifications {
+                    let msg = msg_map
+                        .get(j)
+                        .ok_or_else(|| "justification not present in message map".to_string())?;
+                    justifications.insert(msg.clone());
+                }
+                let prev_fringe = message_map::latest_fringe(msg_map, &justifications);
+                let mut fringe_seen: BTreeSet<BlockHash> = BTreeSet::new();
+                for f in &block_metadata.fringe {
+                    let msg = msg_map
+                        .get(f)
+                        .ok_or_else(|| "fringe block not present in message map".to_string())?;
+                    fringe_seen.extend(msg.seen.iter().copied());
+                }
+                let prev_seen: BTreeSet<BlockHash> = prev_fringe
+                    .iter()
+                    .flat_map(|m| m.seen.iter().copied())
+                    .collect();
+                fringe_seen.difference(&prev_seen).copied().collect()
+            };
+
+            (reservation, fringe_diff, fringe_hash)
         };
 
         // **The `fringe-data` record is not written any more.** `insert` used to build a `FringeData`
@@ -1427,60 +1486,64 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             self.block_metadata_store.add(updated).await?;
         }
 
-        // Update the in-memory DAG representation.
-        let dag_set = self.block_metadata_store.dag_set().await;
-        let child_map = self.block_metadata_store.child_map_data().await;
-        let height_map = self.block_metadata_store.height_map().await;
+        // Update the in-memory DAG representation. The global insert lock is reacquired only for the
+        // representation commit; the store writes above run outside it (F-U9-01).
         let mut prune_cache_ids: Vec<BlockHash> = Vec::new();
         let latest_block_number: i64;
         {
-            // The guard is bound so that `Arc::make_mut` has somewhere to borrow the `&mut` from; it
-            // is dropped at the end of this block, before the awaits below. `make_mut` copies only
-            // when a reader still holds a snapshot, and this function is serialized by `self.lock`,
-            // so that is at most one copy per insert — where every reader used to pay one.
-            let mut guard = self.representation.write().await;
-            let repr = Arc::make_mut(&mut *guard);
-            let msg = message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
-                .ok_or_else(|| "justification not present in message map".to_string())?;
-            // H-2: a validation-failed block is recorded in the map (for `neglectedInvalidBlock`
-            // and justification-regression) but must not become the sender's latest message.
-            if block_metadata.validation_failed {
-                repr.dag_message_state.insert_msg_without_latest_mut(&msg);
-            } else {
-                repr.dag_message_state.insert_msg_mut(&msg);
-            }
-            repr.dag_set = dag_set;
-            repr.child_map = child_map;
-            repr.height_map = height_map;
+            let _guard = self.lock.lock().await;
+            let dag_set = self.block_metadata_store.dag_set().await;
+            let child_map = self.block_metadata_store.child_map_data().await;
+            let height_map = self.block_metadata_store.height_map().await;
+            {
+                // The guard is bound so that `Arc::make_mut` has somewhere to borrow the `&mut` from;
+                // it is dropped at the end of this block, before the awaits below.
+                let mut guard = self.representation.write().await;
+                let repr = Arc::make_mut(&mut *guard);
+                let msg =
+                    message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
+                        .ok_or_else(|| "justification not present in message map".to_string())?;
+                // H-2: a validation-failed block is recorded in the map (for `neglectedInvalidBlock`
+                // and justification-regression) but must not become the sender's latest message.
+                if block_metadata.validation_failed {
+                    repr.dag_message_state.insert_msg_without_latest_mut(&msg);
+                } else {
+                    repr.dag_message_state.insert_msg_mut(&msg);
+                }
+                repr.dag_set = dag_set;
+                repr.child_map = child_map;
+                repr.height_map = height_map;
 
-            // H-4: when finalization advanced, collect the block-index cache entries prunable
-            // below the newly-finalized fringe.
-            if !fringe_diff.is_empty() {
-                let msg_map = &repr.dag_message_state.msg_map;
-                let latest_msgs: BTreeSet<_> = repr
-                    .dag_message_state
-                    .latest_msgs
-                    .values()
-                    .cloned()
-                    .collect();
-                let lowest = message_map::lowest_fringe(msg_map, &latest_msgs);
-                let lowest_ids: BTreeSet<BlockHash> = lowest.iter().map(|m| m.id).collect();
-                let prunable = message_map::prune_fringe(msg_map, &lowest_ids, &repr.child_map);
-                prune_cache_ids = prunable.iter().map(|m| m.id).collect();
+                // H-4: when finalization advanced, collect the block-index cache entries prunable
+                // below the newly-finalized fringe.
+                if !fringe_diff.is_empty() {
+                    let msg_map = &repr.dag_message_state.msg_map;
+                    let latest_msgs: BTreeSet<_> = repr
+                        .dag_message_state
+                        .latest_msgs
+                        .values()
+                        .cloned()
+                        .collect();
+                    let lowest = message_map::lowest_fringe(msg_map, &latest_msgs);
+                    let lowest_ids: BTreeSet<BlockHash> = lowest.iter().map(|m| m.id).collect();
+                    let prunable = message_map::prune_fringe(msg_map, &lowest_ids, &repr.child_map);
+                    prune_cache_ids = prunable.iter().map(|m| m.id).collect();
+                }
+                latest_block_number = repr.latest_block_number();
+                // Published here, from the representation the write guard already holds — a second
+                // read lock would deadlock against the guard this block is inside of.
+                self.set_gauges(
+                    repr.message_count(),
+                    repr.seen_entries(),
+                    repr.index_entries(),
+                    repr.logical_bytes(),
+                );
+                self.set_merge_shape_gauges();
+                self.set_soft_checkpoint_gauges();
+                self.set_read_path_gauges();
             }
-            latest_block_number = repr.latest_block_number();
-            // Published here, from the representation the write guard already holds — a second read
-            // lock would deadlock against the guard this block is inside of.
-            self.set_gauges(
-                repr.message_count(),
-                repr.seen_entries(),
-                repr.index_entries(),
-                repr.logical_bytes(),
-            );
-            self.set_merge_shape_gauges();
-            self.set_soft_checkpoint_gauges();
-            self.set_read_path_gauges();
         }
+        drop(reservation);
 
         BlockIndex::prune_cache(&prune_cache_ids);
         self.expire_deploys(latest_block_number).await?;
@@ -1518,14 +1581,19 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .add(block_metadata.clone())
             .await?;
 
+        // **Read the store before taking the representation write guard.** The store has just
+        // applied its contiguity rule, so this is the post-add map; the whole body is serialized by
+        // `self.lock`, so no insert/update can interleave between the read and the write. Holding the
+        // write guard across this LMDB read serialized every representation reader behind a disk
+        // operation (F-U9-02).
+        let height_map = self.block_metadata_store.height_map().await;
+
         let mut guard = self.representation.write().await;
         let repr = Arc::make_mut(&mut *guard);
         let msg = message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
             .ok_or_else(|| "justification not present in message map".to_string())?;
         repr.dag_message_state.promote_msg_mut(&msg);
-        // Re-read rather than patch: the store has just applied its own contiguity rule, and reading
-        // back is what makes this and `insert` agree by construction rather than by two implementations.
-        repr.height_map = self.block_metadata_store.height_map().await;
+        repr.height_map = height_map;
         Ok(())
     }
 
@@ -3991,6 +4059,65 @@ mod tests {
                 .unwrap(),
             0,
             "the completion the walk wrote does describe the store, so the next boot believes it"
+        );
+    }
+    /// **F-U9-01's structural lint:** `insert` takes the global lock twice, and the metadata write
+    /// sits between the two acquisitions rather than inside the first one. The first scope is the
+    /// reservation/equivocation/fringe read; the LMDB write and the deploy-index work are outside;
+    /// the second scope is the representation commit. A single-lock body is the defect this pins.
+    #[test]
+    fn insert_does_not_hold_the_global_lock_across_store_io() {
+        let source = include_str!("dag.rs");
+        let start = source
+            .find("async fn insert")
+            .expect("insert is in this file");
+        let end = source[start..]
+            .find("async fn update_metadata")
+            .map(|offset| start + offset)
+            .expect("update_metadata follows insert");
+        let body = &source[start..end];
+        let locks: Vec<usize> = body
+            .match_indices("self.lock.lock().await")
+            .map(|(index, _)| index)
+            .collect();
+        assert!(
+            locks.len() >= 2,
+            "insert must release the global lock between the reservation and the commit"
+        );
+        let add = body
+            .find(".add(block_metadata.clone())")
+            .expect("insert writes the block metadata");
+        assert!(
+            locks[0] < add && add < locks[1],
+            "the metadata write must be outside the first lock scope and before the commit lock"
+        );
+    }
+
+    /// **The guard-scope lint for F-U9-02.** `update_metadata` must read the height map before it
+    /// takes the representation write guard; holding that guard across the store read serialiates every
+    /// representation reader behind a store operation. A source-order check is the falsifier here
+    /// because the concrete metadata store cannot be delayed without a production test hook.
+    #[test]
+    fn update_metadata_reads_height_map_before_the_write_guard() {
+        let source = include_str!("dag.rs");
+        let start = source
+            .find("async fn update_metadata")
+            .expect("update_metadata is in this file");
+        let body_start = start;
+        let body_end = source[body_start..]
+            .find("async fn lookup")
+            .map(|offset| body_start + offset)
+            .expect("lookup follows update_metadata");
+        let body = &source[body_start..body_end];
+        let read = body
+            .find("height_map().await")
+            .expect("update_metadata reads the height map");
+        let write = body
+            .find("representation.write().await")
+            .expect("update_metadata takes the representation write guard");
+        assert!(
+            read < write,
+            "the height-map read must precede the representation write guard"
         );
     }
 }
