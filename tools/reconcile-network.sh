@@ -92,7 +92,12 @@ DEFAULT_NODES='164.90.140.144 40403 rnode    A master
 
 if [ -n "${RECONCILE_NODES:-}" ]; then NODES="$(cat "$RECONCILE_NODES")"; else NODES="$DEFAULT_NODES"; fi
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_droplet}
-SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
+# **`-n`, because ssh otherwise eats the node table.** Every `api()` call happens inside a
+# `while read … done <<< "$NODES"` loop, and ssh reads stdin by default: on the first node it consumed
+# the remaining rows, the loop ended after one iteration, and section 3 then refused with "no strict
+# supermajority of stake attested a finalised block" about a chain it had asked one node out of four.
+# A refusal is the right response to silence, but this silence was the tool's own. `-n` reads /dev/null.
+SSH="ssh -n -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 CONTROL=${RECONCILE_CONTROL:-systemd}
 # The ancestry walk's bound, in steps. Every step is a block this tool has verified, so the bound is
 # what keeps a pathological DAG from turning a refusal into a hang — and hitting it is a refusal, with
@@ -137,7 +142,15 @@ api() { # host port path
 # now — the meet and the `stake_of` helper that consumed it went together — and a field that only
 # looks like a denominator is worse than no field: this tool has **no** stake arithmetic (C261).
 blocks_at() { # host port height
-  api "$1" "$2" "/api/blocks/$3/$3" | python3 -c "
+  # Served from the per-node range fetch when there is one: the parse below is unchanged, so a cached
+  # answer and a live one are the same answer. Falls back to a single-height request when the range was
+  # not cached (a node that refused it, or `RECONCILE_NO_CACHE=1`).
+  local range_file="${CACHE_DIR:-}/blocks_${1}_${2}.json"
+  if [ -n "${CACHE_DIR:-}" ] && [ -s "$range_file" ]; then
+    cat "$range_file"
+  else
+    api "$1" "$2" "/api/blocks/$3/$3"
+  fi | python3 -c "
 import json,sys
 h=int('$3')
 try:
@@ -409,6 +422,23 @@ done <<< "$NODES"
 
 if [ "${#NAMES[@]}" -eq 0 ]; then echo "no nodes in the table — nothing to reconcile" >&2; exit 2; fi
 MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null && MAXH=${HGT[$n]}; done
+
+# **One range request per node, not one request per height.** `/api/blocks/{start}/{end}` is a range
+# route (`node/src/web/http.rs`), and the two scans below ask about every height in 0..MAXH — 0..MAXH for
+# the equivocation report, MEET+1..MAXH for what sits above the point. Asking per height cost an ssh
+# round trip per height per node: measured 27m51s on a 223-block chain, and the cost scales with height,
+# so the 3122-block chain this tool exists for would have taken most of a day. A block never changes
+# after it is created, so one fetch per node answers every height, and `blocks_at` filters locally with
+# the parsing it already had. `RECONCILE_NO_CACHE=1` restores the per-height path.
+if [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "$CACHE_DIR" ]; then
+  for n in "${NAMES[@]}"; do
+    range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
+    api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$MAXH" > "$range_file" 2>/dev/null
+    # A node that cannot serve the range is not cached, so its heights fall back to live single-height
+    # requests: the fallback costs time, never correctness.
+    [ -s "$range_file" ] || rm -f "$range_file"
+  done
+fi
 
 # --- 2. reported equivocation -------------------------------------------------
 # **A report, not a proof, and it decides nothing.** A sender is flagged when two *distinct* blocks by it
