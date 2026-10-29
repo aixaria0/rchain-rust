@@ -1064,6 +1064,13 @@ fn wire_block_processing_observed(
         parts.block_disposition.clone(),
         parts.block_store.clone(),
         processor_input_tx_disposition,
+        disposition_log.clone(),
+    ));
+    // A stored body the DAG never accounts for is loud even when no ledger row names it (a body
+    // written by a pre-ledger build). The audit is a count comparison, not a block scan.
+    tokio::spawn(rchain_casper::block_disposition::audit_stored_bodies(
+        parts.block_store.clone(),
+        parts.dag.clone(),
         disposition_log,
     ));
 

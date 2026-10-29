@@ -549,6 +549,12 @@ impl BlockApi for BlockApiImpl {
         // **A syncing node cannot include work**, even when its pool has room. `acceptsDeploys`
         // remains the pool's Law 86a answer; readiness is this explicit refusal. Applied here so
         // HTTP, gRPC, the faucet and every other caller of the one deploy path agree.
+        if !crate::engine::node_phase::is_running() {
+            return Err(format!(
+                "Deploy refused: the node is in phase {} and is not ready to include work.",
+                crate::engine::node_phase::phase().label()
+            ));
+        }
         if crate::engine::node_syncing::sync_state().is_some() {
             return Err(
                 "Deploy refused: the node is syncing and is not ready to include work.".to_string(),

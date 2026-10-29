@@ -1,0 +1,73 @@
+//! **The node's phase, as launch decided it** (HAZOP U20/B47, RCA S7/getting-ready).
+//!
+//! Before this cell there was no phase at all: `NodeLaunch` chose genesis, recovery or reconnection
+//! and then constructed `NodeRunning`, and every surface had to reconstruct "is this node serving?"
+//! from a set of unrelated booleans. A syncing node, a node whose recovery had not started, and a
+//! running node with a faulted pipeline looked different only because a reader happened to combine
+//! the right fields.
+//!
+//! The phase is **set by launch and only by launch**; the disposition loops wait for
+//! [`NodePhase::Running`] so a start-up re-offer cannot race a recovery into the live DAG. This is
+//! not a consensus fact and is not persisted: a restart begins at [`NodePhase::Starting`].
+//!
+//! **What it does not yet do, said rather than implied:** `Running` is set immediately before
+//! `NodeRunning::new`, not after the start-up disposition audit completes, so a body re-offered at
+//! start-up can still be in flight while the node first reports running. The audit's confirmation
+//! (three sustained samples) is what withholds readiness for a real orphan; a constructor that
+//! cannot build `Running` with an unsettled row remains owed (U19/B46). The cell is also **one per
+//! process**, not one per shard: on a multi-shard node the first shard to reach the running engine
+//! reports `Running` for all of them, so a node with one running and one syncing shard is
+//! under-reported. Per-shard phase is owed with the other multi-shard readiness work.
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use rchain_shared::lock::Unpoison;
+
+/// Where the node is in its start-up lifecycle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodePhase {
+    /// Launch has not yet chosen a path (genesis, sync, reconnection).
+    Starting,
+    /// The node is restoring the last finalized state; it serves no chain and proposes nothing.
+    Syncing,
+    /// Launch reached the running engine: the DAG is the node's served chain.
+    Running,
+    /// Launch refused to serve (a terminal sync failure, or a named launch failure).
+    Blocked(String),
+}
+
+impl NodePhase {
+    /// The coarse label `/health` publishes.
+    pub fn label(&self) -> &'static str {
+        match self {
+            NodePhase::Starting => "starting",
+            NodePhase::Syncing => "syncing",
+            NodePhase::Running => "running",
+            NodePhase::Blocked(_) => "blocked",
+        }
+    }
+}
+
+static PHASE: Mutex<NodePhase> = Mutex::new(NodePhase::Starting);
+
+pub fn phase() -> NodePhase {
+    PHASE.lock().unpoison().clone()
+}
+
+pub fn set_phase(next: NodePhase) {
+    *PHASE.lock().unpoison() = next;
+}
+
+pub fn is_running() -> bool {
+    matches!(*PHASE.lock().unpoison(), NodePhase::Running)
+}
+
+/// **Block the caller until launch has reached the running engine.** A loop rather than a watch
+/// channel because the readers are long-lived tasks (the disposition loops) and the writer is
+/// launch; the poll interval is far below any human-visible delay and costs nothing.
+pub async fn wait_until_running() {
+    while !is_running() {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}

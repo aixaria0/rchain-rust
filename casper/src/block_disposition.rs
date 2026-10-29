@@ -27,6 +27,7 @@
 //! boot count warning (`NodeLaunch`), and only an operator reset or a peer's re-delivery recovers it.
 //! The one-time legacy scan remains owed (F-U19-07).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -521,6 +522,10 @@ pub async fn reoffer_unsettled(
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("casper.blocks.BlockDisposition");
+    // **Do not re-offer into a DAG launch is still restoring.** A recovery replays into its own
+    // staging DAG; a body offered to the live processor before the running engine exists would be
+    // validated against a chain the node is not serving.
+    crate::engine::node_phase::wait_until_running().await;
     let rows = match ledger.unsettled().await {
         Ok(rows) => rows,
         Err(e) => {
@@ -638,6 +643,7 @@ pub async fn retry_faulted_blocks(
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("casper.blocks.BlockDisposition");
+    crate::engine::node_phase::wait_until_running().await;
     let mut interval = tokio::time::interval(RETRY_SWEEP_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -703,6 +709,118 @@ pub async fn retry_faulted_blocks(
     }
 }
 
+/// How often the stored-body audit samples the two counts.
+pub const ORPHAN_AUDIT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// **How many consecutive samples a store/DAG gap must persist before it is an orphan.** Every
+/// healthy node has a body stored for a moment before its DAG entry exists; treating one sample as
+/// an orphan would flap the readiness gate on every block. Three minutes at the default interval is
+/// long past any legitimate in-flight block and short enough that the live incident's first hour
+/// would have been loud.
+pub const ORPHAN_AUDIT_SAMPLES: u32 = 3;
+
+/// The confirmed gap — bodies in the block store that the DAG does not account for — and how many
+/// times a sustained gap has been entered. Process-wide (the gate and `/health` are per node); a
+/// shard-local audit writes the sum, which is the conservative direction for readiness.
+static ORPHAN_BODIES: AtomicU64 = AtomicU64::new(0);
+static ORPHAN_DETECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The currently confirmed orphan count: **zero unless a gap has been sustained**. A transient
+/// in-flight body is not counted.
+pub fn orphan_bodies() -> u64 {
+    ORPHAN_BODIES.load(Ordering::Relaxed)
+}
+
+/// How many distinct sustained orphan episodes this process has seen. Monotone, so an operator can
+/// tell "the gate is clear because the gap closed" from "the gate never tripped".
+pub fn orphan_detections() -> u64 {
+    ORPHAN_DETECTIONS.load(Ordering::Relaxed)
+}
+
+/// The consecutive-sample rule, separated so it can be tested without a node: returns `Some(gap)`
+/// exactly when a gap has been observed `ORPHAN_AUDIT_SAMPLES` times running.
+#[derive(Default)]
+pub struct OrphanStreak {
+    samples: u32,
+}
+
+impl OrphanStreak {
+    pub fn observe(&mut self, gap: u64) -> Option<u64> {
+        if gap == 0 {
+            self.samples = 0;
+            return None;
+        }
+        self.samples = self.samples.saturating_add(1);
+        if self.samples >= ORPHAN_AUDIT_SAMPLES {
+            Some(gap)
+        } else {
+            None
+        }
+    }
+}
+
+/// **A body the DAG does not account for is a fault even when no ledger row names it** (U19,
+/// F-U19-07). This is the periodic audit the start-up re-offer cannot be: it compares the two
+/// counts a healthy shard keeps equal — one record in the block store per block in the DAG index —
+/// and reports a *sustained* difference. A body written by a pre-ledger build lands here; so does
+/// any future accounting bug. The audit does not delete or repair: it makes the state loud and
+/// withholds readiness, and the operator reset remains the repair.
+pub async fn audit_stored_bodies(
+    block_store: BlockStore,
+    dag: Arc<dyn BlockDagStorage>,
+    log: Arc<dyn Log>,
+) {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    crate::engine::node_phase::wait_until_running().await;
+    let mut interval = tokio::time::interval(ORPHAN_AUDIT_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut streak = OrphanStreak::default();
+    loop {
+        interval.tick().await;
+        let stored = match block_store.count().await {
+            Ok(count) => u64::try_from(count).unwrap_or(u64::MAX),
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!("stored-body audit could not count the block store: {e}"),
+                );
+                continue;
+            }
+        };
+        let in_dag =
+            u64::try_from(dag.get_representation().await.dag_set.len()).unwrap_or(u64::MAX);
+        let gap = stored.saturating_sub(in_dag);
+        match streak.observe(gap) {
+            Some(gap) => {
+                let previous = ORPHAN_BODIES.swap(gap, Ordering::Relaxed);
+                if previous == 0 {
+                    ORPHAN_DETECTIONS.fetch_add(1, Ordering::Relaxed);
+                    log.error(
+                        source,
+                        &format!(
+                            "{gap} stored block body/bodies have no DAG entry for \
+                             {ORPHAN_AUDIT_SAMPLES} consecutive samples ({stored} stored, {in_dag} \
+                             in the DAG); the readiness gate is now blocked. The start-up re-offer \
+                             covers bodies with a disposition row; a body without one is a \
+                             pre-ledger orphan and needs an operator reset or a peer re-delivery"
+                        ),
+                    );
+                }
+            }
+            None => {
+                if ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0 {
+                    log.info(
+                        source,
+                        &format!(
+                            "the stored-body/DAG gap closed ({stored} stored, {in_dag} in the DAG)"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +869,21 @@ mod tests {
             let bytes = codec.encode(&disposition);
             assert_eq!(codec.decode(&bytes).unwrap(), disposition);
         }
+    }
+
+    #[test]
+    fn a_transient_gap_is_not_an_orphan_but_a_sustained_one_is() {
+        let mut streak = OrphanStreak::default();
+        assert_eq!(streak.observe(1), None, "one in-flight body is normal");
+        assert_eq!(streak.observe(1), None);
+        assert_eq!(
+            streak.observe(1),
+            Some(1),
+            "the third consecutive sample is an orphan"
+        );
+        // A zero sample is evidence the normal case returned; the count starts again.
+        assert_eq!(streak.observe(0), None);
+        assert_eq!(streak.observe(1), None);
     }
 
     #[test]

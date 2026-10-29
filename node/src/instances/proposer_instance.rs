@@ -195,6 +195,38 @@ fn create_with_retry(
                     return Some(result);
                 }
 
+                // **Only a node in the running phase proposes** (B47, F-U20-04). Launch normally
+                // refuses to construct this instance before `Running`, so this arm is a local
+                // invariant rather than the only gate — but a phase regression must withhold
+                // production here, not be discovered by a peer.
+                if !rchain_casper::engine::node_phase::is_running() {
+                    let phase = rchain_casper::engine::node_phase::phase();
+                    let result = (
+                        ProposeResult {
+                            propose_status: ProposeStatus::ResourcePressure(
+                                "not-running".to_string(),
+                            ),
+                        },
+                        None,
+                    );
+                    chan::oneshot_send(
+                        propose_id_def,
+                        ProposerResult::Failure {
+                            status: result.0.propose_status.clone(),
+                            seq_number: 0,
+                            message: format!(
+                                "the node is in phase {}; it does not propose before the running \
+                                 engine",
+                                phase.label()
+                            ),
+                        },
+                    );
+                    log_propose_result(&log, &result);
+                    state.lock().await.latest_propose_result = Some(result.clone());
+                    drop(permit);
+                    return Some(result);
+                }
+
                 // **A block-pipeline fault stops production.** A node that has dropped a
                 // dependency-free block cannot claim its own chain is the network's; the same
                 // fail-safe as a finality-gap halt, at the earlier event. The process-wide
@@ -449,8 +481,12 @@ mod tests {
         })
     }
 
-    /// A guard whose fallback state is `Normal`: the propose gate is open.
+    /// A guard whose fallback state is `Normal`: the propose gate is open, and the phase gate is
+    /// too (no launch runs in this unit test binary).
     fn healthy() -> Arc<ResourceGuard> {
+        rchain_casper::engine::node_phase::set_phase(
+            rchain_casper::engine::node_phase::NodePhase::Running,
+        );
         ResourceGuard::inert(crate::resources::ResourceSnapshot {
             fallback: crate::resources::ResourceState::Normal,
             ..crate::resources::ResourceSnapshot::default()

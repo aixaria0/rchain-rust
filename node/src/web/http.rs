@@ -664,15 +664,37 @@ async fn api_health(State(state): State<HttpState>) -> Response {
     let syncing = rchain_casper::engine::node_syncing::sync_state().is_some();
     let pipeline_faults = rchain_casper::blocks::block_processor::pipeline_faults();
     let proposal_isolated = rchain_casper::blocks::proposer::proposer::proposal_isolated();
-    let blocked = syncing || pipeline_faults > 0 || proposal_isolated;
+    // **Confirmed, not sampled**: `orphan_bodies` is zero until the periodic audit has seen the
+    // same store/DAG gap for three consecutive samples, so an in-flight block does not flap this.
+    let orphan_bodies = rchain_casper::block_disposition::orphan_bodies();
+    // **Launch's own phase** (B47): a node that has not reached the running engine is not ready,
+    // whatever its pool says.
+    let node_phase = rchain_casper::engine::node_phase::phase();
+    let running = matches!(
+        &node_phase,
+        rchain_casper::engine::node_phase::NodePhase::Running
+    );
+    let blocked =
+        !running || syncing || pipeline_faults > 0 || proposal_isolated || orphan_bodies > 0;
     match state.web_api.status().await {
         Ok(status) => (
             StatusCode::OK,
             Json(json!({
                 "ok": !blocked,
                 "ready": !blocked,
-                "phase": if syncing { "syncing" } else if blocked { "blocked" } else { "running" },
+                "phase": if !running {
+                    node_phase.label()
+                } else if syncing {
+                    "syncing"
+                } else if blocked {
+                    "blocked"
+                } else {
+                    "running"
+                },
+                "nodePhase": node_phase.label(),
                 "pipelineFaults": pipeline_faults,
+                "orphanBodies": orphan_bodies,
+                "orphanDetections": rchain_casper::block_disposition::orphan_detections(),
                 "lastPipelineFault": rchain_casper::blocks::block_processor::last_pipeline_fault(),
                 "proposalHalted": proposal_isolated,
                 "proposalHaltReason": rchain_casper::blocks::proposer::proposer::proposal_isolation_reason(),
@@ -697,9 +719,11 @@ async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployReques
     // **A syncing node does not claim it can include work.** The pool may have room; the node
     // still cannot produce a block from it. Refuse before admission, with a 503 rather than a
     // pool-capacity answer. `acceptsDeploys` itself keeps its Law 86a meaning.
-    if rchain_casper::engine::node_syncing::sync_state().is_some()
+    if !rchain_casper::engine::node_phase::is_running()
+        || rchain_casper::engine::node_syncing::sync_state().is_some()
         || rchain_casper::blocks::block_processor::pipeline_faults() > 0
         || rchain_casper::blocks::proposer::proposer::proposal_isolated()
+        || rchain_casper::block_disposition::orphan_bodies() > 0
     {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
