@@ -9127,7 +9127,7 @@ mod liveness_tests {
         assert!(!native.active_validators().await.unwrap().contains(&v4));
         assert!(native.banished().await.unwrap().contains(&v4));
         assert!(
-            native.liveness().await.unwrap().get(&v4).is_none(),
+            !native.liveness().await.unwrap().contains_key(&v4),
             "a removed validator has no liveness record"
         );
         assert!(
@@ -9174,7 +9174,7 @@ mod liveness_tests {
             .await;
         }
         assert!(
-            native.liveness().await.unwrap().get(&v4).is_none(),
+            !native.liveness().await.unwrap().contains_key(&v4),
             "a returning validator is released when the jail expires"
         );
         assert!(native.active_validators().await.unwrap().contains(&v4));
