@@ -67,7 +67,7 @@ INGRESS=(
 # `tools/audit-type-system.sh` paid for). A rename therefore stales the entry *and* the site, and the
 # run reports an entry that claims no site rather than passing on it.
 SPAWN_ALLOW=(
-  'node/src/runtime/node_runtime.rs;;wire_block_processing_observed;;the block pipelines two loops (load_blocks, processor): they run for the life of the process, and a stopped one shows as a queue that stops draining while the node still answers, which is the shape C175 bounds by size rather than by observation'
+  'node/src/runtime/node_runtime.rs;;wire_block_processing_observed;;the block pipelines loops (load_blocks, processor) and the three U19 tasks (start-up re-offer, fault retry, stored-body audit): they run for the life of the process. A stopped pipeline shows as a queue that stops draining while the node still answers (the shape C175 bounds by size); a stopped retry/audit leaves the disposition ledger readable, and the fault/orphan surfaces on /health are the evidence that the task that would have cleared them is not running'
   'node/src/runtime/node_runtime.rs;;spawn_peer_message_router;;the peer-message router: its counterpart is the transport receiver that feeds it, so a router that has stopped leaves sends refused at the receiver rather than silence'
   'node/src/runtime/node_runtime.rs;;build_gateway;;the gateway in-flight recovery: a one-shot taken at boot, and its outcome is the coordinator ledger rather than the task staying alive'
   'node/src/runtime/node_runtime.rs;;setup_shard_runtime;;two sites: the node_launch wrapper, which logs the error it exits with, and the proposer-stream drain, whose death shows as a proposer whose stream stops being consumed'

@@ -350,6 +350,11 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     log: Arc<dyn Log>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeLaunch");
+    // **The phase cell is written by launch and only by launch** (B47). A restart begins at
+    // `Starting`; the sync branch below moves to `Syncing`, and the transition to the running engine
+    // at the end of this function moves to `Running`. The disposition loops wait for `Running`, so a
+    // start-up re-offer cannot race a recovery into the live DAG.
+    crate::engine::node_phase::set_phase(crate::engine::node_phase::NodePhase::Starting);
 
     // **The operator's anchor, parsed once** (C259): the sync phase names it in its fringe request, and
     // the running phase walks to it. Parsed here rather than in the branch because a `--sync-anchor` typo
@@ -376,6 +381,22 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .into_iter()
         .next()
         .flatten();
+    // **A body count above the DAG count is an orphan signal, not a fact to ignore.** This is a
+    // cheap boot observation (no body decode): a store with bodies the DAG does not hold is the
+    // shape the live testnet showed on B/C/D. The full disposition ledger/audit is U19/B46; until
+    // it lands, the operator at least gets a line naming the mismatch instead of a silent start.
+    let stored_bodies = block_store.count().await?;
+    if stored_bodies > repr.dag_set.len() {
+        log.warn(
+            source,
+            &format!(
+                "boot: the block store holds {stored_bodies} bodies but the DAG holds {}; {} \
+                 stored body(ies) have no DAG entry — possible orphans (U19/B46)",
+                repr.dag_set.len(),
+                stored_bodies.saturating_sub(repr.dag_set.len())
+            ),
+        );
+    }
     if repr.dag_set.is_empty() && standalone && pending_recovery.is_none() {
         if expected_genesis_hash.is_some() {
             return Err(
@@ -415,6 +436,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .await?;
     } else if repr.dag_set.is_empty() || pending_recovery.is_some() {
         log.info(source, "Starting from bootstrap node, syncing LFS...");
+        crate::engine::node_phase::set_phase(crate::engine::node_phase::NodePhase::Syncing);
         let engine = Arc::new(tokio::sync::Mutex::new(
             NodeSyncing::new(
                 transport.clone(),
@@ -534,6 +556,11 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
                              chain it never synced"
                         .to_string(),
                 };
+                    crate::engine::node_phase::set_phase(
+                        crate::engine::node_phase::NodePhase::Blocked(
+                            "LFS state sync is terminal".to_string(),
+                        ),
+                    );
                     return Err(message);
                 }
             }
@@ -705,7 +732,10 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     let block_range_door: crate::engine::node_running::BlockRangeDoor =
         Arc::new(tokio::sync::Mutex::new(tokio::sync::mpsc::channel(4).0));
 
-    // Transition to running mode.
+    // Transition to running mode. **The phase moves before the engine is constructed**, so a
+    // disposition loop waiting on `Running` cannot start between construction and the first packet;
+    // the cost is that a start-up re-offer can be in flight when the node first reports running.
+    crate::engine::node_phase::set_phase(crate::engine::node_phase::NodePhase::Running);
     let engine = NodeRunning::new(
         transport.clone(),
         rp_conf.clone(),

@@ -290,6 +290,26 @@ floors, the process RSS and the permit limits; `/metrics` carries the same as `r
 gauges; the node's own `GET /health` is a readiness body (200 while serving) and carries
 `finalityStalled`/`finalityStallEpisodes` as the peer-liveness signal.
 
+**Readiness is not pool capacity.** `acceptsDeploys` remains the Law 86a pool answer; `/health` also
+carries `ready` and `phase` (`running` | `syncing` | `blocked`), `pipelineFaults`, `orphanBodies`,
+`orphanDetections`, and `proposalHalted`. A syncing or blocked node refuses HTTP/gRPC deploy
+admission with a 503 even when the pool has room, because it cannot include the work. A
+block-pipeline fault sets `phase: blocked` and `ready: false`; a validator beyond the finality bound
+sets `proposalHalted` and stops proposing **and** attesting. The operator action is
+`POST /api/v1/proposer/resume` on the admin listener; the next proposal re-checks the bound, so a
+node that is still isolated latches again.
+
+**A block the node cannot settle is durable and retried.** Each stored body has a disposition row
+while the node owes it an outcome; a fault (an internal replay error, an insert error, a validation
+past its 10-minute deadline) is recorded with its stage and attempt count and re-offered on a
+doubling backoff (30 s to 10 min, eight attempts) before it is quarantined. `pipelineFaults` is the
+process counter and does not fall when a retry succeeds; a restart is the clean reset for a fault
+whose cause is gone. A quarantined row and an unresolved orphan are both visible on `/health` and
+both withhold `ready`. `orphanBodies` is **zero until the periodic audit has seen the same
+block-store/DAG gap for three consecutive samples**, so an in-flight block does not flap readiness.
+A sustained non-zero value means a body the DAG does not account for — a body written by a build
+before the ledger has no row, so the recovery is an operator reset or a peer re-delivery.
+
 | Switch | Default | Effect |
 |---|---|---|
 | `RNODE_DEPLOY_RELAY` | off | offer each admitted deploy to connected peers' external deploy service (`_PORT`, default 40401; `_FANOUT` to cap) |

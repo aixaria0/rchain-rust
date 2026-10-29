@@ -15,6 +15,8 @@ use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
 
+use crate::block_disposition::{BlockDispositionStore, PendingStage};
+use crate::blocks::block_processor;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
 use crate::validate::{block_hash, block_signature, format_of_fields};
@@ -292,6 +294,23 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
         };
         Ok((new_state, deps_validated))
     }
+
+    /// Release a block if the receiver still holds it; a no-op when it was never end-stored.
+    ///
+    /// A validation-failed block is inserted into the DAG but is not an `Ok(())`; it must still
+    /// release children that were already waiting on its parent relation. A faulted-before-
+    /// `end_stored` block is not in `blocks_st`, so the release is an idempotent no-op rather than
+    /// an error that hides the original fault.
+    pub fn finished_if_present(
+        &self,
+        id: MId,
+        parents: BTreeSet<MId>,
+    ) -> Result<(Self, BTreeSet<MId>), String> {
+        if !self.blocks_st.contains_key(&id) {
+            return Ok((self.clone(), BTreeSet::new()));
+        }
+        self.finished(id, parents)
+    }
 }
 
 impl<MId: Ord + Clone + std::fmt::Debug> Default for BlockReceiverState<MId> {
@@ -434,6 +453,7 @@ async fn incoming_blocks(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     conf_shard_name: Arc<str>,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -513,6 +533,26 @@ async fn incoming_blocks(
                 *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
+        }
+
+        // **The body is now in the store, so the node owes it an outcome** (U19, F-U19-01/05/07).
+        // The row is written before dependency resolution and before any fallible step below, so a
+        // crash or an error leaves a durable obligation the start-up audit re-offers. A failed write
+        // is a store fault: record it and keep going — the block can still be accepted now, and the
+        // only loss is that a crash before settlement would orphan the body, which is exactly what
+        // the fault surface says.
+        if let Err(e) = disposition
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+        {
+            block_processor::note_pipeline_fault(&block, "disposition write", &e);
+            log.error(
+                source,
+                &format!(
+                    "Could not record the disposition of stored block {}: {e}",
+                    block.block_hash.to_hex()
+                ),
+            );
         }
 
         // The loop's own failure idiom (as for `end_stored` below): log with the block, skip it, and
@@ -726,7 +766,7 @@ async fn validated_blocks(
             let parents: BTreeSet<BlockHash> = block.justifications.iter().copied().collect();
             let next = {
                 let mut guard = state.lock().await;
-                match guard.finished(block.block_hash, parents) {
+                match guard.finished_if_present(block.block_hash, parents) {
                     Ok((new_state, next)) => {
                         *guard = new_state;
                         next
@@ -751,8 +791,10 @@ pub fn apply(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     incoming_blocks_rx: mpsc::Receiver<BlockMessage>,
     finished_processing_rx: mpsc::Receiver<BlockMessage>,
+    released_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -762,8 +804,10 @@ pub fn apply(
         state,
         incoming_blocks_rx,
         finished_processing_rx,
+        released_processing_rx,
         conf_shard_name,
         block_store,
+        disposition,
         dag,
         block_retriever,
         put_to_incoming_queue,
@@ -777,8 +821,10 @@ pub fn apply_with_queue_observer(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     incoming_blocks_rx: mpsc::Receiver<BlockMessage>,
     finished_processing_rx: mpsc::Receiver<BlockMessage>,
+    released_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -792,18 +838,30 @@ pub fn apply_with_queue_observer(
         state.clone(),
         Arc::from(conf_shard_name),
         block_store,
+        disposition,
         dag.clone(),
         block_retriever,
         put_to_incoming_queue,
         out_tx.clone(),
         log.clone(),
     ));
+    // Accepted blocks release through the validated stream (and its taps). A refused insert is
+    // not a validation success, but it is still a DAG entry and must release children that were
+    // already waiting on its parent relation; give that stream its own consumer so it cannot
+    // trigger autopropose/attestation taps.
     tokio::spawn(validated_blocks(
         finished_processing_rx,
+        state.clone(),
+        out_tx.clone(),
+        log.clone(),
+        observer,
+    ));
+    tokio::spawn(validated_blocks(
+        released_processing_rx,
         state,
         out_tx,
         log,
-        observer,
+        None,
     ));
 
     out_rx
@@ -1315,6 +1373,33 @@ mod tests {
         assert!(BlockReceiverState::<MId>::new()
             .finished("A1".to_string(), BTreeSet::new())
             .is_err());
+    }
+
+    /// A refused-before-end block has no `blocks_st` entry; releasing it must be a no-op, while a
+    /// refused-but-inserted block still releases its waiting child.
+    #[test]
+    fn finished_if_present_releases_a_waiting_child_and_ignores_an_unknown_block() {
+        let state = BlockReceiverState::<MId>::new();
+        let (next, released) = state
+            .finished_if_present("unknown".to_string(), BTreeSet::new())
+            .unwrap();
+        assert_eq!(next, state);
+        assert!(released.is_empty());
+
+        let (parent, _) = state.begin_stored("parent".to_string());
+        let (parent, _) = parent.end_stored("parent".to_string(), Vec::new()).unwrap();
+        let (child, _) = parent.begin_stored("child".to_string());
+        let (child, _) = child
+            .end_stored("child".to_string(), parents(&[("parent", true)]))
+            .unwrap();
+        let (after, released) = child
+            .finished_if_present("parent".to_string(), BTreeSet::new())
+            .unwrap();
+        assert_eq!(released, BTreeSet::from(["child".to_string()]));
+        assert_eq!(
+            after.receive_st.get("child"),
+            Some(&RecvStatus::PendingValidation)
+        );
     }
 
     #[test]

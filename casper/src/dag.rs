@@ -1281,10 +1281,23 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
     ) -> Result<(), String> {
         // The idempotence check is a store read and does not need the global insertion lock; the
         // pending-hash reservation below covers a same-hash insert already in flight (F-U9-01).
-        if self
+        //
+        // **Metadata alone is not a committed insert.** The store write happens before the
+        // representation commit; a failure in the deploy index, pool release, fringe marks or
+        // representation leaves the metadata row behind, and the old `contains` early-return
+        // then answered `Ok(())` on every retry while `dag.contains` stayed false. Requiring the
+        // representation as well makes the retry **complete** the missing steps instead of
+        // short-circuiting the repair.
+        let metadata_known = self
             .block_metadata_store
             .contains(&block_metadata.block_hash)
-            .await
+            .await;
+        if metadata_known
+            && self
+                .representation
+                .read()
+                .await
+                .contains(&block_metadata.block_hash)
         {
             return Ok(());
         }

@@ -11793,3 +11793,33 @@ finalized heights, and rejects failed or malformed transfers. Nine regression ca
 `40efb9599a44bf36f877143a3cb94ccda56700bc`; all ten cases pass after the correction, including
 the unchanged valid-range control. The [retained evidence](evidence/n489-range-cache-20261029/README.md)
 is offline and invokes no live node controls. This is not live recovery or fresh-join acceptance.
+
+## 145. Block acceptance and private-chain RCA (C343, #479)
+
+**Found.** The live four-validator testnet stored block bodies from height 6 through at least 250 on
+B/C/D while their DAG stayed at height 5; A reached 267 with finality 3. A local `rnode:477` run
+accepted the exact four-parent block-6 shape and a user-deploy recovery, so the block content is not
+the obvious cause. The RCA found four silent seats: the processor's panic/`Internal`/insert-error
+arms drop a stored block with no disposition; `dag.insert`'s metadata `contains` short-circuit
+answers `Ok(())` after a partial insert; only accepted inserts reach the receiver's `finished`; and
+the proposer never produced `TooFarAheadOfLastFinalized` or compared the tip to finality. The
+receiver's begin-lease leak was already closed on `dev` by #494 (`abort_stored` plus dependency
+headroom), so this pass credits that fix rather than duplicating it.
+
+**Why believed.** A state-machine lens, a failure-masking/concurrency lens, a HAZOP/law lens and an
+adversarial verifier produced the §9 table in `failure-hazop.md`; U19/U20 record the deviations and
+the still-owed falsifiers. The live phase (NodeSyncing recovery vs NodeRunning processor fault) is
+not proven: the operator `status/operator`/logs remain the discriminator.
+
+**How it is falsified.** A fault must produce a durable disposition and a retry; a validation that
+never returns must fault and stop holding the pipeline; a partial insert must complete on retry; a
+failed parent must release its waiting child; `/health` must report
+`pipelineFaults`/`orphanBodies`/`ready:false`/`nodePhase`; a node outside `Running` must refuse
+deploy admission and propose/attest; a tip beyond the finality bound must stop propose and attest and
+expose `proposalHalted`; the operator resume route must clear the latch and the next proposal
+re-check the bound. This pass lands those plus the receiver/insert/proposer tests. Still `owed:` in
+U19/U20: a hash-level scan for bodies written before the ledger, a `Running` constructor that
+refuses an unsettled row, per-shard phase, and the end-to-end re-offer/phase-gate falsifiers.
+
+**What it does not claim.** No live admission/width/join arm; 27 HAZOP falsifiers and two safety-case
+evidences remain visible debt; C343 stays `in progress`.

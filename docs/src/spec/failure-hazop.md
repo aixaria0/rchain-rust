@@ -41,6 +41,14 @@ accept. It reuses the local mechanisms in U8/U9/U17 rather than duplicating them
 worksheet's H-U series is U1–U10 and has no U17 sibling, so U18 cites **H-U2-04** and **H-U7-02**
 rather than inventing a partially populated H-U18 table.
 
+**Extended 2026-10-29 — the block-acceptance and isolation nodes U19–U20.** U19 studies a received
+block whose parents every validator holds but which is stored and never accepted or refused; U20
+studies a proposer that extends a chain no peer accepts after finality stops advancing. The two are
+the follower and proposer ends of one transition. The live build is `d1af45d1`; HEAD's #486 buffer/
+lock fixes are named where they narrow a row. The detailed RCA is §9, and the existing F-U4-01
+(Internal/no-requeue), F-U8-02/F-U8-03 (ingress/retriever) and F-U9-01/F-U9-02 (insert lock) rows
+are cited rather than copied.
+
 **Companion, not a replacement.** The hazards and their root-cause analysis live in
 `testnet-acceptance.md` §1 as rows `H-U*-*`; this page does not restate them. What it adds is the
 **disposition** — which rung of the ladder below the deviation lands on, what the node does today, and
@@ -550,6 +558,81 @@ proposer rejects after admission), and they are cited here rather than copied. R
 Ran: `tools/check-hazop-worksheet.sh --gate`. Not read: the whole of `casper/src/merging.rs` and
 `casper/src/dag.rs`; the historical H-U challenge bodies beyond the named rows.
 
+### U19 — Block acceptance
+
+**Design intent.** A block whose parents are in the DAG is accepted or refused with a reason, its
+body has an owner/terminal disposition, and a node cannot serve as healthy with an unresolved
+orphan.
+
+**Guide words.** row: NO, MORE, LESS, AS WELL AS, PART OF, OTHER THAN, REVERSE, EARLY, LATE, BEFORE, AFTER
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U19-01** | NO | **No disposition for a node fault**: a panicked/`Internal`/insert-error block is logged and dropped; its body remains stored and its children wait | `block_processor::apply`'s no-insert arms (`casper/src/blocks/block_processor.rs:261-298`) `continue` without a DAG record or a lease; the receiver's `PendingValidation` then refuses re-delivery; `ack_received` already removed the retriever entry | every no-insert arm now records a durable `Faulted` row (stage, reason, attempts) through `record_block_fault`; the retry loop re-offers it with backoff, and a spent budget quarantines it visibly. A verdict settles the row | Terminal | R2 + R3 | casper/src/blocks/block_processor.rs::a_hung_validation_times_out_and_faults_the_pipeline |
+| **F-U19-02** | MORE | **Two insert attempts for one hash**: the idempotence check is a metadata-store read and the in-flight reservation is the only atomic bridge | `dag.insert`'s `contains` short-circuit (`casper/src/dag.rs:1284-1290`) returns `Ok(())`; the reservation pair is the serialization | the short-circuit now also requires the representation, so a duplicate accepted insert is a no-op but a partial one is completed on retry; the in-flight duplicate is covered by the reservation | Terminal | R1 | casper/src/dag.rs::insert_rejects_equivocation_same_seq_num |
+| **F-U19-03** | LESS | **A partial insert**: metadata is written before the deploy index, pool release, fringe marks and representation commit | the writes are separate (`casper/src/dag.rs:1436-1515`); a failure after `add` leaves a row the representation does not contain | retry now requires the representation and completes the missing steps; a still-torn insert is still logged and the boot repair is owed | Terminal | R3 | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
+| **F-U19-04** | AS WELL AS | **Alongside acceptance the release/notify can fail**: only the `Ok(())` arm sent to `validated_tx`; the failed-block arm inserted but never ran `finished` | `block_processor::apply`; `BlockReceiverState::finished` is the only child-release event; a child already waiting on a failed parent stayed parked | a refused insert now uses a separate release stream and `finished_if_present`; accepted blocks keep the taps | Drift | R2 | casper/src/blocks/block_receiver.rs::finished_if_present_releases_a_waiting_child_and_ignores_an_unknown_block |
+| **F-U19-05** | PART OF | **Only parents are revalidated**: `send_to_validate` re-injects stored parents; the block itself has no repair path | `block_receiver::incoming_blocks`; the retriever already acked the block before the DAG entry | the receiver writes a `Pending` row when the body is stored; `reoffer_unsettled` sends every unsettled row back to the processor at start-up, skips one whose justification is not in the DAG, and settles one already inserted. An end-to-end test of the re-offer is still owed | Drift | R2 | owed: a stored-not-DAG body must be re-offered |
+| **F-U19-06** | OTHER THAN | **The published root can be other than the accepted block's**: replay records a candidate root and only `publish_accepted_root` publishes; a same-height sibling may publish either post-state | law 80/B40; `block_processor::publish_accepted_root` is gated on `status.is_ok()` | the accepted path is split; the failed path does not publish | Drift | R2 | casper/tests/current_root_publication.rs::a_candidate_checkpoint_records_the_root_without_publishing_it |
+| **F-U19-07** | REVERSE | **A restart reverses the repair**: a body written before the DAG entry is never scanned; the receiver state that would re-offer it is in memory | `NodeLaunch` checks the reset marker and pending recovery, not the block store's orphans (`casper/src/engine/node_launch.rs:373-416`); `BlockReceiverState` is rebuilt empty | the disposition row is durable and `reoffer_unsettled` sends it back at pipeline start; a body written by a pre-ledger build has no row, and the periodic stored-body audit reports the sustained store/DAG gap on `/health` (`orphanBodies`) instead of serving healthy. A hash-level legacy scan is owed | Terminal | R3 | casper/src/block_disposition.rs::a_transient_gap_is_not_an_orphan_but_a_sustained_one_is |
+| **F-U19-08** | EARLY | **Validation starts before the state it needs is available**: recovery replays before every per-block root/sidecar is hydrated, and its test fixture has no user deploy | `RecoveryReplay::verify` (`casper/src/engine/recovery.rs:142-282`) replays the downloaded history; `casper/tests/recovery_replay.rs` builds blocks with `&[]` deploys | recovery fails closed with a log; the first user deploy is untested | Drift | R2 | casper/tests/recovery_replay.rs::independent_recovery_replays_epoch_boundaries_and_refuses_forged_claims |
+| **F-U19-09** | LATE | **Acceptance is late or never**: the processor awaited a validation future with no deadline; the receiver keeps storing until its 1024 bound | `block_processor::apply` awaited `handle`; `block_receiver::end_stored_awaiting` is the only receiver bound | `BLOCK_VALIDATION_TIMEOUT` aborts a replay that has produced no verdict, records a pipeline fault naming the block and stage, and latches the readiness/propose refusal; the receiver bound is unchanged | Terminal | R2 + R3 | casper/src/blocks/block_processor.rs::a_hung_validation_times_out_and_faults_the_pipeline |
+| **F-U19-10** | BEFORE | **The lease came before the DAG entry**: `begin_stored` was written before every fallible store/parent/end step and was not reverted | `block_receiver::incoming_blocks`; in the live build the error `continue`s left `BeginStoreBlock`, and every later delivery was refused by `begin_stored` | **fixed in dev by #494**: `abort_stored` returns the hash on every error path and the dependency-headroom rule keeps a missing-parent request admissible; the test is the regression | Terminal | R2 | casper/src/blocks/block_receiver.rs::capacity_refusal_does_not_poison_the_hash_for_later_retry |
+| **F-U19-11** | AFTER | **After the fault there is no retry, halt or readiness change**: the node keeps serving as healthy while the orphan persists | no disposition ledger, no phase, no pipeline-fault surface; `/api/v1/status` has `degraded` (resource) and pool capacity only | `/health` reports `pipelineFaults`, `ready:false`, `phase:blocked`, and deploy/propose are refused; the fault is durable and retried; the aggregate backlog surface and a true `Blocked` phase remain owed | Terminal | R3 + R4 | casper/src/blocks/block_receiver.rs::capacity_refusal_does_not_poison_the_hash_for_later_retry |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U19-03/U19-06 | Law 80 — a candidate checkpoint is known; acceptance publishes | the root-pair split is the accepted/failed boundary |
+| U19-02/U19-03 | Law 72 — a completion record brackets durable effects; Law 18 — height contiguity | the store/index repair is the durable half |
+| U19-01/U19-04/U19-05/U19-07/U19-09/U19-11 | **owed:** Law 88a — stored body has a DAG record or a live lease; `Running` has no unresolved orphan | this is the new disposition/lease relation; until it lands the rows are R2/R3 with `candidate:block-disposition-and-isolation` |
+| U19-08 | Law 85 / 83 — the recovery claim is checked against a local replay | the first user-deploy block is the untested witness |
+
+### U20 — Proposer isolation
+
+**Design intent.** A validator proposes only on a chain it can finalise on; a private chain is
+bounded, loud and requires an operator to resume.
+
+**Guide words.** row: NO, MORE, LESS, AS WELL AS, PART OF, OTHER THAN, REVERSE, EARLY, LATE, BEFORE, AFTER
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U20-01** | NO | **No finality-distance gate**: `TooFarAheadOfLastFinalized` existed as a status variant but no code produced it | `casper/src/blocks/proposer/proposer.rs` never compared the tip to the last finalized height before `create_block` | the height-gap gate and latch are implemented; `/health` reports `proposalHalted`; the live halt drill is owed | Terminal | R2 | casper/src/blocks/proposer/proposer.rs::the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it |
+| **F-U20-02** | MORE | **More blocks beyond finality**: each empty attestation/proposal adds height with no peer acceptance signal | the proposer had no peer-DAG-acceptance input; finality-stall health was a metric, not a gate | A ran 267 heights against finality 3 | Terminal | R2 | casper/src/blocks/proposer/proposer.rs::the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it |
+| **F-U20-03** | LESS | **Less than a peer acceptance signal**: the proposer sees transport acceptance, not remote DAG admission | `CommUtil::send_block_hash` logs transport acceptance; no ack of validation | a private chain looks like a successful proposal | Drift | R2 | owed: a peer-acceptance/isolation signal |
+| **F-U20-04** | AS WELL AS | **Proposing alongside a sync/blocked phase or a finality stall**: the proposer had no phase input | `ProposerInstance` checked only the resource `stops_production()` gate | launch writes `NodePhase` (`Starting`/`Syncing`/`Running`/`Blocked`); the proposer refuses with `ResourcePressure("not-running")` outside `Running`, and the disposition loops wait for `Running`. The attestation path shares the propose queue. A gate test is still owed | Drift | R2 | owed: phase/attestation gate |
+| **F-U20-05** | PART OF | **Only transport is observed**: a hash broadcast to a peer is not a block acceptance | `casper/src/protocol/comm_util.rs` summary says transport acceptance is not remote DAG admission | the local height advances while the network refuses | Drift | R2 | owed: admission-aware evidence |
+| **F-U20-06** | OTHER THAN | **The node treats its own chain as the network's** | no comparison of tip to finalized at proposal time; local `ProposeSuccess` is the only outcome | a private chain is indistinguishable from progress to the proposer | Terminal | R2 | casper/src/blocks/proposer/proposer.rs::the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it |
+| **F-U20-07** | REVERSE | **Local acceptance with no peer acceptance** remains unbounded | the block is inserted locally before the hash is announced; no follow-up acceptance evidence | the node keeps building on it | Drift | R3 | owed: a private-chain halt drill |
+| **F-U20-08** | EARLY | **An early gate could halt a healthy net**: finality-stall counters fire on a producing four-validator net | `ShardHealth::finality_stall_sustained` records 136–152 episodes over ~212 blocks while finality advanced | do not use the stall counter as the primary gate; use the height gap with hysteresis | Drift | R2 | casper/src/blocks/proposer/proposer.rs::the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it |
+| **F-U20-09** | LATE | **Detection is late**: no operator-visible isolation status | the status has `finalityStalled` on the newer build but no `proposalHalted`/phase | `/health` now has `proposalHalted`/`phase`; the operator drill/log evidence is owed | Terminal | R2 | owed: a propose/attest halt surface |
+| **F-U20-10** | BEFORE | **Proposal before the finality bound/quorum signal** | `create_block` had no finality comparison | a private chain starts with the first unattested block | Terminal | R2 | casper/src/blocks/proposer/proposer.rs::the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it |
+| **F-U20-11** | AFTER | **After a halt there is no operator resume** | no halt action exists; only the autopropose/resource resume paths | `POST /api/v1/proposer/resume` clears the latch; the next proposal re-checks the bound; drill/test owed | Drift | R4 | owed: an operator resume for isolation |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U20-01/U20-02/U20-06/U20-10 | **owed:** Law 88b — a proposal is within the finality bound | the new policy predicate; until it lands use `candidate:block-disposition-and-isolation` |
+| U20-03/U20-05/U20-07 | Law 51/54 — progress/non-progress is classified; a liveness predicate reads the current view | the tip/finality gap is the local view; remote admission is not a theorem here |
+| U20-04/U20-08/U20-09/U20-11 | **owed:** operator policy — an isolation halt and an explicit resume | local policy, not a consensus state relation |
+
+### Provenance
+
+This is a desk study of the transition that produced the private chain, not an independent
+certification. It reuses the existing F-U4-01 (Internal drop/no requeue), F-U8-02/F-U8-03
+(ingress/retriever bounds), F-U9-01/F-U9-02 (insert lock/height map) and F-U10-01 (finality
+surface) rows rather than duplicating them. It records the first user-deploy block and the
+proposer's unbounded tip as the two ends of the same transition. Read: `casper/src/blocks/
+block_processor.rs`, `block_receiver.rs`, `casper/src/dag.rs`, `casper/src/engine/node_launch.rs`,
+`node_syncing.rs`, `recovery.rs`, `casper/src/blocks/proposer/proposer.rs`,
+`docs/src/spec/resource-safety-case.md`. Ran: `tools/check-hazop-worksheet.sh --gate`.
+
 ## 4. The fault tree
 
 ```
@@ -715,7 +798,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 20 · node-words owed: 44
+**Debt.** falsifiers owed: 27 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.
@@ -784,3 +867,41 @@ falsify is not a statement (the register's `vacuous` status); an item that canno
 named and cannot be falsified is that shape, whatever column it sits in. So the arm is recorded here as a
 risk and kept **out of the debt**, F-U5-01's row says so in its own words, and what remains checkable is the
 backstop's own pieces — which is the whole of what "keep the fire escape sound" means.
+
+## 9. RCA for U19/U20 — every silent path on the acceptance transition
+
+This section is the detailed root-cause matrix behind U19/U20. It is deliberately **not** a Table A
+shape (no `F-U*` ten-column rows); it records the state-machine, failure-masking and concurrency
+lenses and the adversarial check against the live evidence. The live build is `d1af45d1`; HEAD
+adds #486 and is named where a row is narrowed there.
+
+| # | Path / fact | State left behind | Loudness today | P0 response |
+|---|---|---|---|---|
+| S1 | `block_receiver.rs:429-434` reserves `BeginStoreBlock` before every fallible step; `continue`s at 445/467/478/495/524 never revert | `receive_st[id]=BeginStoreBlock` forever; every re-offer returns `begin_stored=false` and is silently skipped; the retriever keeps asking | one error at the first failure, then silence | revert on every exit; `check_if_known` before begin; bound `receive_st` |
+| S2 | `block_processor.rs:261-298` panic/`Internal`/SelfEquivocation/insert error | stored body, no DAG entry, children parked; `ack_received` already removed the retriever entry | one `log.error`; no count/status/retry | disposition ticket + retry/Blocked |
+| S3 | `dag.rs:1284-1290` `contains` short-circuit after a partial insert | metadata exists, representation/index may not; retry returns `Ok(())` and never repairs | retry silent | complete the missing steps idempotently; boot repair |
+| S4 | `node_runtime.rs` `put_to_incoming_queue` uses `chan::try_send` and discards the bool | a full re-injection of a stored parent is dropped; child waits | now logged; no counter | count/bounded send or fault |
+| S5 | `multi_parent_casper.rs:1653-1660` discards `BlockIndex` error | index/regeneration failure invisible at acceptance | silent | warn/count |
+| S6 | `node_runtime.rs` relay spawn discards per-peer results | an admitted deploy no peer takes is stranded | silent | count/log; bounded JoinSet |
+| S7 | receiver/pump/processor tasks have dropped `JoinHandle`s | a panic/early exit stops the pipeline | silent | supervised JoinSet/panic hook |
+| S8 | receiver lock across DAG repr read; `update_metadata` lock across LMDB read | a stalled store read blocks all receiver progress/inserts | hang candidate | hoist reads; no await under guard |
+| S9 | `receive_st` has no bound | leaked `BeginStoreBlock` entries grow | silent | bound/fold guard |
+| S10 | `check_if_known` after `begin_stored` | ignored old block leaves permanent state | debug line only | reorder |
+| S11 | `compute_bonds` fallback to block-carried bonds | finality/fringe can read attacker-chosen bonds after a history fault | silent when maps agree | warn/count |
+| S12 | `out_tx` unbounded; pump blocks on bounded processor queue | stalled processor grows memory | silent | bound/count |
+| S13 | serial packet loop awaits a peer stream | a stalled peer serializes all inbound handling | silent | per-peer concurrency/stream timeout |
+| S14 | `validate_and_add_to_dag` is dead code with a different failure contract | no runtime effect; divergence trap | n/a | deleted in this pass |
+| S15 | only `Ok(())` is sent to `validated_tx` | a refused parent's already-waiting child is never released | log only | release event for refused inserts; idempotent `finished_if_present` |
+| S16 | receiver-full/retriever-capacity drops can precede `ack` or be unobserved | a stored body is never re-queued/re-requested | live: drop; HEAD: retained but no status | count/retry/fault |
+
+**The live transition, stated without overclaiming.** The evidence proves the body/DAG split
+(block store has 6..250; DAG at 5; post-state absent), not the phase. The two surviving branches
+are (a) `NodeSyncing` with a failed recovery attempt, and (b) `NodeRunning` with S1/S2/S3 at block
+6. The HAZOP and P0 safeguards cover both; the operator `status/operator`/logs remain the
+discriminator. A private chain is separately proven by A's 267 heights against finality 3 and is
+the U20 side, not a hypothesis.
+
+**Adversarial checks.** The local `rnode:477` four-validator run accepted the exact block shape
+and a user-deploy recovery; the code diff #478 does not touch the follower validation path; the
+existing `F-U4-01` already owns the Internal/no-requeue row. Claims that do not survive these
+checks are not recorded as root causes.

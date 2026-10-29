@@ -657,11 +657,47 @@ fn deploy_response(result: Result<String, BlockApiException>) -> Response {
 /// nginx snapshot on the public testnet can proxy this route; a host-level `mem_available_mb` still
 /// belongs on the operator surface.
 async fn api_health(State(state): State<HttpState>) -> Response {
+    // **Phase is a readiness signal, not a resource verdict** (U20/B47). `syncing` is the
+    // node-syncing task's own global reading; `None` is the ordinary running case. The existing
+    // `acceptsDeploys` remains Law 86a pool capacity; `ready` is the answer to "can this node
+    // include work now?" and is the field a deploy client should gate on.
+    let syncing = rchain_casper::engine::node_syncing::sync_state().is_some();
+    let pipeline_faults = rchain_casper::blocks::block_processor::pipeline_faults();
+    let proposal_isolated = rchain_casper::blocks::proposer::proposer::proposal_isolated();
+    // **Confirmed, not sampled**: `orphan_bodies` is zero until the periodic audit has seen the
+    // same store/DAG gap for three consecutive samples, so an in-flight block does not flap this.
+    let orphan_bodies = rchain_casper::block_disposition::orphan_bodies();
+    // **Launch's own phase** (B47): a node that has not reached the running engine is not ready,
+    // whatever its pool says.
+    let node_phase = rchain_casper::engine::node_phase::phase();
+    let running = matches!(
+        &node_phase,
+        rchain_casper::engine::node_phase::NodePhase::Running
+    );
+    let blocked =
+        !running || syncing || pipeline_faults > 0 || proposal_isolated || orphan_bodies > 0;
     match state.web_api.status().await {
         Ok(status) => (
             StatusCode::OK,
             Json(json!({
-                "ok": true,
+                "ok": !blocked,
+                "ready": !blocked,
+                "phase": if !running {
+                    node_phase.label()
+                } else if syncing {
+                    "syncing"
+                } else if blocked {
+                    "blocked"
+                } else {
+                    "running"
+                },
+                "nodePhase": node_phase.label(),
+                "pipelineFaults": pipeline_faults,
+                "orphanBodies": orphan_bodies,
+                "orphanDetections": rchain_casper::block_disposition::orphan_detections(),
+                "lastPipelineFault": rchain_casper::blocks::block_processor::last_pipeline_fault(),
+                "proposalHalted": proposal_isolated,
+                "proposalHaltReason": rchain_casper::blocks::proposer::proposer::proposal_isolation_reason(),
                 "degraded": status.degraded,
                 "acceptsDeploys": status.accepts_deploys,
                 "height": status.latest_block_number,
@@ -673,13 +709,32 @@ async fn api_health(State(state): State<HttpState>) -> Response {
             .into_response(),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"ok": false, "error": e.0})),
+            Json(json!({"ok": false, "ready": false, "phase": "unavailable", "error": e.0})),
         )
             .into_response(),
     }
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
+    // **A syncing node does not claim it can include work.** The pool may have room; the node
+    // still cannot produce a block from it. Refuse before admission, with a 503 rather than a
+    // pool-capacity answer. `acceptsDeploys` itself keeps its Law 86a meaning.
+    if !rchain_casper::engine::node_phase::phase().admits_work()
+        || rchain_casper::engine::node_syncing::sync_state().is_some()
+        || rchain_casper::blocks::block_processor::pipeline_faults() > 0
+        || rchain_casper::blocks::proposer::proposer::proposal_isolated()
+        || rchain_casper::block_disposition::orphan_bodies() > 0
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "node is not ready (syncing or blocked); deploy admission is refused",
+                "ready": false,
+                "phase": "not-ready",
+            })),
+        )
+            .into_response();
+    }
     deploy_response(state.web_api.deploy(&req).await)
 }
 
@@ -1502,6 +1557,22 @@ async fn admin_resume_autopropose(State(state): State<AdminState>) -> Response {
 /// It takes a **fresh sample** and clears only when that sample is clear; a pressured node answers
 /// `409` with the measured state, so the actuator cannot override live pressure. It never touches the
 /// autopropose halt: that is an integrity decision, not a resource one.
+/// `POST /api/v1/proposer/resume` — clear the process-local proposal-isolation latch.
+///
+/// The next proposal still re-checks the height gap, so an operator who resumes a node that is
+/// still beyond the bound gets the latch set again. This is the explicit recovery action; there is
+/// no automatic clear.
+async fn admin_resume_proposal() -> Response {
+    rchain_casper::blocks::proposer::proposer::clear_proposal_isolation();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "proposal isolation cleared; the next proposal re-checks the finality bound",
+        })),
+    )
+        .into_response()
+}
+
 async fn admin_resume_resources(State(state): State<AdminState>) -> Response {
     match state.admin_web_api.resume_resource_fallback().await {
         Ok(word) if word == "normal" => (
@@ -1905,6 +1976,7 @@ pub fn admin_router(state: AdminState) -> Router {
     // should not be able to hammer it.
     let resume_routes = Router::new()
         .route("/api/v1/autopropose/resume", post(admin_resume_autopropose))
+        .route("/api/v1/proposer/resume", post(admin_resume_proposal))
         .route_layer(middleware::from_fn_with_state(
             (
                 state.resume_rate_limiter.clone(),

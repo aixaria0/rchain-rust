@@ -45,8 +45,8 @@ use rchain_casper::reporting::{rho_reporter, ReportingCasper};
 use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::state::ProposerState;
 use rchain_casper::storage::{
-    rnode_key_value_store_manager, shard_data_dir, RESET_MARKER_DB, SHARD_ID_MARKER,
-    STORE_FORMAT_MARKER, STORE_FORMAT_VERSION,
+    rnode_key_value_store_manager, shard_data_dir, BLOCK_DISPOSITION_DB, RESET_MARKER_DB,
+    SHARD_ID_MARKER, STORE_FORMAT_MARKER, STORE_FORMAT_VERSION,
 };
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::discovery::grpc_kademlia_rpc::GrpcKademliaRpc;
@@ -114,6 +114,9 @@ use crate::web::http::{
 };
 use crate::web::pos_read::{PosReadApi, ShardPosRead};
 use crate::web::transaction::TransactionAPIImpl;
+use rchain_casper::block_disposition::{
+    BlockDisposition, BlockDispositionCodec, BlockDispositionStore,
+};
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 use rchain_ocapn::conn::Export;
@@ -779,6 +782,9 @@ pub struct ShardParts {
     pub spec: ShardSpec,
     pub block_store: BlockStore,
     pub dag: Arc<dyn BlockDagStorage>,
+    /// The durable record of every stored body this shard still owes an outcome (U19). Only
+    /// `Pending`/`Faulted` rows: accepted and refused blocks are the DAG metadata.
+    pub block_disposition: BlockDispositionStore,
     pub runtime_manager: Arc<RuntimeManager>,
     pub approved_store: ApprovedStore,
     /// This shard's store manager, over its own data directory ([`shard_data_dir`]).
@@ -894,6 +900,9 @@ fn wire_block_processing_observed(
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
+    // Refused-but-inserted blocks release waiting children through a separate stream: they are
+    // DAG entries with a verdict, not validation successes, so they must not fire the taps.
+    let (released_blocks_tx, released_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
 
     // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
     // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block).
@@ -930,16 +939,32 @@ fn wire_block_processing_observed(
     ));
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
+        let log = log.clone();
         move |block| {
-            chan::try_send(&incoming_blocks_tx, block);
+            let hash = block.block_hash;
+            if !chan::try_send(&incoming_blocks_tx, block) {
+                // **A full re-injection is not a silent success** (F-U8-02's class). The
+                // receiver's `send_to_validate` treats this callback as infallible; without this
+                // line a stored parent can be dropped on the floor while its child waits.
+                log.warn(
+                    LogSource::new("node.runtime.block_processing"),
+                    &format!(
+                        "incoming queue full/closed while re-injecting stored block {}; the block \
+                         remains in the store and the receiver will retry it",
+                        hash.to_hex()
+                    ),
+                );
+            }
         }
     });
     let validation_rx = block_receiver::apply_with_queue_observer(
         receiver_state,
         incoming_blocks_rx,
         validated_blocks_rx,
+        released_blocks_rx,
         shard_id.to_string(),
         parts.block_store.clone(),
+        parts.block_disposition.clone(),
         parts.dag.clone(),
         comm_state.block_retriever.clone(),
         put_to_incoming_queue,
@@ -953,6 +978,12 @@ fn wire_block_processing_observed(
     // ahead of CPU-bound replay validation (R15).
     let (processor_input_tx, processor_input_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
+    // A second handle for the disposition loops: the start-up audit re-offers bodies a crash left
+    // unsettled, and the retry loop re-offers faulted ones. Both write directly to the processor,
+    // bypassing the receiver — the block is already stored, and re-admitting it through
+    // `begin_stored` would be refused as a block the receiver has seen.
+    let processor_input_tx_disposition = processor_input_tx.clone();
+    let disposition_log = log.clone();
     let load_blocks = {
         let block_store = parts.block_store.clone();
         let log = log.clone();
@@ -1005,11 +1036,13 @@ fn wire_block_processing_observed(
     let processor = block_processor::apply(
         processor_input_rx,
         validated_blocks_tx.clone(),
+        released_blocks_tx,
         shard_id.to_string(),
         min_phlo_price,
         max_number_of_parents,
         parts.dag.clone(),
         parts.block_store.clone(),
+        parts.block_disposition.clone(),
         parts.runtime_manager.clone(),
         comm_state.comm_util.clone(),
         block_index,
@@ -1017,6 +1050,29 @@ fn wire_block_processing_observed(
         health,
     );
     tokio::spawn(processor);
+
+    // **A body the node owes an outcome is re-offered, not forgotten** (U19). The start-up audit
+    // runs once; the retry loop then keeps the faulted rows moving until their budget is spent.
+    tokio::spawn(rchain_casper::block_disposition::reoffer_unsettled(
+        parts.block_disposition.clone(),
+        parts.block_store.clone(),
+        parts.dag.clone(),
+        processor_input_tx_disposition.clone(),
+        disposition_log.clone(),
+    ));
+    tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
+        parts.block_disposition.clone(),
+        parts.block_store.clone(),
+        processor_input_tx_disposition,
+        disposition_log.clone(),
+    ));
+    // A stored body the DAG never accounts for is loud even when no ledger row names it (a body
+    // written by a pre-ledger build). The audit is a count comparison, not a block scan.
+    tokio::spawn(rchain_casper::block_disposition::audit_stored_bodies(
+        parts.block_store.clone(),
+        parts.dag.clone(),
+        disposition_log,
+    ));
 
     (incoming_blocks_tx, validated_blocks_tx)
 }
@@ -2432,6 +2488,18 @@ pub async fn setup_shard(
         )
         .await?,
     );
+    // **Every stored body this shard still owes an outcome** (U19). Written before dependency
+    // resolution and settled by the processor on either verdict; only faults survive.
+    let block_disposition_kv: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>> = Arc::new(
+        database(
+            &store_manager,
+            BLOCK_DISPOSITION_DB,
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockDispositionCodec),
+        )
+        .await?,
+    );
+    let block_disposition = BlockDispositionStore::from_store(block_disposition_kv);
     let dag_kv = Arc::new(
         BlockDagKeyValueStorage::create(block_metadata_store, deploy_index, deploy_store)
             .await
@@ -2695,6 +2763,7 @@ pub async fn setup_shard(
         spec: spec.clone(),
         block_store,
         dag: block_dag_storage,
+        block_disposition,
         runtime_manager,
         approved_store,
         store_manager,

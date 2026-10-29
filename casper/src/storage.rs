@@ -31,7 +31,15 @@ pub const STORE_FORMAT_MARKER: &str = "store-format";
 /// The store format this build writes. See [`STORE_FORMAT_MARKER`].
 // Version 2 adds the recovery-pending key: a v1 binary would ignore it and
 // could enter Running over an interrupted publication. Downgrade must refuse.
-pub const STORE_FORMAT_VERSION: u32 = 2;
+// Version 3 adds the block-disposition ledger: a v2 binary would ignore the
+// rows and could leave a stored body with no disposition for ever (U19).
+pub const STORE_FORMAT_VERSION: u32 = 3;
+
+/// **Where a shard records the blocks it still owes an outcome** (U19, `block_disposition`). Holds
+/// only `Pending`/`Faulted` rows — accepted and refused blocks are the DAG metadata — so it is
+/// bounded by in-flight work, not by chain height. Shares the DAG environment: these are facts
+/// about this shard's own ingestion, and one row per unsettled body does not earn a file.
+pub const BLOCK_DISPOSITION_DB: &str = "block-disposition";
 
 /// The gateway's durable coordinator-record database ([`crate::gateway::ledger`]). Node-local: it
 /// is deliberately **not** part of a shard's content-addressed state, because a coordinator's votes
@@ -95,6 +103,11 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
         // The node's own record of a reset it performed (one literal key, usually absent)
         (
             Db::new(RESET_MARKER_DB),
+            LmdbEnvConfig::new("dagstorage", 100 * GB),
+        ),
+        // Blocks this shard has stored and still owes an outcome (U19). One row per unsettled body.
+        (
+            Db::new(BLOCK_DISPOSITION_DB),
             LmdbEnvConfig::new("dagstorage", 100 * GB),
         ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
@@ -242,6 +255,7 @@ mod tests {
         // The reset marker shares the DAG's environment (F-U5-01, C274): it is a fact about this
         // shard's chain, and one literal key does not warrant a file of its own.
         assert!(ids.contains(&RESET_MARKER_DB));
+        assert!(ids.contains(&BLOCK_DISPOSITION_DB));
         let marker = mapping
             .iter()
             .find(|(db, _)| db.id == RESET_MARKER_DB)
