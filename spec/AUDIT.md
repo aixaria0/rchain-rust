@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 2 · DONE 374** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 2 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  170 of 376 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  171 of 377 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 376 are settled: **312 name the evidence that holds them** and **64 do not** — the
+All 377 are settled: **313 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -131,7 +131,7 @@ defects this register had not recorded (C164, C165).
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 | `C339` | The transfer path formerly retained the bootstrap fringe-state claims without recomputing their merges. RecoveryReplay now validates downloaded history in a staging DAG using the existing validator, compares supplied per-block claims and the Law 85 target root, probes active bonds, and publishes only locally derived metadata. A persistent pending marker prevents an interrupted publication from bypassing LFS on restart; checkpoint write/read-back/delete failures cannot signal completion. Store format 2 prevents a v1 reader ignoring that marker. No target-finality proof or retroactive certification of legacy populated stores is claimed. | Closes after the new exact-source replay and transport/restart controls pass and the mature-chain replay cost/compatibility is measured. Prior f3eef292 live positives do not certify the added replay path. Quorum finality remains the separately named Law 83 assumption. | §141 |
 
-### DONE (374)
+### DONE (375)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -423,6 +423,7 @@ defects this register had not recorded (C164, C165).
 | `C338` | The join path wrote the bootstrap's per-block fringe metadata unchecked. populate_dag copied BlockFringe.fringe and fringe_state_hash into BlockMetadata, dag.insert used the fringe for member_of_fringe/fringe_diff, and close_block folds fringe_state_hash into the epoch seed. The joiner now refuses ancestry rows for blocks it did not download, refuses duplicate rows, recomputes the derivable fringe with the finality gate over the inserted parents. The fringe's state hashes are not derivable and remain C339. | casper/src/engine/node_syncing.rs::an_ancestry_entry_for_an_unknown_block_is_refused/casper/src/engine/node_syncing.rs::two_ancestry_entries_for_one_block_are_refused/casper/src/engine/node_syncing.rs::an_ancestry_fringe_that_is_not_the_derived_fringe_is_refused | §141 |
 | `C340` | A boolean memory gate in front of a bounded pool refused every deploy and explore at 547 MiB on a 4 GiB host. The gate read the fallback word, not the pool: `throttled` refused all ingress even with ten thousand free slots, explore shared the same 503, and there was no deploy relay, so the receiving node was the only proposer and the chain froze at height 1688. The close-out is Law 86: admission reads the pool's count/byte/share/rate bounds (429 + `Retry-After` when full), headroom is an execution permit budget (one permit always progresses), a certified batch runs independent deploys in parallel with a sequential fallback, and an admitted deploy is copied to peers' deploy service (opt-in) so a constrained node does not bottleneck the network. The live 4 GiB/two-validator arm is owed. | casper/src/batch.rs::certify | §142 |
 | `C341` | **The execution half of the permit budget was a metric, not a bound.** `CapacityBudget` was built only inside the HTTP server and the proposer never acquired the execution permit, so a `Throttled` host kept proposing at full rate. The remediation shares one node-level budget, acquires up to `min(execution.limit(), batch_cap)` permits around the propose, passes the count as the batch limit into `compute_state_with_limit`/`play_deploys_batched_with`, and withholds with `ResourcePressure` at zero. With batching off execution is inherently serial; the permit is then a zero-headroom gate. Law 86d and B35 are restored at that scope. | node/src/instances/proposer_instance.rs::a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease | §143 |
+| `C342` | The reconciliation range cache survived recovery and was reused by the convergence and finality checks. An old agreement could hide a current divergence, an old split could reject a successful recovery, and finality above the plan range was invisible. Verification now refreshes node inventories each round, includes current finality heights, and discards failed or invalid transfers before using live per-height fallback. The cache opt-out also bypasses existing snapshots. | tools/reconcile-network.sh::refresh_block_ranges/tests/reconcile-cache-regression.py | §144 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
