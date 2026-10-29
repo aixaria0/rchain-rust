@@ -69,8 +69,19 @@ pub fn phase() -> NodePhase {
     PHASE.lock().unpoison().clone()
 }
 
+/// **A process that has reached the running engine never goes back down.** The cell is one per
+/// process (the production case is one node, one process), but a test harness runs several nodes in
+/// one process and a multi-shard node launches each shard separately: a second launch setting
+/// `Starting`/`Syncing` must not take readiness away from a node that is already serving. The
+/// conservative direction is chosen deliberately — a second node's sync is under-reported in that
+/// process rather than halting the first node's production. Per-shard/per-node phase is owed; see
+/// the module docs.
 pub fn set_phase(next: NodePhase) {
-    *PHASE.lock().unpoison() = next;
+    let mut guard = PHASE.lock().unpoison();
+    if matches!(*guard, NodePhase::Running) && !matches!(next, NodePhase::Running) {
+        return;
+    }
+    *guard = next;
 }
 
 pub fn is_running() -> bool {
