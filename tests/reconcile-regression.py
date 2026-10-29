@@ -338,8 +338,11 @@ blocks_at() {   # the five fields the section reads, last one never empty
     section10 = src[a:b]
 
     def run_finality(name, nodes, expect_rc, required):
-        lines = ["set -uo pipefail", "MEET=0", "RECONCILE_FINALITY_ROUNDS=1",
+        lines = ["set -uo pipefail", "MEET=0", "MAXH=0", "RECONCILE_FINALITY_ROUNDS=1",
                  "sleep() { :; }", "trigger_block() { :; }",
+                 # Range refresh behavior is exercised by reconcile-cache-regression.py;
+                 # this fixture isolates the existing finality arithmetic over stubbed blocks.
+                 "refresh_block_ranges() { :; }",
                  "NAMES=(%s)" % " ".join(nodes), "declare -A HOST PORT"]
         for n in nodes:
             lines.append("HOST[%s]=%s; PORT[%s]=1" % (n, n, n))
