@@ -96,6 +96,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The partition arm deliberately uses 1536 MiB per node. Restoring
+          # persisted state requires at least 2048 MiB of cgroup-available
+          # memory. Reserve 2304 MiB for the restart target only; leave the
+          # other seven at 1536 MiB. Total configured caps: 13056 MiB
+          # (12.75 GiB) on the 16GB-class disposable runner. Do not bypass
+          # resource-preflight, change consensus parameters, or touch live nodes.
+          target=acceptance-validator-7
+          docker update --memory 2304m --memory-swap 2304m "$target" \
+            > target/isolated-16gb/recovery-memory-update.txt
+          for i in $(seq 0 7); do
+            node="acceptance-validator-$i"
+            [ "$i" -ne 0 ] || node="acceptance-bootstrap"
+            expected=1610612736
+            [ "$i" -ne 7 ] || expected=2415919104
+            actual=$(docker inspect -f '{{.HostConfig.Memory}}' "$node")
+            swap=$(docker inspect -f '{{.HostConfig.MemorySwap}}' "$node")
+            printf '%s cap_bytes=%s swap_cap_bytes=%s expected_bytes=%s\n' \
+              "$node" "$actual" "$swap" "$expected" \
+              | tee -a target/isolated-16gb/recovery-memory-limits.txt
+            if [ "$actual" != "$expected" ] || [ "$swap" != "$expected" ]; then
+              echo "FAIL: $node has an unexpected recovery memory budget" >&2
+              exit 43
+            fi
+          done
+          printf 'restart_target_cap_mib=2304\nother_node_cap_mib=1536\ntotal_eight_node_caps_mib=13056\npreflight_override=false\n' \
+            | tee target/isolated-16gb/recovery-budget.txt
           python3 tests/consensus-post-restart-proposal.py --validators 8 --cycles 2 --out target/isolated-16gb/n8-partition 2>&1 | tee target/isolated-16gb/post-restart.log
 
       - name: Record complete failure or success diagnostics
