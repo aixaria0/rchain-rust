@@ -60,6 +60,11 @@ class ReconcileTargetGuard(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("missing, unreadable, or empty", result.stderr)
 
+    def test_unknown_controller_cannot_bypass_live_target_guard(self):
+        result = run_case(["--apply"], control="sysdem")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unsupported RECONCILE_CONTROL", result.stderr)
+
     def test_docker_control_remains_available_for_disposable_tests(self):
         self.assertEqual(run_case(["--apply"], control="docker").returncode, 0)
 

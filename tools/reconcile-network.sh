@@ -125,6 +125,14 @@ esac; shift; done
 # address inventory. A published testnet host may be replaced while this
 # script remains at an older revision. Planning uses the documented defaults;
 # mutations require a separately inspected, operator-provided inventory.
+# The controller's operation branches treat every non-Docker value as
+# systemd. Reject unrecognised values before the live-target guard, so a
+# typo cannot bypass it while still reaching the systemd stop/move paths.
+case "$CONTROL" in
+  docker|systemd) ;;
+  *) echo "REFUSING: unsupported RECONCILE_CONTROL=$CONTROL" >&2; exit 2 ;;
+esac
+
 if [ "$APPLY" = "1" ] && [ "$CONTROL" = "systemd" ] && [ -z "${RECONCILE_NODES:-}" ]; then
   echo "REFUSING: live apply requires RECONCILE_NODES pointing to the verified current host table." >&2
   echo "          Built-in endpoints are for planning only; no node has been stopped." >&2
