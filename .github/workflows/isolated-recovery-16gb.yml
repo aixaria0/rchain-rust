@@ -53,7 +53,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v 2>&1 | tee target/isolated-16gb/harness.log
-          python3 -m py_compile tests/consensus-partition-rejoin.py tests/test_recovery_harness_controls.py
+          python3 -m unittest discover -s tests -p test_post_restart_proposal.py -v 2>&1 | tee target/isolated-16gb/post-restart-units.log
+          python3 -m py_compile tests/consensus-partition-rejoin.py tests/test_recovery_harness_controls.py tests/consensus-post-restart-proposal.py tests/test_post_restart_proposal.py
           git diff --check HEAD^ HEAD
 
       - name: Build isolated node image
@@ -90,6 +91,12 @@ jobs:
           fi
           printf 'start=%s\npartition=%s\n' "$start_code" "$trial_code" | tee target/isolated-16gb/exit-codes.txt
           exit "$trial_code"
+
+      - name: Prove same-volume validator actively proposes after two restarts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/consensus-post-restart-proposal.py --validators 8 --cycles 2 --out target/isolated-16gb/n8-partition 2>&1 | tee target/isolated-16gb/post-restart.log
 
       - name: Record complete failure or success diagnostics
         if: always()
