@@ -81,6 +81,25 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
         }
     }
 
+    /// Undo a begin-stored reservation when a store read or capacity check fails.
+    /// A dependency which children still need stays Requested; an unrelated
+    /// refusal becomes unknown again. Neither is permanently stuck at BeginStoreBlock.
+    pub fn abort_stored(&self, id: &MId) -> Self {
+        let mut next = self.clone();
+        if next.receive_st.get(id) == Some(&RecvStatus::BeginStoreBlock) {
+            if next
+                .child_relations
+                .get(id)
+                .is_some_and(|children| !children.is_empty())
+            {
+                next.receive_st.insert(id.clone(), RecvStatus::Requested);
+            } else {
+                next.receive_st.remove(id);
+            }
+        }
+        next
+    }
+
     /// Storing of the block is done, waiting validation. Returns the updated state and the unseen
     /// parent dependencies (port of `endStored`). The Scala `assert` is a `Result` error here so an
     /// invariant violation is logged and the block skipped rather than panicking the task.
@@ -123,14 +142,49 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
             ));
         }
 
-        // Bound the receiver state (R29): a peer can stream valid-signed blocks whose justifications
-        // point at nonexistent hashes; those never resolve and would otherwise accumulate here
-        // forever (in `blocks_st`/`receive_st`/`child_relations`).
-        if self.blocks_st.len() >= MAX_PENDING_BLOCKS && !self.blocks_st.contains_key(&id) {
-            return Err(format!(
-                "block receiver state full ({} blocks); dropping {:?}",
-                MAX_PENDING_BLOCKS, id
-            ));
+        // Bound the receiver state (R29), but do not refuse the missing parent
+        // of blocks already inside the bound. Otherwise 1024 waiting children
+        // permanently exclude the very block that would release them.
+        //
+        // Reclaim only a blocked leaf, never a ready-to-validate block or a
+        // block with tracked children. The leaf remains in BlockStore and can
+        // be re-requested if later descendants need it. The bound remains hard.
+        let mut available = self.clone();
+        if available.blocks_st.len() >= MAX_PENDING_BLOCKS && !available.blocks_st.contains_key(&id)
+        {
+            let needed = available
+                .child_relations
+                .get(&id)
+                .is_some_and(|children| !children.is_empty());
+            let evict = if needed {
+                available
+                    .blocks_st
+                    .iter()
+                    .find(|(hash, deps)| {
+                        !deps.is_empty()
+                            && !available
+                                .child_relations
+                                .get(*hash)
+                                .is_some_and(|children| !children.is_empty())
+                    })
+                    .map(|(hash, _)| hash.clone())
+            } else {
+                None
+            };
+            let Some(evict) = evict else {
+                return Err(format!(
+                    "block receiver state full ({} blocks); cannot admit {:?}",
+                    MAX_PENDING_BLOCKS, id
+                ));
+            };
+            available.blocks_st.remove(&evict);
+            available.receive_st.remove(&evict);
+            for children in available.child_relations.values_mut() {
+                children.remove(&evict);
+            }
+            available
+                .child_relations
+                .retain(|_, children| !children.is_empty());
         }
 
         // Update blocks state, keep unseen parents only.
@@ -141,11 +195,11 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
             .collect();
         let mut unseen_parents = parents_not_stored;
         unseen_parents.retain(|parent| {
-            !self.blocks_st.contains_key(parent)
-                && !self.receive_st.contains_key(parent)
+            !available.blocks_st.contains_key(parent)
+                && !available.receive_st.contains_key(parent)
                 && parent != &id
         });
-        let mut new_blocks_st = self.blocks_st.clone();
+        let mut new_blocks_st = available.blocks_st.clone();
         // A parent the block must wait for: every unseen parent (not stored, so not validated) and every
         // stored parent that is not yet in the DAG. `parent != id` as above, so a malformed self-reference
         // cannot make a block wait on itself.
@@ -155,14 +209,14 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
         new_blocks_st.insert(id.clone(), deps);
 
         // Update block status to received and set unseen parents to Requested.
-        let mut new_receive_st = self.receive_st.clone();
+        let mut new_receive_st = available.receive_st.clone();
         new_receive_st.insert(id.clone(), RecvStatus::EndStoreBlock);
         for parent in &unseen_parents {
             new_receive_st.insert(parent.clone(), RecvStatus::Requested);
         }
 
         // Update children relations of the received block.
-        let mut new_child_relations = self.child_relations.clone();
+        let mut new_child_relations = available.child_relations.clone();
         for (parent, _) in &parents {
             new_child_relations
                 .entry(parent.clone())
@@ -425,15 +479,8 @@ async fn incoming_blocks(
             .retry_oldest_pending_request(&block.block_hash)
             .await;
 
-        // Begin storing the block.
-        let should_check = {
-            let mut guard = state.lock().await;
-            let (new_state, should_check) = guard.begin_stored(block.block_hash);
-            *guard = new_state;
-            should_check
-        };
-
-        // Ignore blocks older than the DAG.
+        // Ignore blocks older than the DAG before reserving their hash.
+        // The old order left rejected hashes stuck in BeginStoreBlock.
         if check_if_known(&block, dag.as_ref()).await {
             log.info(
                 source,
@@ -445,6 +492,12 @@ async fn incoming_blocks(
             continue;
         }
 
+        let should_check = {
+            let mut guard = state.lock().await;
+            let (new_state, should_check) = guard.begin_stored(block.block_hash);
+            *guard = new_state;
+            should_check
+        };
         if !should_check {
             continue;
         }
@@ -464,6 +517,8 @@ async fn incoming_blocks(
                         block.block_hash.to_hex()
                     ),
                 );
+                let mut guard = state.lock().await;
+                *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
         };
@@ -476,6 +531,8 @@ async fn incoming_blocks(
                         block.block_hash.to_hex()
                     ),
                 );
+                let mut guard = state.lock().await;
+                *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
         }
@@ -492,6 +549,8 @@ async fn incoming_blocks(
                         block.block_hash.to_hex()
                     ),
                 );
+                let mut guard = state.lock().await;
+                *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
         };
@@ -520,6 +579,7 @@ async fn incoming_blocks(
                     (unseen, has_all_deps)
                 }
                 Err(e) => {
+                    *guard = guard.abort_stored(&block.block_hash);
                     log.error(source, &e);
                     continue;
                 }
@@ -1149,6 +1209,60 @@ mod tests {
         // Unseen parent A1 now has Requested status.
         let (_, is_receiving) = new_st.begin_stored("A1".to_string());
         assert!(is_receiving);
+    }
+
+    #[test]
+    fn a_full_receiver_admits_the_dependency_that_can_drain_it() {
+        let parent = "missing-parent".to_string();
+        let mut state = BlockReceiverState::<MId>::new();
+        for n in 0..MAX_PENDING_BLOCKS {
+            let id = format!("orphan-{n:04}");
+            state
+                .blocks_st
+                .insert(id.clone(), BTreeSet::from([parent.clone()]));
+            state
+                .receive_st
+                .insert(id.clone(), RecvStatus::EndStoreBlock);
+            state
+                .child_relations
+                .entry(parent.clone())
+                .or_default()
+                .insert(id);
+        }
+        state
+            .receive_st
+            .insert(parent.clone(), RecvStatus::Requested);
+
+        let (begun, accepted) = state.begin_stored(parent.clone());
+        assert!(accepted);
+        let (admitted, _) = begun.end_stored(parent.clone(), Vec::new()).unwrap();
+        assert_eq!(admitted.blocks_st.len(), MAX_PENDING_BLOCKS);
+        assert!(admitted.blocks_st.contains_key(&parent));
+        assert_eq!(
+            admitted.child_relations[&parent].len(),
+            MAX_PENDING_BLOCKS - 1
+        );
+
+        let (released, ready) = admitted.finished(parent.clone(), BTreeSet::new()).unwrap();
+        assert_eq!(ready.len(), MAX_PENDING_BLOCKS - 1);
+        assert!(!released.blocks_st.contains_key(&parent));
+    }
+
+    #[test]
+    fn capacity_refusal_does_not_poison_the_hash_for_later_retry() {
+        let mut state = BlockReceiverState::<MId>::new();
+        for n in 0..MAX_PENDING_BLOCKS {
+            let id = format!("ready-{n:04}");
+            state.blocks_st.insert(id.clone(), BTreeSet::new());
+            state.receive_st.insert(id, RecvStatus::PendingValidation);
+        }
+        let hash = "new-head".to_string();
+        let (begun, accepted) = state.begin_stored(hash.clone());
+        assert!(accepted);
+        assert!(begun.end_stored(hash.clone(), Vec::new()).is_err());
+        let recovered = begun.abort_stored(&hash);
+        assert!(!recovered.receive_st.contains_key(&hash));
+        assert!(recovered.begin_stored(hash).1);
     }
 
     #[test]
