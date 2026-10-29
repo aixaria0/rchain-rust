@@ -623,8 +623,12 @@ mod tests {
         let stream = create_with_retry(
             rx,
             tx.clone(),
-            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
-                .with_batch_cap(4),
+            proposer_recording(
+                BlockCreatorResult::NoNewDeploys,
+                calls.clone(),
+                seen.clone(),
+            )
+            .with_batch_cap(4),
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             throttled(),
             execution.clone(),
@@ -656,8 +660,12 @@ mod tests {
         let stream = create_with_retry(
             rx,
             tx.clone(),
-            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
-                .with_batch_cap(4),
+            proposer_recording(
+                BlockCreatorResult::NoNewDeploys,
+                calls.clone(),
+                seen.clone(),
+            )
+            .with_batch_cap(4),
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             healthy(),
             execution.clone(),
@@ -684,8 +692,12 @@ mod tests {
         let stream = create_with_retry(
             rx,
             tx.clone(),
-            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
-                .with_batch_cap(4),
+            proposer_recording(
+                BlockCreatorResult::NoNewDeploys,
+                calls.clone(),
+                seen.clone(),
+            )
+            .with_batch_cap(4),
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             throttled(),
             execution.clone(),
@@ -706,7 +718,10 @@ mod tests {
         assert!(first.1.is_none());
         assert!(matches!(
             orx.await.expect("the requester is answered"),
-            ProposerResult::Failure { status: ProposeStatus::ResourcePressure(_), .. }
+            ProposerResult::Failure {
+                status: ProposeStatus::ResourcePressure(_),
+                ..
+            }
         ));
         assert_eq!(*seen.lock().expect("recorded limit"), None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -719,5 +734,4 @@ mod tests {
             "a zero-permit withhold must not schedule the not-due retry"
         );
     }
-
 }

@@ -3034,5 +3034,4 @@ mod tests {
         assert_eq!(super::effective_max_batch(4, Some(1)), 1);
         assert_eq!(super::effective_max_batch(4, Some(0)), 1);
     }
-
 }

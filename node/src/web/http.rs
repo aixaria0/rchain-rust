@@ -22,10 +22,10 @@ use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 
-use rchain_casper::interpreter_util::ShardHealth;
 use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
 use rchain_casper::gateway::GatewayTxn;
+use rchain_casper::interpreter_util::ShardHealth;
 use rchain_casper::protocol::comm_util::ConnectionsCell;
 use rchain_comm::discovery::NodeDiscovery;
 use rchain_comm::rp::rp_conf::RPConf;
@@ -2822,7 +2822,10 @@ mod tests {
             partition: 1,
         };
         health.note_finality_stall(Some(&reason));
-        assert!(!health.finality_stall_sustained(), "one refusal is not a stall");
+        assert!(
+            !health.finality_stall_sustained(),
+            "one refusal is not a stall"
+        );
         health.note_finality_stall(Some(&reason));
         assert!(health.finality_stall_sustained(), "the threshold is two");
         assert_eq!(health.stall_episodes(), 1);

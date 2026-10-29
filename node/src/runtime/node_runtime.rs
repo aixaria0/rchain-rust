@@ -1689,7 +1689,11 @@ fn push_finality_health(metrics: &MetricsRegistry, source: &Source, health: &Sha
     metrics.set_gauge(
         source,
         "finality_stalled",
-        if health.finality_stall_sustained() { 1 } else { 0 },
+        if health.finality_stall_sustained() {
+            1
+        } else {
+            0
+        },
     );
     metrics.set_gauge(
         source,
@@ -1930,7 +1934,11 @@ async fn setup_shard_runtime(
                                 ),
                             }
                             push_proposer_health(&timer_metrics, &timer_source, &timer_health);
-                            push_finality_health(&timer_metrics, &timer_source, &timer_shard_health);
+                            push_finality_health(
+                                &timer_metrics,
+                                &timer_source,
+                                &timer_shard_health,
+                            );
                             timer_log.error(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(

@@ -574,43 +574,45 @@ impl Proposer {
             // Independent monotonic retry for a quiet chain with unfinalized work.
             // It belongs to this shard/proposer, not a process-global clock.
             let quiet_retry_since: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-            Arc::new(move |vi: &ValidatorIdentity, source: ProposeSource, batch_limit: Option<usize>| {
-                let runtime = runtime.clone();
-                let dag = dag.clone();
-                let block_store = block_store.clone();
-                let block_index = block_index.clone();
-                let vi = vi.clone();
-                let shard_id = shard_id.clone();
-                let blocked_since_advance = blocked_since_advance.clone();
-                let blocked_since = blocked_since.clone();
-                let quiet_retry_since = quiet_retry_since.clone();
-                let dummy_deploy_opt = dummy_deploy_opt.clone();
-                let log = log.clone();
-                let health = health.clone();
-                let max_number_of_parents = max_number_of_parents;
-                Box::pin(async move {
-                    create_block(
-                        runtime.as_ref(),
-                        dag.as_ref(),
-                        &block_store,
-                        block_index.as_ref(),
-                        &vi,
-                        &shard_id,
-                        min_phlo_price,
-                        &log,
-                        max_number_of_parents,
-                        epoch_length,
-                        dummy_deploy_opt.as_ref(),
-                        &blocked_since_advance,
-                        &blocked_since,
-                        &quiet_retry_since,
-                        source,
-                        &health,
-                        batch_limit,
-                    )
-                    .await
-                })
-            })
+            Arc::new(
+                move |vi: &ValidatorIdentity, source: ProposeSource, batch_limit: Option<usize>| {
+                    let runtime = runtime.clone();
+                    let dag = dag.clone();
+                    let block_store = block_store.clone();
+                    let block_index = block_index.clone();
+                    let vi = vi.clone();
+                    let shard_id = shard_id.clone();
+                    let blocked_since_advance = blocked_since_advance.clone();
+                    let blocked_since = blocked_since.clone();
+                    let quiet_retry_since = quiet_retry_since.clone();
+                    let dummy_deploy_opt = dummy_deploy_opt.clone();
+                    let log = log.clone();
+                    let health = health.clone();
+                    let max_number_of_parents = max_number_of_parents;
+                    Box::pin(async move {
+                        create_block(
+                            runtime.as_ref(),
+                            dag.as_ref(),
+                            &block_store,
+                            block_index.as_ref(),
+                            &vi,
+                            &shard_id,
+                            min_phlo_price,
+                            &log,
+                            max_number_of_parents,
+                            epoch_length,
+                            dummy_deploy_opt.as_ref(),
+                            &blocked_since_advance,
+                            &blocked_since,
+                            &quiet_retry_since,
+                            source,
+                            &health,
+                            batch_limit,
+                        )
+                        .await
+                    })
+                },
+            )
         };
 
         let validate_block: Arc<
@@ -2093,7 +2095,9 @@ mod tests {
                 ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
-        > = Arc::new(|_v, _source, _limit| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
+        > = Arc::new(|_v, _source, _limit| {
+            Box::pin(async { Ok(BlockCreatorResult::Created(block())) })
+        });
         let validate: Arc<
             dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
         > = Arc::new(move |b| {
@@ -2267,7 +2271,9 @@ mod tests {
                 ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
-        > = Arc::new(|_v, _source, _limit| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
+        > = Arc::new(|_v, _source, _limit| {
+            Box::pin(async { Ok(BlockCreatorResult::Created(block())) })
+        });
         let validate: Arc<
             dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
         > = Arc::new(|_b| Box::pin(async { Err(ValidateError::SelfEquivocation) }));
