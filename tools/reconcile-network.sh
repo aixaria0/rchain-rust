@@ -182,7 +182,7 @@ refresh_block_ranges() { # inclusive upper height for this phase
 import json,sys
 try:
     data=json.load(sys.stdin)
-    valid=isinstance(data,list) and all(isinstance(b,dict) and type(b.get("blockNumber")) is int for b in data)
+    valid=isinstance(data,list) and bool(data) and all(isinstance(b,dict) and type(b.get("blockNumber")) is int for b in data)
 except (ValueError,TypeError):
     valid=False
 sys.exit(0 if valid else 1)

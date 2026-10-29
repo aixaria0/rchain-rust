@@ -38,3 +38,5 @@ offline cases. The PR links the final source SHA and executable CI run.
 This correction does not establish live reconciliation success or repair node-side block-receiver
 overflow, proposer justification regression, or mature-chain fresh join. No live apply, chain reset,
 validator restart, key, Genesis, service or firewall modification was performed.
+
+The range admission check also rejects an empty `[]` inventory. A non-empty-height node serving an empty list must use live per-height fallback, not cache an apparent absence of blocks. `test_empty_range_does_not_hide_live_blocks` covers this response.

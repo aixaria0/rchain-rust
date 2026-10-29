@@ -54,6 +54,7 @@ api() {
         truncated) printf '%s' '[{"blockNumber":1'; return 28;;
         partial) printf '%s' "$OLD_RANGE"; return 28;;
         invalid-element) printf '%s' '["range unavailable"]'; return 0;;
+        empty) printf '%s' '[]'; return 0;;
       esac;;
   esac
   if [ "$1" = A ]; then printf '%s' "$LIVE_A"; else printf '%s' "$LIVE_B"; fi
@@ -115,6 +116,14 @@ api() {
     def test_invalid_list_elements_use_live_fallback(self):
         result, _ = self.run_case(phase="plan", mode="invalid-element")
         self.assertEqual(result.stdout.count("aa sender state 0 []"), 2)
+
+    def test_empty_range_does_not_hide_live_blocks(self):
+        result, calls = self.run_case(phase="plan", mode="empty")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("aa sender state 0 []"), 2)
+        self.assertIn("A /api/blocks/1/1", calls)
+        self.assertIn("B /api/blocks/1/1", calls)
+        self.assertIn("using live per-height requests", result.stderr)
 
     def test_valid_range_is_fetched_once_per_node_in_plan(self):
         result, calls = self.run_case(phase="plan")
