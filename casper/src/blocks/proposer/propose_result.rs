@@ -80,6 +80,10 @@ pub enum BlockCreatorResult {
     /// same round would equivocate against itself — see `DagMessageState::has_advanced_past_the_round`. The
     /// proposer takes this only while the round can still close; past the elapsed `ROUND_STALL_ESCAPE` interval it escapes.
     AlreadyProposedThisRound,
+    /// The node's tip is beyond the bounded distance above its last finalized block. It must not
+    /// extend a chain no peer has accepted; the proposer returns
+    /// [`ProposeStatus::TooFarAheadOfLastFinalized`] and the node stops proposing/attesting.
+    TooFarAheadOfLastFinalized,
     Created(BlockMessage),
 }
 

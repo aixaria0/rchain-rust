@@ -546,6 +546,28 @@ impl BlockApi for BlockApiImpl {
                 "Deploy was rejected because node is running in read-only mode.".to_string(),
             );
         }
+        // **A syncing node cannot include work**, even when its pool has room. `acceptsDeploys`
+        // remains the pool's Law 86a answer; readiness is this explicit refusal. Applied here so
+        // HTTP, gRPC, the faucet and every other caller of the one deploy path agree.
+        if crate::engine::node_syncing::sync_state().is_some() {
+            return Err(
+                "Deploy refused: the node is syncing and is not ready to include work.".to_string(),
+            );
+        }
+        if crate::blocks::block_processor::pipeline_faults() > 0 {
+            return Err(
+                "Deploy refused: the block pipeline is blocked after a fault and is not ready to \
+                 include work."
+                    .to_string(),
+            );
+        }
+        if crate::blocks::proposer::proposer::proposal_isolated() {
+            return Err(
+                "Deploy refused: this validator is isolated from finality and is not proposing; \
+                 an operator repair/restart is required."
+                    .to_string(),
+            );
+        }
         if !deploy.verify_signature() {
             return Err("Deploy signature is invalid.".to_string());
         }

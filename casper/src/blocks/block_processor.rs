@@ -9,17 +9,43 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
+use rchain_shared::lock::Unpoison;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
 
-use crate::block_status::BlockStatus;
 use crate::interpreter_util::ShardHealth;
 use crate::merging::BlockIndex;
 use crate::multi_parent_casper::ValidateError;
 use crate::protocol::comm_util::CommUtil;
 use crate::runtime_manager::RuntimeManager;
+
+/// **How many received blocks this process has dropped before a DAG entry**, and the most recent
+/// one. The live private-chain incident had no counter for this state: the only trace was one
+/// `log.error`, and the node's surfaces still reported a healthy height. The process-wide cell is
+/// the P0 loudness half; the disposition ledger (U19) is the durable per-shard half.
+static PIPELINE_FAULTS: AtomicU64 = AtomicU64::new(0);
+static LAST_PIPELINE_FAULT: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn pipeline_faults() -> u64 {
+    PIPELINE_FAULTS.load(Ordering::Relaxed)
+}
+
+pub fn last_pipeline_fault() -> Option<String> {
+    LAST_PIPELINE_FAULT.lock().unpoison().clone()
+}
+
+fn note_pipeline_fault(block: &BlockMessage, stage: &str, error: &str) {
+    PIPELINE_FAULTS.fetch_add(1, Ordering::Relaxed);
+    *LAST_PIPELINE_FAULT.lock().unpoison() = Some(format!(
+        "{} at {}: {error}",
+        block.block_hash.to_hex(),
+        stage
+    ));
+}
 
 /// Cap on the number of blocks validated concurrently (per batch). The receiver only emits
 /// dependency-free blocks, so a batch of siblings is mutually independent and replayable in parallel.
@@ -122,56 +148,6 @@ pub(crate) async fn publish_accepted_root(
     }
 }
 
-/// Validate a block and insert it into the DAG (port of `validateAndAddToDag`).
-pub async fn validate_and_add_to_dag<F, Fut>(
-    dag: &dyn BlockDagStorage,
-    block_store: &BlockStore,
-    runtime: &RuntimeManager,
-    block: BlockMessage,
-    shard_id: &str,
-    min_phlo_price: i64,
-    max_number_of_parents: i32,
-    block_index: &F,
-    log: &Arc<dyn Log>,
-    health: &ShardHealth,
-) -> Result<Result<(), BlockStatus>, String>
-where
-    F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
-{
-    let result = crate::multi_parent_casper::validate(
-        dag,
-        block_store,
-        runtime,
-        &block,
-        shard_id,
-        min_phlo_price,
-        max_number_of_parents,
-        block_index,
-        log,
-        health,
-    )
-    .await;
-    let (block_meta, status) = match result {
-        Ok(meta) => (meta, Ok(())),
-        Err(ValidateError::ValidationFailed(meta, status)) => (meta, Err(status)),
-        Err(ValidateError::SelfEquivocation) => {
-            return Err("self-equivocation is a proposer-only outcome".to_string())
-        }
-        Err(ValidateError::Internal(e)) => return Err(e),
-    };
-    let accepted_post = block.post_state_hash;
-    let accepted_height = block_meta.block_num;
-    dag.insert(block_meta, block).await?;
-    // **Only an accepted block publishes its state** (law 80, B40). A `ValidationFailed` block is
-    // inserted into the DAG with its failure recorded, but its post-state is not the node's state and
-    // must not become `CURRENT_ROOT`.
-    if status.is_ok() {
-        publish_accepted_root(dag, runtime, accepted_height, accepted_post, log).await;
-    }
-    Ok(status)
-}
-
 // **Why nothing here defers a `missing justification` refusal** (AUDIT C211, #223).
 //
 // This loop used to hold a bounded list of blocks refused for a justification that had not arrived,
@@ -261,6 +237,7 @@ pub async fn apply<F, Fut>(
             let result = match handle.await {
                 Ok(r) => r,
                 Err(e) => {
+                    note_pipeline_fault(&block, "validator task panicked", &e.to_string());
                     log.error(source, &format!("validator task panicked: {e}"));
                     continue;
                 }
@@ -269,6 +246,7 @@ pub async fn apply<F, Fut>(
                 Ok(meta) => (meta, Ok(())),
                 Err(ValidateError::ValidationFailed(meta, status)) => (meta, Err(status)),
                 Err(ValidateError::SelfEquivocation) => {
+                    note_pipeline_fault(&block, "self-equivocation", "proposer-only outcome");
                     log.error(
                         source,
                         &format!(
@@ -282,6 +260,7 @@ pub async fn apply<F, Fut>(
                     // An `Internal` failure is a store or runtime failure this loop has no answer for,
                     // so the block is dropped and the error is logged. **A `missing justification`
                     // cannot arrive here** — see the note on `apply` — so there is nothing to defer.
+                    note_pipeline_fault(&block, "validation internal", &e);
                     log.error(
                         source,
                         &format!("Block {} processing error: {e}", block.block_hash.to_hex()),
@@ -290,6 +269,7 @@ pub async fn apply<F, Fut>(
                 }
             };
             if let Err(e) = dag.insert(block_meta, block.clone()).await {
+                note_pipeline_fault(&block, "dag insert", &e);
                 log.error(
                     source,
                     &format!("Block {} insert error: {e}", block.block_hash.to_hex()),

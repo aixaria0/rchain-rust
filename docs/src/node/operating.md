@@ -290,6 +290,15 @@ floors, the process RSS and the permit limits; `/metrics` carries the same as `r
 gauges; the node's own `GET /health` is a readiness body (200 while serving) and carries
 `finalityStalled`/`finalityStallEpisodes` as the peer-liveness signal.
 
+**Readiness is not pool capacity.** `acceptsDeploys` remains the Law 86a pool answer; `/health` also
+carries `ready` and `phase` (`running` | `syncing` | `blocked`), `pipelineFaults`, and
+`proposalHalted`. A syncing or blocked node refuses HTTP/gRPC deploy admission with a 503 even when
+the pool has room, because it cannot include the work. A block-pipeline fault sets
+`phase: blocked` and `ready: false`; a validator beyond the finality bound sets `proposalHalted` and
+stops proposing **and** attesting. The operator action is
+`POST /api/v1/proposer/resume` on the admin listener; the next proposal re-checks the bound, so a
+node that is still isolated latches again.
+
 | Switch | Default | Effect |
 |---|---|---|
 | `RNODE_DEPLOY_RELAY` | off | offer each admitted deploy to connected peers' external deploy service (`_PORT`, default 40401; `_FANOUT` to cap) |

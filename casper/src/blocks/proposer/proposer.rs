@@ -8,7 +8,7 @@ use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -289,6 +289,16 @@ impl Proposer {
             BlockCreatorResult::AlreadyProposedThisRound => Ok((
                 ProposeResult {
                     propose_status: ProposeStatus::NotEnoughNewBlocks,
+                },
+                None,
+            )),
+            // **No private chain.** A node that has fallen more than the policy bound behind
+            // finality must not keep extending a chain no peer has accepted. The status is the one
+            // that already existed but had no producer; the node-level gate turns it into a halt
+            // of propose *and* attest, with an operator resume.
+            BlockCreatorResult::TooFarAheadOfLastFinalized => Ok((
+                ProposeResult {
+                    propose_status: ProposeStatus::TooFarAheadOfLastFinalized,
                 },
                 None,
             )),
@@ -883,6 +893,43 @@ async fn report_nothing_to_include(
 /// elapsed blocked time may authorise escape; the attempt count remains diagnostic telemetry.
 pub const ROUND_STALL_ESCAPE: Duration = Duration::from_secs(15);
 
+/// **How far above the last finalized block a validator may propose.**
+///
+/// This is the isolation bound the proposer never had: `TooFarAheadOfLastFinalized` existed as a
+/// status variant but no code produced it, so a validator whose peers had stopped accepting its
+/// blocks could extend a private chain indefinitely. Thirty-two heights is policy, not a measured
+/// optimum — a healthy four-validator net trails finality by a handful of heights — and it is
+/// deliberately a height gap, not a wall-clock stall: finality-stall counters fire on a healthy
+/// net (see `ShardHealth`'s own episodes), while a tip 32 blocks beyond the last finalized block
+/// is unambiguously a node that cannot get its own chain accepted.
+pub const MAX_PROPOSAL_FINALITY_LAG: i64 = 32;
+
+/// The height-gap half of the isolation gate, as a pure predicate so the boundary (`== bound`
+/// passes, `bound + 1` refuses) is testable without a DAG.
+pub fn within_proposal_finality_bound(tip_height: i64, finalized_height: i64) -> bool {
+    tip_height.saturating_sub(finalized_height) <= MAX_PROPOSAL_FINALITY_LAG
+}
+
+/// Set when the height-gap gate refuses a proposal. It is a process-local fail-safe latch: it
+/// stops proposing and attesting and tells a peer/operator why; a restart (or an explicit
+/// operator resume) is the recovery. No proposal path may clear it just because one later tick
+/// looks closer to finality — the node has already shown it cannot get its chain accepted.
+static PROPOSAL_ISOLATED: AtomicBool = AtomicBool::new(false);
+static PROPOSAL_ISOLATION_REASON: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn proposal_isolated() -> bool {
+    PROPOSAL_ISOLATED.load(Ordering::Relaxed)
+}
+
+pub fn proposal_isolation_reason() -> Option<String> {
+    PROPOSAL_ISOLATION_REASON.lock().unpoison().clone()
+}
+
+pub fn clear_proposal_isolation() {
+    PROPOSAL_ISOLATED.store(false, Ordering::Relaxed);
+    *PROPOSAL_ISOLATION_REASON.lock().unpoison() = None;
+}
+
 /// Elapsed time since this process first observed the blocked round. A host wall-clock
 /// correction cannot advance or delay this timer. The first sighting always returns zero;
 /// a clock value before the stored sighting also returns zero (defensive test case).
@@ -931,6 +978,13 @@ where
     F: Fn(BlockHash) -> Fut + Sync,
     Fut: Future<Output = Result<Arc<BlockIndex>, String>>,
 {
+    // The isolation latch is a fail-safe, not a per-tick verdict: once set, this process does
+    // not propose again until an operator repairs/restarts (or calls the resume hook). Check it
+    // before the parent merge so a latched node does no proposal work at all.
+    if proposal_isolated() {
+        return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
+    }
+
     let creators_validator_for_parents =
         Validator::from_slice(validator_identity.public_key.bytes());
 
@@ -1013,6 +1067,39 @@ where
         .iter()
         .map(|m| m.block_hash)
         .collect();
+
+    // **The private-chain bound.** A node whose tip is this far beyond its own last finalized
+    // block has no evidence that any peer accepts its chain; continuing to propose is how A ran
+    // 267 heights against finality 3. Return the pre-existing status variant and leave the block
+    // uncreated. The node-level gate turns this into a propose-and-attest halt with an operator
+    // resume; the proposer alone at least stops extending the chain.
+    let last_finalized_height = {
+        let repr = dag.get_representation().await;
+        repr.last_finalized_block_hash()
+            .and_then(|hash| repr.block_height_of(&hash))
+    };
+    if let Some(finalized) = last_finalized_height {
+        let gap = i64::from(next_block_num) - i64::from(finalized);
+        if !within_proposal_finality_bound(i64::from(next_block_num), i64::from(finalized)) {
+            let reason = format!(
+                "tip {} is {gap} heights beyond last finalized {} (bound \
+                 {MAX_PROPOSAL_FINALITY_LAG})",
+                i64::from(next_block_num),
+                i64::from(finalized)
+            );
+            PROPOSAL_ISOLATED.store(true, Ordering::Relaxed);
+            *PROPOSAL_ISOLATION_REASON.lock().unpoison() = Some(reason.clone());
+            log.warn(
+                LogSource::new("casper.blocks.Proposer"),
+                &format!(
+                    "refusing to propose at height {}: {reason}; this node cannot show that its \
+                     chain is accepted",
+                    i64::from(next_block_num)
+                ),
+            );
+            return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
+        }
+    }
 
     // **The proposer's half of #153's bound.** A justification set wider than the protocol allows is
     // refused by every validator (`validate::justification_count`), so emitting one would be a block
@@ -1407,6 +1494,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The private-chain boundary is inclusive at the bound and refuses one height beyond it.**
+    /// `TooFarAheadOfLastFinalized` existed without a producer; this pins the arithmetic the
+    /// `create_block` gate now uses.
+    #[test]
+    fn the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it() {
+        assert!(within_proposal_finality_bound(MAX_PROPOSAL_FINALITY_LAG, 0));
+        assert!(!within_proposal_finality_bound(
+            MAX_PROPOSAL_FINALITY_LAG + 1,
+            0
+        ));
+        assert!(within_proposal_finality_bound(4, 0));
+    }
 
     /// The clock begins at the first blocked observation, and resetting the round
     /// discards the observation. Wall time is deliberately absent from this API.

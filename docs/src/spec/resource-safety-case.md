@@ -52,6 +52,8 @@ jemalloc purge and the #117 retention test; the devnet/Docker memory ceiling.
 | B43 | **operator risk notice**: `TERMS.md` plus the validator start-up log notice; the notice is informational, not a verdict | F |
 | B44 | **explicit below-minimum acceptance**: a validator below the memory floor needs `--allow-under-minimum` and `--accept-under-minimum-risk`; observers remain allowed below the floor | F |
 | B45 | **execution-permit wiring**: the proposer acquires the execution permits and passes the batch cap; a `Throttled` host makes a smaller batch when batching is enabled and withholds at zero | #486 / C341 |
+| B46 | **block disposition and repair**: a stored body has a DAG record or a live pending lease; a fault is recorded and retried; a boot/periodic audit re-offers or quarantines an orphan; `Running` requires no unresolved orphan | U19 |
+| B47 | **phase/readiness and isolation halt**: `Syncing`/`Blocked` refuse deploy admission and report not-ready; a proposer beyond the finality bound stops propose and attest and needs an operator resume | U20 |
 
 **Consequences:** an accepted deploy that is not durable or whose acceptance is ambiguous; API/read
 timeouts and clients losing the chain; height divergence and finality lag; a joiner that cannot sync; a
@@ -80,6 +82,8 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port, not a protocol-level routing guarantee; the four-validator relay arm records a critical node's deploy included by a healthy peer, and the shared-host cgroup topology remains owed | spec/audit/evidence/n477-relay-arm-20261028/README.md |
 | H-RS-13 | T-RS-14 the execution permit half of B35 was never acquired by the proposer, so `Throttled` kept full-rate execution | B33 (fallback), B37 (Critical gate) | B45 | C-RS-8 | the execution budget caps a batched proposal and withholds at zero; a sequential block is inherently one-at-a-time; the fallback still withholds at `Critical` | node/src/instances/proposer_instance.rs::a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease |
 | H-RS-14 | T-RS-13 an operator bonds without accepting the hardware/absence risk, or runs below the floor without a notice | B31 (preflight), B37 (Critical gate) | B43, B44 | C-RS-7 | absence is not slashed and is paid by default; the notice/acceptance does not make the host adequate | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| H-RS-15 | T-RS-15 a received block is stored but never accepted or refused: an `Internal`/insert fault is dropped, the receiver retains it as pending, and no audit re-offers it; children wait and the height stops | B39/B40 repair the derived-index windows, not a body with no DAG entry | B46 | C-RS-1, C-RS-5 | the disposition ledger and boot/periodic audit are the first implementation; a persistent fault still needs an operator reset | owed: U19 disposition/retry and boot-audit falsifiers |
+| H-RS-16 | T-RS-16 a validator whose peers reject its chain keeps proposing; the tip advances against frozen finality and the node looks healthy | none | B47 | C-RS-4, C-RS-5 | the height-gap gate is a local policy, not a proof of peer acceptance; the attestation endpoint and the operator resume remain separate controls | owed: U20 finality-gap and halt falsifiers |
 
 ## Barrier independence
 
@@ -102,6 +106,12 @@ These are stated rather than assumed, because several barriers share an input or
   indexes remain separate transactions; there is no cross-store WAL. D2 repairs the derived rows at boot.
 - **B39 is a repair, not a prevention.** A crash between metadata and index cleanup is still possible; the
   boot audit makes it visible and repairable.
+- **B46 is a disposition/repair barrier, not a proof of acceptance.** The ledger and audit make an
+  orphan visible and retryable; a persistent fault still requires the operator reset, and the
+  single-process task supervisor is not an independent process.
+- **B47 is a local isolation policy.** The height gap is computed from this node's DAG; a peer's
+  rejection is inferred from frozen finality, not observed directly. A network with two independent
+  partitions can still have two local views; the operator resume is the recovery contract.
 
 ## ALARP argument
 
@@ -115,7 +125,11 @@ The node-local risk is **as low as reasonably practicable** only if these hold (
    loop into the same replay OOM.
 3. **The operator can see it.** The state, the reason and the provenance are on the surfaces; a measured
    fact is distinguishable from a policy threshold.
-4. **Residual risk is outside node control or disproportionately expensive.** Host topology, cgroup
+4. **No silent acceptance and no private-chain production.** A stored body has a disposition or a
+   live lease, an orphan is retried/reported, and a proposer beyond the finality bound stops
+   proposing and attesting (B46/B47). The remaining exposure is an operator action or a peer set the
+   node cannot observe directly.
+5. **Residual risk is outside node control or disproportionately expensive.** Host topology, cgroup
    enforcement, the kernel's OOM choice, a measured replay curve at target height, cross-node degraded
    gossip, bootstrap failover, state GC and a cross-store WAL are not added here.
 

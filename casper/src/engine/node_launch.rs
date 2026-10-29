@@ -376,6 +376,22 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .into_iter()
         .next()
         .flatten();
+    // **A body count above the DAG count is an orphan signal, not a fact to ignore.** This is a
+    // cheap boot observation (no body decode): a store with bodies the DAG does not hold is the
+    // shape the live testnet showed on B/C/D. The full disposition ledger/audit is U19/B46; until
+    // it lands, the operator at least gets a line naming the mismatch instead of a silent start.
+    let stored_bodies = block_store.count().await?;
+    if stored_bodies > repr.dag_set.len() {
+        log.warn(
+            source,
+            &format!(
+                "boot: the block store holds {stored_bodies} bodies but the DAG holds {}; {} \
+                 stored body(ies) have no DAG entry — possible orphans (U19/B46)",
+                repr.dag_set.len(),
+                stored_bodies.saturating_sub(repr.dag_set.len())
+            ),
+        );
+    }
     if repr.dag_set.is_empty() && standalone && pending_recovery.is_none() {
         if expected_genesis_hash.is_some() {
             return Err(

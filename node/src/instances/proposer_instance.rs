@@ -195,6 +195,33 @@ fn create_with_retry(
                     return Some(result);
                 }
 
+                // **A block-pipeline fault stops production.** A node that has dropped a
+                // dependency-free block cannot claim its own chain is the network's; the same
+                // fail-safe as a finality-gap halt, at the earlier event. The process-wide
+                // counter is cleared only by a restart/operator repair (U19).
+                if rchain_casper::blocks::block_processor::pipeline_faults() > 0 {
+                    let result = (
+                        ProposeResult {
+                            propose_status: ProposeStatus::ResourcePressure("blocked".to_string()),
+                        },
+                        None,
+                    );
+                    chan::oneshot_send(
+                        propose_id_def,
+                        ProposerResult::Failure {
+                            status: result.0.propose_status.clone(),
+                            seq_number: 0,
+                            message: "the block pipeline recorded a fault; not proposing until \
+                                      the node is repaired and restarted"
+                                .to_string(),
+                        },
+                    );
+                    log_propose_result(&log, &result);
+                    state.lock().await.latest_propose_result = Some(result.clone());
+                    drop(permit);
+                    return Some(result);
+                }
+
                 // **The execution lease** (C341): the proposer takes at most the configured
                 // batch cap and the headroom budget allows. A Throttled host therefore runs a
                 // smaller batch; only zero permits withholds, and a withheld propose schedules no

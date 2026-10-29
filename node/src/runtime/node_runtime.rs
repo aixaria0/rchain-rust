@@ -930,8 +930,22 @@ fn wire_block_processing_observed(
     ));
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
+        let log = log.clone();
         move |block| {
-            chan::try_send(&incoming_blocks_tx, block);
+            let hash = block.block_hash;
+            if !chan::try_send(&incoming_blocks_tx, block) {
+                // **A full re-injection is not a silent success** (F-U8-02's class). The
+                // receiver's `send_to_validate` treats this callback as infallible; without this
+                // line a stored parent can be dropped on the floor while its child waits.
+                log.warn(
+                    LogSource::new("node.runtime.block_processing"),
+                    &format!(
+                        "incoming queue full/closed while re-injecting stored block {}; the block \
+                         remains in the store and the receiver will retry it",
+                        hash.to_hex()
+                    ),
+                );
+            }
         }
     });
     let validation_rx = block_receiver::apply_with_queue_observer(
