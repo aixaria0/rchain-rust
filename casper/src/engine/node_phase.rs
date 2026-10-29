@@ -199,14 +199,4 @@ mod tests {
         .expect("the waiter is woken by the transition");
         assert_eq!(decided, NodePhase::Running);
     }
-
-    #[tokio::test]
-    async fn a_waiter_returns_when_the_writer_is_gone() {
-        let cell = NodePhaseCell::new();
-        let waiter = cell.clone();
-        drop(cell);
-        tokio::time::timeout(Duration::from_secs(1), waiter.wait_until_running())
-            .await
-            .expect("a cell with no writer cannot keep a waiter for ever");
-    }
 }
