@@ -15,8 +15,11 @@ hosts, the genesis, the wallets.
 > See [the capacity requirements](validator-requirements.md#the-minimum-is-per-validator-a-host-running-two-must-size-for-both)
 > and the [retained read-only snapshot](../../../spec/audit/evidence/n479-current-epoch-20261029/README.md).
 >
-> **Observed after the rebuild: four bonded validators at 250 each, pool 1000, with a common finalized block.**
-> This small-chain snapshot does not requalify mature-chain join or restart under load; those remain
+> **Live status: four bonded validators, but finality is stalled.** After the
+> 2026-10-29 rebuild, A continued producing blocks while B/C/D remained at height 6
+> after receiver exhaustion (1024 pending entries). A shared early finalized block
+> does **not** mean the current testnet is healthy or usable for acceptance claims.
+> This split does not requalify mature-chain join or restart under load; those remain
 > [#479](https://github.com/rhovision-org/rholo/issues/479) and [#485](https://github.com/rhovision-org/rholo/issues/485).
 > A brand-new key can be funded, deploy, be trusted and bond into the pool. **Losing one validator is
 > survivable** — the other three keep finalising at 75 %; losing two leaves 50 %, which is not a quorum
@@ -29,7 +32,10 @@ hosts, the genesis, the wallets.
 > constraint here. Not production, holds no value, and its chain can be reset at any time.
 
 **Read-only follow-up, 2026-10-29 16:55 UTC:** A reported height 76 / finalized 3 while D/B/C
-reported 6 / finalized 2. The block sets at finalized heights matched across all four APIs,
+reported 6 / finalized 2. A later independent read at 18:11 UTC observed A at
+height 353 / finalized 3 and D/B/C at height 6 / finalized 2; shared
+finality had not resumed. The sampled block sets through height 3 were
+identical across all four APIs,
 but D was repeatedly dropping blocks at its 1024-entry receiver limit. The first A/D overflow
 was logged at 14:37 UTC. Available APIs and `degraded: normal` are not evidence of healthy
 consensus. The installed binary is still `d1af45d1`; newer merged source has not been deployed.
@@ -353,6 +359,7 @@ and proposer-wedge records are in [#485](https://github.com/rhovision-org/rholo/
 
 | what failed | what happens | action |
 |---|---|---|
+| **validator restarted during a block burst** | The 2026-10-29 restart test showed an overflowed receiver refusing further block hashes and a persistent split, even though peers still appeared connected | Preserve logs and stores; do not repeat restarts under load as a recovery strategy. Apply and verify a receiver fix under controlled conditions before a four-validator restart acceptance arm; see [#485](https://github.com/rhovision-org/rholo/issues/485) |
 | **one** validator unavailable, with the survivors on a healthy common DAG | The survivors have 750 of 1000 = 75 %, enough stake to finalise. A healthy-store outage/rejoin was measured on 2026-10-04; its sub-20-second return is a historical observation | Follow the operator recovery procedure for that store and binary. The October 29 restart-under-load split in [#485](https://github.com/rhovision-org/rholo/issues/485) is not covered by the earlier healthy-store result |
 | **two** validators unavailable (50 %) | 500 of 1000 is not `> ⅔`; the old chain's frozen-finality occurrence is recorded on [#479](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6492321348) | A node that successfully rejoins the same valid chain can restore 75 % available stake. That arithmetic does not repair a persisted proposer rejection or prove a stalled joiner has caught up |
 | **all four** | production stops; restart replays persisted state, including any persisted inconsistency | The healthy-store restart was measured on the previous shape on 2026-10-04 (h 59 → 78, finality 53 → 72). It is not a remedy for every persisted wedge: see the single-head failure below and [#485](https://github.com/rhovision-org/rholo/issues/485) |
@@ -467,9 +474,19 @@ All four validator APIs returned this block at height zero in the retained snaps
 [operator's rebuild record](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6497437735).
 The four bonds remain 250 each. Wallets were extended from four entries to nine: the existing four
 validator vaults, plus `validator`, `deployer`, `alice`, `bob` and `carol` from quantum-os's published
-test keys, allocated 10,000 REV each at genesis. `dave` was already validator A's funded vault.
-These are published throwaway keys: anyone can spend their test allocations. They must not hold
-real value. Genesis allocations do not state an account's current balance.
+test keys. **The actual deployed genesis input allocates 10,000 drops per
+new account, NOT 10,000 REV** (1 REV = 100,000,000 drops; therefore 10,000
+drops = 0.0001 REV). The four pre-existing vaults each have
+1,000,000,000,000 drops (10,000 REV) in their genesis input. The five
+additional accounts are underfunded for ordinary deploy phlo precharge.
+This was confirmed by read-only reads of the same `wallets.txt` values on
+both hosts on 2026-10-29; it corrects an earlier operator claim.
+`dave` was already validator A's funded vault. These are published
+throwaway keys: anyone can spend their test allocations. They must not
+hold real value. Editing the input file does not alter the running
+genesis or repair these accounts. Input allocation does not prove an
+account's current on-chain balance. See the preflight in
+`tools/verify-testnet-wallets.py` (#493).
 
 The 2026-10-24 hash
 `c596bef4bb678b3ac0cdb931b5b6968653209ca40bc35b6fec0050254d479b26`
@@ -566,16 +583,21 @@ agree on all of them or it will not join.
 
 ### Genesis wallets
 
-`wallets.txt` funds **four** REV addresses with 1,000,000,000,000 drops (10,000 REV) each, so tooling
-already wired to those keys works unchanged and a facilitator can be handed a key with REV to give away.
-The four funded addresses include **dave's** (`1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj`);
-the `deployer` key is **not** among them, and its vault reads `0`.
+The current `wallets.txt` holds **nine** entries: four pre-existing
+vaults with 1,000,000,000,000 drops (10,000 REV) each, and five new
+public test-key entries with only 10,000 drops (0.0001 REV) each.
+The earlier four-address allocation described below is historical, and
+the new accounts must not be advertised as deploy-ready until funded
+on-chain. The four previously funded addresses include **dave's** (`1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj`);
+the `deployer` key was **not** among those four historical funded vaults.
+The new genesis lists it with only 10,000 drops; no current balance
+has been independently proved by the input-file inspection.
 
 | key | role on this net |
 |---|---|
 | `dave` (`7707a3e0…`) | **the faucet's signing key** — funded, supplied through `/etc/rnode/faucet.env` — and the trusted key seeded by `--pos-multi-sig-public-keys`, so it is the key that can `trust` newcomers |
-| `deployer` (`3554e876…`) | **not funded on this genesis.** This page used to call it the faucet's key; drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rhovision-org/rholo/issues/247) |
-| the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
+| `deployer` (`3554e876…`) | **Underfunded for deploys on the current genesis** (10,000 drops in the new public test-key allocation). On an earlier genesis it was unfunded, and drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rhovision-org/rholo/issues/247) |
+| the developer keys in `scripts/localnet/pk.txt` | publicly known test accounts; five new genesis inputs each provide only 10,000 drops, insufficient for standard deploy precharge |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
 here — they get REV from the faucet.
