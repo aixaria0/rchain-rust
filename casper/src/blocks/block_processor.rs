@@ -14,8 +14,9 @@ use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 
 use crate::interpreter_util::ShardHealth;
 use crate::merging::BlockIndex;
@@ -45,6 +46,60 @@ fn note_pipeline_fault(block: &BlockMessage, stage: &str, error: &str) {
         block.block_hash.to_hex(),
         stage
     ));
+}
+
+/// **The deadline on one block's validation** (HAZOP F-U19-09, RCA S2/S7).
+///
+/// The processor awaits each validation future serially. A replay that stops making progress — a
+/// stalled store read, a detached reducer task, a merge search that never returns — therefore holds
+/// every later block behind it, and the node's height stands still with no fault anywhere. There was
+/// no deadline at all; this is the bound.
+///
+/// The value is policy, not a measured optimum: a block at the largest deploy count on a slow host
+/// can legitimately take minutes, and a false timeout is a fault on a healthy node. Ten minutes is
+/// deliberately far above any observed validation on the testnet; an operator can only shorten the
+/// wedge by restarting, never lengthen this without a rebuild. Aborting is **not** assumed to leave a
+/// clean replay: the aborted task may have written checkpoints or roots, so the timeout arms the
+/// same `pipelineFaults` latch that withholds proposals and deploy admission and requires an operator
+/// restart or resume. The alternative — waiting for ever behind a silent task — is the failure this
+/// bound exists to refuse.
+pub const BLOCK_VALIDATION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Await one validation task, or fault the pipeline and abort it at the deadline.
+///
+/// Returns `None` on timeout (the caller skips the block); `Some(joined)` otherwise, leaving the
+/// panic arm to the caller so both failure shapes are recorded the same way.
+async fn validation_within_deadline<T: Send + 'static>(
+    mut handle: JoinHandle<T>,
+    timeout: Duration,
+    block: &BlockMessage,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) -> Option<Result<T, JoinError>> {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(joined) => Some(joined),
+        Err(_) => {
+            // **Abort after recording, not instead of it.** Dropping the handle would leave the task
+            // running detached and silent — the very shape this bound exists to make impossible.
+            handle.abort();
+            note_pipeline_fault(
+                block,
+                "validation timeout",
+                &format!("no verdict within {timeout:?}"),
+            );
+            log.error(
+                source,
+                &format!(
+                    "Block #{} {} validation did not return within {timeout:?}; the replay task \
+                     was aborted and the pipeline is faulted. Restart or resume the node only after \
+                     deciding whether the aborted replay left partial runtime state",
+                    block.block_number,
+                    block.block_hash.to_hex()
+                ),
+            );
+            None
+        }
+    }
 }
 
 /// Cap on the number of blocks validated concurrently (per batch). The receiver only emits
@@ -235,7 +290,13 @@ pub async fn apply<F, Fut>(
         // Insert serially in drained order (a valid topological order: parents are emitted before
         // children), then forward/broadcast only blocks that validated successfully.
         for (block, handle) in batch.into_iter().zip(handles) {
-            let result = match handle.await {
+            let Some(joined) =
+                validation_within_deadline(handle, BLOCK_VALIDATION_TIMEOUT, &block, &log, source)
+                    .await
+            else {
+                continue;
+            };
+            let result = match joined {
                 Ok(r) => r,
                 Err(e) => {
                     note_pipeline_fault(&block, "validator task panicked", &e.to_string());
@@ -350,6 +411,58 @@ mod tests {
             .unwrap();
         release.send(()).unwrap();
         announcements.finish().await;
+    }
+
+    /// **A validation that never returns is a fault, not a wait.** The processor used to await the
+    /// task with no deadline, so one hung replay held every later block and the height stood still
+    /// with nothing recorded (HAZOP F-U19-09). The deadline aborts the task and increments the
+    /// process-wide fault the readiness/refusal gates read.
+    #[tokio::test]
+    async fn a_hung_validation_times_out_and_faults_the_pipeline() {
+        let block = rchain_block_storage::test_support::block();
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let before = pipeline_faults();
+        let handle = tokio::spawn(std::future::pending::<()>());
+        let outcome = validation_within_deadline(
+            handle,
+            Duration::from_millis(10),
+            &block,
+            &log,
+            LogSource::new("casper.blocks.BlockProcessor"),
+        )
+        .await;
+        assert!(
+            outcome.is_none(),
+            "a hung validation must not be awaited to completion"
+        );
+        assert!(
+            pipeline_faults() > before,
+            "a timeout must be visible as a fault"
+        );
+        assert!(
+            last_pipeline_fault().is_some_and(
+                |f| f.contains("validation timeout") && f.contains(&block.block_hash.to_hex())
+            ),
+            "the fault must name the stage and the block"
+        );
+    }
+
+    /// The deadline is a *deadline*, not a fixed delay: a validation that returns first is
+    /// unaffected.
+    #[tokio::test]
+    async fn a_validation_that_returns_before_the_deadline_is_delivered() {
+        let block = rchain_block_storage::test_support::block();
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let handle = tokio::spawn(async { 7u8 });
+        let outcome = validation_within_deadline(
+            handle,
+            Duration::from_secs(5),
+            &block,
+            &log,
+            LogSource::new("casper.blocks.BlockProcessor"),
+        )
+        .await;
+        assert_eq!(outcome.map(|joined| joined.unwrap()), Some(7));
     }
 
     #[tokio::test]
