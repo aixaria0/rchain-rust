@@ -97,6 +97,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         Ok(out)
     }
 
+    /// **Keys only: the values are never copied.** Same read cursor as `entries`, with the value
+    /// skipped — the stored-body audit needs the block hashes and must not materialise the bodies.
+    fn keys(&self) -> Result<Vec<Vec<u8>>, String> {
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| format!("LMDB read transaction: {e}"))?;
+        let mut out = Vec::new();
+        {
+            let mut cursor = txn
+                .open_ro_cursor(self.db)
+                .map_err(|e| format!("LMDB cursor: {e}"))?;
+            for item in cursor.iter() {
+                let (k, _) = item.map_err(|e| format!("LMDB iterate: {e}"))?;
+                out.push(k.to_vec());
+            }
+        }
+        txn.commit().map_err(|e| format!("LMDB commit: {e}"))?;
+        Ok(out)
+    }
+
     fn num_records(&self) -> usize {
         let Ok(txn) = self.env.begin_ro_txn() else {
             return 0;

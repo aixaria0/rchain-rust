@@ -241,8 +241,9 @@ async fn anchor_body(block_store: &BlockStore, anchor: BlockHash) -> Result<Bloc
 /// of the order: a body whose block the DAG does not hold is a body that can be neither replayed nor
 /// served.
 ///
-/// **What it costs, and what it may take with it.** The store is enumerated, so this is O(bodies) — and
-/// it is paid **only when a marker is present**, a rare and deliberate state, not on any ordinary boot.
+/// **What it costs, and what it may take with it.** The store's **keys** are enumerated (no body is
+/// decoded), so this is O(bodies) in key bytes — and it is paid **only when a marker is present**, a
+/// rare and deliberate state, not on any ordinary boot.
 /// It may also remove a body that was legitimately in flight (the receiver stores a body before it
 /// inserts the block), which is harmless: the reset puts the node behind its peers on purpose and the
 /// catch-up walk re-fetches what it needs.
@@ -250,12 +251,11 @@ async fn purge_orphan_bodies(
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
 ) -> Result<usize, String> {
-    let bodies = block_store.to_map().await?;
+    let keys = block_store.keys().await?;
     let repr = dag.get_representation().await;
-    let orphans: Vec<BlockHash> = bodies
-        .keys()
+    let orphans: Vec<BlockHash> = keys
+        .into_iter()
         .filter(|hash| !repr.contains(hash))
-        .copied()
         .collect();
     if orphans.is_empty() {
         return Ok(0);

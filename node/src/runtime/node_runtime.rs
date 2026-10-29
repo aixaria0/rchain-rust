@@ -875,7 +875,7 @@ pub fn wire_block_processing(
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     health: ShardHealth,
 ) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
-    wire_block_processing_observed(
+    let handles = wire_block_processing_observed(
         comm_state,
         parts,
         shard_id,
@@ -886,7 +886,17 @@ pub fn wire_block_processing(
         attest_on_new_blocks,
         None,
         health,
-    )
+    );
+    (handles.incoming_blocks, handles.validated_blocks)
+}
+
+/// The three senders the block pipeline exposes. The processor input is exposed because the
+/// start-up disposition audit runs **before** the shard reaches `Running` and must hand its
+/// re-offer to the already-spawned processor without going through the receiver.
+pub struct BlockProcessingHandles {
+    pub incoming_blocks: mpsc::Sender<BlockMessage>,
+    pub validated_blocks: mpsc::Sender<BlockMessage>,
+    pub processor_input: mpsc::Sender<BlockMessage>,
 }
 
 fn wire_block_processing_observed(
@@ -900,7 +910,7 @@ fn wire_block_processing_observed(
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     queue_metrics: Option<(Arc<MetricsRegistry>, usize)>,
     health: ShardHealth,
-) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
+) -> BlockProcessingHandles {
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
@@ -1055,21 +1065,14 @@ fn wire_block_processing_observed(
     );
     tokio::spawn(processor);
 
-    // **A body the node owes an outcome is re-offered, not forgotten** (U19). The start-up audit
-    // runs once; the retry loop then keeps the faulted rows moving until their budget is spent.
-    tokio::spawn(rchain_casper::block_disposition::reoffer_unsettled(
-        parts.phase.clone(),
-        parts.block_disposition.clone(),
-        parts.block_store.clone(),
-        parts.dag.clone(),
-        processor_input_tx_disposition.clone(),
-        disposition_log.clone(),
-    ));
+    // **The retry loop and the periodic audit** run for the life of the shard. The start-up
+    // re-offer is *not* spawned here: launch runs it before the shard reaches `Running` (unit 3),
+    // so a restarted node cannot report running with the ledger unsettled.
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
         parts.phase.clone(),
         parts.block_disposition.clone(),
         parts.block_store.clone(),
-        processor_input_tx_disposition,
+        processor_input_tx_disposition.clone(),
         disposition_log.clone(),
     ));
     // A stored body the DAG never accounts for is loud even when no ledger row names it (a body
@@ -1081,7 +1084,11 @@ fn wire_block_processing_observed(
         disposition_log,
     ));
 
-    (incoming_blocks_tx, validated_blocks_tx)
+    BlockProcessingHandles {
+        incoming_blocks: incoming_blocks_tx,
+        validated_blocks: validated_blocks_tx,
+        processor_input: processor_input_tx_disposition,
+    }
 }
 
 /// Build the RSpace importer over the on-chain state stores (port of
@@ -2104,7 +2111,7 @@ async fn setup_shard_runtime(
     };
 
     // Block receiver + processor streams (spawned internally).
-    let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing_observed(
+    let handles = wire_block_processing_observed(
         comm_state,
         &parts,
         &shard_id,
@@ -2116,6 +2123,7 @@ async fn setup_shard_runtime(
         Some((metrics, index)),
         shard_health.clone(),
     );
+    let incoming_blocks_tx = handles.incoming_blocks;
 
     // This shard's slice of the peer-message stream (fed by the router).
     let (peer_tx, peer_message_rx) = mpsc::channel::<PeerMessage>(50);
@@ -2143,6 +2151,8 @@ async fn setup_shard_runtime(
         parts.block_store.clone(),
         parts.approved_store.clone(),
         parts.dag.clone(),
+        parts.block_disposition.clone(),
+        handles.processor_input,
         importer,
         exporter,
         parts.phase.clone(),

@@ -32,6 +32,7 @@ use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::{BlockHeight, NonNegI64};
 use tokio::sync::mpsc;
 
+use crate::block_disposition::BlockDispositionStore;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
 use crate::conf::ShardSpec;
@@ -345,6 +346,8 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     block_store: BlockStore,
     approved_store: ApprovedStore,
     dag: Arc<dyn BlockDagStorage>,
+    block_disposition: BlockDispositionStore,
+    to_processor: mpsc::Sender<BlockMessage>,
     importer: I,
     exporter: E,
     phase: crate::engine::node_phase::NodePhaseCell,
@@ -731,10 +734,36 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     let block_range_door: crate::engine::node_running::BlockRangeDoor =
         Arc::new(tokio::sync::Mutex::new(tokio::sync::mpsc::channel(4).0));
 
-    // Transition to running mode. **The phase moves before the engine is constructed**, so a
-    // disposition loop waiting on `Running` cannot start between construction and the first packet;
-    // the cost is that a start-up re-offer can be in flight when the node first reports running.
-    phase.set_phase(crate::engine::node_phase::NodePhase::Running);
+    // Transition to running mode. **The start-up disposition audit runs first**, and the phase
+    // moves to `Running` when its bounded drain closes; a row that cannot be settled stays visible
+    // rather than holding boot. The phase still moves before the engine is constructed, so a
+    // disposition loop waiting on `Running` cannot start between construction and the first packet.
+    let audit = crate::block_disposition::startup_audit_then_running(
+        &phase,
+        &block_disposition,
+        &block_store,
+        &dag,
+        &to_processor,
+        crate::block_disposition::STARTUP_AUDIT_DRAIN_TIMEOUT,
+        &log,
+    )
+    .await;
+    log.info(
+        source,
+        &format!(
+            "start-up disposition audit: {} pre-ledger body/bodies adopted, {} re-offered, {} \
+             skipped for missing parents, {} still pending when the drain closed{}",
+            audit.scan.as_ref().map(|scan| scan.adopted).unwrap_or(0),
+            audit.reoffer.reoffered,
+            audit.reoffer.skipped_missing_parents,
+            audit.drain.still_pending,
+            if audit.drain.timed_out {
+                " (bounded window)"
+            } else {
+                ""
+            }
+        ),
+    );
     let engine = NodeRunning::new(
         transport.clone(),
         rp_conf.clone(),

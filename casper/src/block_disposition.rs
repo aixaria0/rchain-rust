@@ -33,6 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::dag_storage::LEGACY_BODY_SCAN_VERSION;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::chan;
@@ -517,35 +518,21 @@ pub const RETRY_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 /// order inserts it first; a genuinely missing parent leaves the row `Pending` for the next start
 /// rather than spending its retry budget on a question that cannot be answered yet.
 pub async fn reoffer_unsettled(
-    phase: NodePhaseCell,
     ledger: BlockDispositionStore,
     block_store: BlockStore,
     dag: Arc<dyn BlockDagStorage>,
     to_processor: mpsc::Sender<BlockMessage>,
     log: Arc<dyn Log>,
-) {
+) -> Result<ReofferReport, String> {
     let source = LogSource::new("casper.blocks.BlockDisposition");
-    // **Do not re-offer into a DAG launch is still restoring.** A recovery replays into its own
-    // staging DAG; a body offered to the live processor before the running engine exists would be
-    // validated against a chain the node is not serving.
-    phase.wait_until_running().await;
-    let rows = match ledger.unsettled().await {
-        Ok(rows) => rows,
-        Err(e) => {
-            log.error(
-                source,
-                &format!("could not read the disposition ledger at start-up: {e}"),
-            );
-            return;
-        }
-    };
-    if rows.is_empty() {
-        return;
-    }
-    let mut reoffered = 0usize;
-    let mut skipped = 0usize;
+    let mut report = ReofferReport::default();
+    let rows = ledger
+        .unsettled()
+        .await
+        .map_err(|e| format!("could not read the disposition ledger at start-up: {e}"))?;
     for (hash, disposition) in rows {
         if disposition.attempts() >= MAX_FAULT_RETRIES {
+            report.quarantined = report.quarantined.saturating_add(1);
             log.error(
                 source,
                 &format!(
@@ -562,6 +549,7 @@ pub async fn reoffer_unsettled(
         let repr = dag.get_representation().await;
         if repr.contains(&hash) {
             // The crash landed after the insert, before the settle. The metadata is the verdict.
+            report.settled_already_inserted = report.settled_already_inserted.saturating_add(1);
             if let Err(e) = ledger.settle(hash).await {
                 log.warn(
                     source,
@@ -576,6 +564,7 @@ pub async fn reoffer_unsettled(
         let stored = match block_store.get(&[hash]).await {
             Ok(stored) => stored,
             Err(e) => {
+                report.read_errors = report.read_errors.saturating_add(1);
                 log.error(
                     source,
                     &format!(
@@ -587,6 +576,7 @@ pub async fn reoffer_unsettled(
             }
         };
         let Some(block) = stored.into_iter().next().flatten() else {
+            report.body_missing = report.body_missing.saturating_add(1);
             log.error(
                 source,
                 &format!(
@@ -603,7 +593,7 @@ pub async fn reoffer_unsettled(
             .iter()
             .all(|parent| repr.contains(parent))
         {
-            skipped = skipped.saturating_add(1);
+            report.skipped_missing_parents = report.skipped_missing_parents.saturating_add(1);
             log.info(
                 source,
                 &format!(
@@ -616,23 +606,312 @@ pub async fn reoffer_unsettled(
             continue;
         }
         if let Err(e) = ledger.mark_retry_started(hash).await {
+            report.ledger_errors = report.ledger_errors.saturating_add(1);
             log.error(
                 source,
                 &format!("could not mark block {} as re-offered: {e}", hash.to_hex()),
             );
         }
         if !chan::send(&to_processor, block).await {
-            return;
+            report.channel_closed = true;
+            break;
         }
-        reoffered = reoffered.saturating_add(1);
+        report.offered.push(hash);
+        report.reoffered = report.reoffered.saturating_add(1);
     }
     log.info(
         source,
         &format!(
-            "start-up disposition audit: {reoffered} unsettled block(s) re-offered, {skipped} \
-             skipped for missing parents"
+            "start-up disposition audit: {} unsettled block(s) re-offered, {} skipped for missing \
+             parents, {} already inserted, {} quarantined, {} unreadable",
+            report.reoffered,
+            report.skipped_missing_parents,
+            report.settled_already_inserted,
+            report.quarantined,
+            report.body_missing.saturating_add(report.read_errors)
         ),
     );
+    Ok(report)
+}
+
+/// What the start-up re-offer did. The `offered` hashes are the only rows the bounded drain waits
+/// for: a row skipped for a missing parent was never sent, and must not hold boot.
+#[derive(Debug, Default)]
+pub struct ReofferReport {
+    pub offered: Vec<BlockHash>,
+    pub reoffered: usize,
+    pub settled_already_inserted: usize,
+    pub skipped_missing_parents: usize,
+    pub quarantined: usize,
+    pub body_missing: usize,
+    pub read_errors: usize,
+    pub ledger_errors: usize,
+    pub channel_closed: bool,
+}
+
+/// **The start-up audit's liveness bound.** Long enough for in-process validation of the rows just
+/// re-offered, far below `BLOCK_VALIDATION_TIMEOUT` (600 s): the point is to let the ledger drain,
+/// not to wait out a replay. A row still `Pending` when the window closes stays visible.
+pub const STARTUP_AUDIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+pub const STARTUP_AUDIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+#[derive(Debug, Default)]
+pub struct DrainOutcome {
+    pub settled: usize,
+    pub still_pending: usize,
+    pub timed_out: bool,
+}
+
+/// Wait, bounded, for the rows the re-offer sent to leave the ledger. Only a **Pending** row in
+/// `offered` holds the drain: a settled row is a verdict, and a faulted row is the retry loop's
+/// question, not the boot's.
+pub async fn wait_for_reoffered_rows(
+    ledger: &BlockDispositionStore,
+    offered: &[BlockHash],
+    timeout: Duration,
+    log: &Arc<dyn Log>,
+) -> DrainOutcome {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    if offered.is_empty() {
+        return DrainOutcome::default();
+    }
+    let wanted: std::collections::BTreeSet<BlockHash> = offered.iter().copied().collect();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let still = match ledger.unsettled().await {
+            Ok(rows) => rows
+                .iter()
+                .filter(|(hash, disposition)| {
+                    wanted.contains(hash) && matches!(disposition, BlockDisposition::Pending { .. })
+                })
+                .count(),
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!("could not read the disposition ledger during the drain: {e}"),
+                );
+                return DrainOutcome {
+                    settled: 0,
+                    still_pending: wanted.len(),
+                    timed_out: true,
+                };
+            }
+        };
+        if still == 0 {
+            return DrainOutcome {
+                settled: wanted.len(),
+                still_pending: 0,
+                timed_out: false,
+            };
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return DrainOutcome {
+                settled: wanted.len().saturating_sub(still),
+                still_pending: still,
+                timed_out: true,
+            };
+        }
+        tokio::time::sleep(STARTUP_AUDIT_POLL_INTERVAL).await;
+    }
+}
+
+/// **The one-time scan for bodies written before the disposition ledger** (U19/F-U19-07).
+///
+/// It enumerates the block store's **keys only** — the body is decoded one orphan at a time, never
+/// the whole store — adopts each hash the DAG does not hold as a `Pending` row, and writes its
+/// durable marker last. The re-offer that follows is what sends them; the scan never sends.
+///
+/// The marker is written only after every decodable orphan has a row, so a crash before it rescans
+/// next boot and a crash after it leaves rows the re-offer handles. An **undecodable** body is
+/// logged by hash and does not block the marker: walking again cannot decode it, and it remains the
+/// periodic count audit's signal (the operator reset is its repair).
+pub const LEGACY_SCAN_LOG_LIMIT: usize = 64;
+
+#[derive(Debug, Default)]
+pub struct LegacyScanReport {
+    pub scanned: bool,
+    pub keys: usize,
+    pub orphans: usize,
+    pub adopted: usize,
+    pub unreadable_bodies: usize,
+    pub marker_written: bool,
+    pub reported_hashes: Vec<BlockHash>,
+}
+
+pub async fn scan_legacy_bodies(
+    ledger: &BlockDispositionStore,
+    block_store: &BlockStore,
+    dag: &Arc<dyn BlockDagStorage>,
+    log: &Arc<dyn Log>,
+) -> Result<LegacyScanReport, String> {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    match dag.read_legacy_body_scan_marker().await {
+        Ok(Some(version)) if version >= LEGACY_BODY_SCAN_VERSION => {
+            return Ok(LegacyScanReport::default());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log.warn(
+                source,
+                &format!("legacy body scan skipped: its marker could not be read: {e}"),
+            );
+            return Err(e);
+        }
+    }
+    let keys = block_store.keys().await?;
+    let repr = dag.get_representation().await;
+    let mut report = LegacyScanReport {
+        scanned: true,
+        keys: keys.len(),
+        ..LegacyScanReport::default()
+    };
+    for hash in keys {
+        if repr.dag_set.contains(&hash) {
+            continue;
+        }
+        report.orphans = report.orphans.saturating_add(1);
+        if ledger.get(&hash).await?.is_some() {
+            continue;
+        }
+        match block_store.get(&[hash]).await {
+            Ok(stored) => match stored.into_iter().next().flatten() {
+                Some(block) => match ledger
+                    .mark_pending(hash, block.block_number, PendingStage::Stored)
+                    .await
+                {
+                    Ok(()) => {
+                        report.adopted = report.adopted.saturating_add(1);
+                        if report.reported_hashes.len() < LEGACY_SCAN_LOG_LIMIT {
+                            report.reported_hashes.push(hash);
+                        }
+                    }
+                    Err(e) => log.error(
+                        source,
+                        &format!(
+                            "legacy body scan could not adopt block {}: {e}; the marker is not \
+                             written and the next boot retries",
+                            hash.to_hex()
+                        ),
+                    ),
+                },
+                None => {
+                    report.unreadable_bodies = report.unreadable_bodies.saturating_add(1);
+                    log.error(
+                        source,
+                        &format!(
+                            "legacy body scan: key {} has no readable body; it stays an orphan and \
+                             only an operator reset can repair it",
+                            hash.to_hex()
+                        ),
+                    );
+                }
+            },
+            Err(e) => {
+                report.unreadable_bodies = report.unreadable_bodies.saturating_add(1);
+                log.error(
+                    source,
+                    &format!(
+                        "legacy body scan could not read block {}: {e}; it stays an orphan",
+                        hash.to_hex()
+                    ),
+                );
+            }
+        }
+    }
+    if report.orphans > 0 {
+        log.warn(
+            source,
+            &format!(
+                "legacy body scan: {} key(s), {} orphan(s), {} adopted, {} unreadable; first \
+                 adopted: {:?}",
+                report.keys,
+                report.orphans,
+                report.adopted,
+                report.unreadable_bodies,
+                report
+                    .reported_hashes
+                    .iter()
+                    .map(|h| h.to_hex())
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    match dag
+        .write_legacy_body_scan_marker(LEGACY_BODY_SCAN_VERSION)
+        .await
+    {
+        Ok(()) => report.marker_written = true,
+        Err(e) => log.error(
+            source,
+            &format!(
+                "legacy body scan completed but could not write its marker; the next boot will \
+                 rescan: {e}"
+            ),
+        ),
+    }
+    Ok(report)
+}
+
+#[derive(Debug, Default)]
+pub struct StartupAuditOutcome {
+    pub scan: Option<LegacyScanReport>,
+    pub reoffer: ReofferReport,
+    pub drain: DrainOutcome,
+}
+
+/// **The start-up audit, then `Running`.** Scan (unit 4), re-offer, drain bounded, then move the
+/// shard's phase. The phase transition is here rather than in launch so the law's `startup` and the
+/// code's one path are the same shape. A ledger/store error is logged and does not refuse boot: the
+/// rows are durable and the periodic count audit still withholds readiness for a real orphan.
+pub async fn startup_audit_then_running(
+    phase: &NodePhaseCell,
+    ledger: &BlockDispositionStore,
+    block_store: &BlockStore,
+    dag: &Arc<dyn BlockDagStorage>,
+    to_processor: &mpsc::Sender<BlockMessage>,
+    drain_timeout: Duration,
+    log: &Arc<dyn Log>,
+) -> StartupAuditOutcome {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    let scan = match scan_legacy_bodies(ledger, block_store, dag, log).await {
+        Ok(report) => Some(report),
+        Err(e) => {
+            log.error(source, &e);
+            None
+        }
+    };
+    let reoffer = match reoffer_unsettled(
+        ledger.clone(),
+        block_store.clone(),
+        dag.clone(),
+        to_processor.clone(),
+        log.clone(),
+    )
+    .await
+    {
+        Ok(report) => report,
+        Err(e) => {
+            log.error(source, &e);
+            ReofferReport::default()
+        }
+    };
+    let drain = wait_for_reoffered_rows(ledger, &reoffer.offered, drain_timeout, log).await;
+    if drain.timed_out {
+        log.warn(
+            source,
+            &format!(
+                "start-up audit drain closed after {:?} with {} row(s) still pending; they stay \
+                 visible and the periodic stored-body audit still gates readiness",
+                drain_timeout, drain.still_pending
+            ),
+        );
+    }
+    phase.set_phase(crate::engine::node_phase::NodePhase::Running);
+    StartupAuditOutcome {
+        scan,
+        reoffer,
+        drain,
+    }
 }
 
 /// The retry loop: every [`RETRY_SWEEP_INTERVAL`], re-offer the faulted blocks whose backoff has
@@ -1022,5 +1301,244 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    // --- the start-up audit: scan, re-offer, bounded drain (units 3–4) ---
+
+    use rchain_block_storage::block_store::{self, BlockStore};
+    use rchain_block_storage::dag::codecs::{
+        BlockMetadataCodec, BytesCodec, SignedDeployDataCodec,
+    };
+    use rchain_block_storage::dag::dag_storage::DeployId;
+    use rchain_models::block::state_hash::StateHash;
+    use rchain_models::casper::protocol::casper_message::{RholangState, SignedDeployData};
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::SeqNum;
+    use rchain_shared::store::{InMemoryKeyValueStore, SharedStore};
+    use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use crate::block_metadata_store::BlockMetadataStore as CasperMetadataStore;
+    use crate::dag::BlockDagKeyValueStorage;
+    use crate::engine::node_phase::NodePhaseCell;
+
+    fn in_memory() -> SharedStore {
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )))
+    }
+
+    fn sample_block(hash: BlockHash) -> BlockMessage {
+        BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: hash,
+            block_number: height(3),
+            sender: Validator::new([0x11; 65]),
+            seq_num: SeqNum::try_from(3i64).expect("seq"),
+            pre_state_hash: StateHash::new([1u8; 32]),
+            post_state_hash: StateHash::new([2u8; 32]),
+            justifications: Vec::new(),
+            bonds: BTreeMap::new(),
+            rejected_deploys: BTreeSet::new(),
+            rejected_blocks: BTreeSet::new(),
+            rejected_senders: BTreeSet::new(),
+            state: RholangState::default(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: vec![1],
+            timestamp: 0,
+        }
+    }
+
+    async fn empty_dag() -> Arc<BlockDagKeyValueStorage> {
+        let metadata = CasperMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMetadataCodec),
+        )))
+        .await
+        .expect("metadata store");
+        let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(BlockHashCodec),
+            ));
+        let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(SignedDeployDataCodec),
+            ));
+        let markers: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> = Arc::new(
+            KeyValueTypedStoreCodec::new(in_memory(), Arc::new(BytesCodec), Arc::new(BytesCodec)),
+        );
+        Arc::new(
+            BlockDagKeyValueStorage::create(Arc::new(metadata), deploy_index, deploy_store)
+                .await
+                .expect("dag")
+                .with_reset_marker(markers),
+        )
+    }
+
+    async fn block_store_with(block: &BlockMessage) -> BlockStore {
+        let store = block_store::create(&InMemoryStoreManager::default())
+            .await
+            .expect("block store");
+        store
+            .put(&[(block.block_hash, block.clone())])
+            .await
+            .expect("store body");
+        store
+    }
+
+    /// **A stored body with no DAG entry is re-offered** rather than left for the next restart.
+    #[tokio::test]
+    async fn a_stored_body_without_a_dag_entry_is_reoffered() {
+        let block = sample_block(hash(20));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        ledger
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
+        let dag = empty_dag().await;
+        let (tx, mut rx) = mpsc::channel(4);
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let report = reoffer_unsettled(ledger, block_store, dag, tx, log)
+            .await
+            .expect("re-offer");
+        assert_eq!(report.offered, vec![block.block_hash]);
+        assert_eq!(report.reoffered, 1);
+        let received = rx.try_recv().expect("the processor receives the body");
+        assert_eq!(received.block_hash, block.block_hash);
+    }
+
+    #[tokio::test]
+    async fn the_startup_drain_waits_for_reoffered_rows_but_not_for_missing_parents() {
+        let ledger = store().await;
+        let offered = hash(21);
+        let waiting = hash(22);
+        ledger
+            .mark_pending(offered, height(3), PendingStage::Stored)
+            .await
+            .expect("offered row");
+        ledger
+            .mark_pending(waiting, height(4), PendingStage::Stored)
+            .await
+            .expect("waiting row");
+        let settler = ledger.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            settler.settle(offered).await.expect("settle");
+        });
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let outcome =
+            wait_for_reoffered_rows(&ledger, &[offered], Duration::from_secs(2), &log).await;
+        assert!(!outcome.timed_out);
+        assert_eq!(outcome.settled, 1);
+        assert_eq!(outcome.still_pending, 0);
+        assert!(
+            ledger.get(&waiting).await.expect("read").is_some(),
+            "a row that was not offered (missing parent) never holds the drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reoffered_row_that_faults_does_not_hold_the_drain() {
+        let ledger = store().await;
+        let faulted = hash(23);
+        ledger
+            .mark_faulted(faulted, height(3), "internal", "boom")
+            .await
+            .expect("faulted row");
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let outcome =
+            wait_for_reoffered_rows(&ledger, &[faulted], Duration::from_millis(50), &log).await;
+        assert!(!outcome.timed_out, "a fault is the retry loop's question");
+        assert_eq!(outcome.still_pending, 0);
+    }
+
+    /// **The one-time scan names pre-ledger bodies without decoding the whole store** (U19/F-U19-07).
+    /// It adopts each orphan as `Pending`, writes its marker, and a second pass is a no-op.
+    #[tokio::test]
+    async fn the_legacy_scan_adopts_every_unaccounted_body_and_writes_its_marker() {
+        let block = sample_block(hash(30));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        let dag = empty_dag().await;
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+
+        let report = scan_legacy_bodies(&ledger, &block_store, &dag, &log)
+            .await
+            .expect("scan");
+        assert!(report.scanned);
+        assert_eq!(report.keys, 1);
+        assert_eq!(report.orphans, 1);
+        assert_eq!(report.adopted, 1);
+        assert_eq!(report.reported_hashes, vec![block.block_hash]);
+        assert!(report.marker_written);
+        assert!(
+            ledger.get(&block.block_hash).await.expect("row").is_some(),
+            "an orphan body is adopted as a visible row"
+        );
+        assert_eq!(
+            dag.read_legacy_body_scan_marker().await.expect("marker"),
+            Some(rchain_block_storage::dag::dag_storage::LEGACY_BODY_SCAN_VERSION)
+        );
+
+        let again = scan_legacy_bodies(&ledger, &block_store, &dag, &log)
+            .await
+            .expect("second scan");
+        assert!(!again.scanned, "the marker skips the walk");
+        assert_eq!(again.adopted, 0);
+    }
+
+    /// **The phase does not move before the drain closes** (Law 88a's `startup`).
+    #[tokio::test]
+    async fn the_phase_stays_starting_until_the_drain_closes() {
+        let block = sample_block(hash(24));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        ledger
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
+        let dag = empty_dag().await;
+        let (tx, _rx) = mpsc::channel(4);
+        let phase = NodePhaseCell::new();
+        assert_eq!(
+            phase.phase(),
+            crate::engine::node_phase::NodePhase::Starting
+        );
+
+        let settler = ledger.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            settler.settle(block.block_hash).await.expect("settle");
+        });
+        let runner = phase.clone();
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let task = tokio::spawn(async move {
+            startup_audit_then_running(
+                &runner,
+                &ledger,
+                &block_store,
+                &dag,
+                &tx,
+                Duration::from_secs(2),
+                &log,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            phase.phase(),
+            crate::engine::node_phase::NodePhase::Starting,
+            "the phase must not move before the re-offered row settles"
+        );
+        let outcome = task.await.expect("audit task");
+        assert!(phase.is_running(), "the audit closes into Running");
+        assert_eq!(outcome.drain.still_pending, 0);
     }
 }
