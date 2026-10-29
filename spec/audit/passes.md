@@ -11765,10 +11765,10 @@ So the sentence in barrier B35 — "execution takes the floor, exploration the s
 model and the exploration path, and false of block production. A `Throttled` host does not make a
 smaller batch; it keeps proposing at full rate until the fallback word reaches `Critical`, which
 withholds production. HAZOP row F-U17-02 and safety-case rows H-RS-02/H-RS-04 claimed the missing
-control; they are corrected in this pass, HAZOP U18-02/U18-05 and H-RS-13 carry the gap, and **C341 is
-`todo`**. This is a docs-only review by scope: no proposer or consensus code is changed. The close
-condition is a proposer-side acquisition plus a falsifier that a `Throttled` host's batch is smaller or
-withheld; only then may B35's execution claim be restored.
+control; they are corrected in this pass, and **C341 is `done` in the same PR**: the proposer now
+acquires the execution permits and passes the batch cap, with a batching-enabled `Throttled` falsifier.
+The claim is narrowed to the truth: a batched block is capped by the permits, a sequential block is
+inherently one-at-a-time, and zero permits withhold. B35/F-U17-02/H-RS-04 are restored at that scope.
 
 The same review adds the operator risk contract: `TERMS.md`, the validator start-up notice, and the
 `--accept-under-minimum-risk` requirement for a below-floor validator (B43/B44). It does not add

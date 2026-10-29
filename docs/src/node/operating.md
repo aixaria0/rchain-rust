@@ -287,7 +287,8 @@ Explore has its own headroom permit budget and a **429** when it is spent; it is
 deploy pool. A **503** means the node cannot serve at all. The operator status
 (`/api/v1/status/operator`, admin listener) carries the headroom, the critical/throttle/recovery
 floors, the process RSS and the permit limits; `/metrics` carries the same as `rchain.resource.*`
-gauges; the node's own `GET /health` is a readiness body (200 while serving).
+gauges; the node's own `GET /health` is a readiness body (200 while serving) and carries
+`finalityStalled`/`finalityStallEpisodes` as the peer-liveness signal.
 
 | Switch | Default | Effect |
 |---|---|---|

@@ -234,8 +234,9 @@ shard named and read the reply out of the term, not only from `deploy-status`
   is running and names its last failure), `acceptsDeploys` (the deploy pool's count/byte capacity),
   `degraded` (the **advisory** fallback word; it does not gate admission).
 - `GET /api/last-finalized-block` — finality, the number that matters for consensus health.
-- `GET /health` — **not a node route**: the `/health` an operator sees is the host's nginx snapshot,
-  refreshed by a timer (`node/src/web/http.rs` mounts `/status`, `/version`, `/metrics`, not `/health`).
+- `GET /health` — **a node route** (200 while serving): `ok`, `degraded`, `acceptsDeploys`, height,
+  pool, and the peer-liveness fields `finalityStalled`/`finalityStallEpisodes`. The public testnet's
+  `testnet.rhobot.net/health` is a separate host snapshot; do not confuse the two.
 - `GET /api/deploy-status/<id>` — submission/execution/inclusion; read the deploy's own reply for
   contract outcomes.
 - The **operator** half (`/api/v1/status/operator`, numeric headroom, fallback reason, sync attempts) is on

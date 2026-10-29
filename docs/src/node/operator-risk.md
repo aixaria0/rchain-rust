@@ -66,10 +66,10 @@ network partition can otherwise remove more than a third at once. The failure-do
 | risk | network bears | operator bears | current control | residual |
 |---|---|---|---|---|
 | below-floor host / bad disk | finality lag or stall | income loss, no slash for absence; a buggy invalid block can slash | preflight, the two flags, notice, cgroup guidance | `--allow-under-minimum` remains possible; the memory floor is a policy table, not a measured curve above ~5k blocks |
-| `throttled` host keeps proposing at full rate | execution pressure can reach `critical` and withhold production | missed production/attestation income | fallback word, permit budget, watchdog | the execution permit is read for metrics but not acquired by the proposer — **C341**, recorded as a finding, not fixed here |
+| `throttled` host under load | execution pressure can reach `critical` and withhold production | missed production/attestation income | fallback word, execution permit lease, watchdog | the proposer acquires the execution permits and caps a batched block; the sequential path is inherently one-at-a-time, and zero headroom withholds |
 | co-located / correlated validators | >1/3 stake can disappear together → no quorum | bond/income and reputation | co-location advisory, runbook | host topology is the operator's; #428 M1; no protocol-level anti-affinity |
 | silence is paid | finality can stall while an absent validator is still paid | no bond loss today; opportunity/reward only | notice, future policy options below | #149; `absence-slack` is a genesis decision and is off by default |
-| late detection | finality is already frozen before the operator notices | reputation, missed income | `/health`, metrics, operator status | resource gauges on `/metrics` are owed (B38); no universal liveness alarm |
+| late detection | finality is already frozen before the operator notices | reputation, missed income | `/health` peer fields, `/metrics`, operator status | the signal exists; the operator still owns the external alert (B38) |
 
 The operator owns the ringfence, the keys, the host and the monitoring; the protocol owns the quorum
 rule and the slash predicate. Neither side can make the other's risk disappear.
@@ -86,7 +86,8 @@ A low-power host is a **good observer** and a **risky validator**:
 - More validators do not automatically mean more TPS. Throughput is bounded by block rate, block size,
   execution and network/finality; a swarm of under-provisioned validators can add failure domains
   without adding capacity. Load management (admission, permits, batching, relay) lets constrained nodes
-  shed work, but the `Throttled` execution gap (C341) means that is not yet a guarantee.
+  shed work; a batched block takes only the execution permits the host has, and a sequential block is
+  one-at-a-time, but a slower host still produces less.
 - Do not co-locate independent validators. If you want resilience, diversify host, provider, region and
   upgrade timing before adding another key.
 

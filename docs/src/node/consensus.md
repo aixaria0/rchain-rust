@@ -47,7 +47,8 @@ holding at most one third of the stake can out-vote it.
 Concretely, the finalizer (`Finalizer` in the DAG layer) tracks the **support** each block has from
 the bonded validators, and advances the finalized fringe whenever that support crosses `> 2/3`.
 The operator consequences of an absent validator are in [validator risk](operator-risk.md): enough
-silent bonded stake stops finality, and the denominator does not shrink.
+silent bonded stake stops finality, and the denominator does not shrink. A peer can probe `/health`
+for `finalityStalled`/`finalityStallEpisodes`; `/metrics` carries the same signal for an alert.
 
 **Support counts only full partitions.** A candidate message contributes its sender's stake only when
 **every validator that has seen it has itself seen a message from every validator of the partition**

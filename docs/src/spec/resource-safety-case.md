@@ -41,17 +41,17 @@ jemalloc purge and the #117 retention test; the devnet/Docker memory ceiling.
 | B32 | ringfence and co-location advisories, operator guidance | A2 / [ringfence page](../node/resource-ringfence.md) |
 | B33 | independent watchdog thread with hysteresis and OOM-event observation | A1/C |
 | B34 | **real bounds only**: pool count/bytes/share/rate → HTTP **429** + `Retry-After`, gRPC `RESOURCE_EXHAUSTED`; memory is never a 503 (Law 86a) | B / #477 |
-| B35 | headroom-derived permit budgets: the **exploration** half is wired and 429s when spent; the **execution** half is created and read for metrics but not acquired by the proposer (C341), so it is not a production barrier yet | B / #477; C341 |
+| B35 | headroom-derived permit budgets: exploration 429s when spent; the proposer acquires the **execution** permits and caps the batch with them (C341). When batching is off, execution is already serial and the permit is a zero-headroom gate | B / #477; C341 |
 | B36 | atomic duplicate reservation + byte-based pool accounting | B |
 | B37 | `Normal → Throttled → Critical` (+`Unavailable`) fallback state machine with propose/attest gates; `Halt` remains the operator/integrity `HaltRecord`, never automatic on pressure | C |
-| B38 | status visibility: public `acceptsDeploys` = pool capacity, `degraded` = advisory word; operator headroom/floors/recovery and permit limits (resource gauges on `/metrics` are owed) | A1 / #477 |
+| B38 | status visibility: public `acceptsDeploys` = pool capacity, `degraded` = advisory word; operator headroom/floors/recovery and permit limits on `/metrics`; peer `/health` carries `finalityStalled`/episodes | A1 / #477; #486 |
 | B39 | idempotent rewind cleanup + start-up derived-index audit/repair | D2 |
 | B40 | `CURRENT_ROOT` published only after block acceptance | D1 |
 | B41 | memory-pressure and restart/replay evidence arms | E |
 | B42 | **pending-work relay**: an admitted deploy is copied to peers' deploy service, so a constrained node does not bottleneck the network; opt-in, bounded seen set (Law 86e) | #477 |
 | B43 | **operator risk notice**: `TERMS.md` plus the validator start-up log notice; the notice is informational, not a verdict | F |
 | B44 | **explicit below-minimum acceptance**: a validator below the memory floor needs `--allow-under-minimum` and `--accept-under-minimum-risk`; observers remain allowed below the floor | F |
-| B45 | **execution-permit wiring** (owed C341): the proposer acquires the execution permit so a `Throttled` host actually makes a smaller batch | owed C341 |
+| B45 | **execution-permit wiring**: the proposer acquires the execution permits and passes the batch cap; a `Throttled` host makes a smaller batch when batching is enabled and withholds at zero | #486 / C341 |
 
 **Consequences:** an accepted deploy that is not durable or whose acceptance is ambiguous; API/read
 timeouts and clients losing the chain; height divergence and finality lag; a joiner that cannot sync; a
@@ -67,9 +67,9 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | ID | Threat | Existing barrier | New barrier | Consequence | Residual | Evidence |
 |---|---|---|---|---|---|---|
 | H-RS-01 | T-RS-1 a host below the replay floor starts and OOMs during the DAG rebuild | none | B31 | C-RS-1, C-RS-5 | the policy floor is overridable; a validator now needs the explicit acceptance (B44); the floor is not a measured curve above ~5k blocks | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
-| H-RS-02 | T-RS-2 a burst of concurrent decoded/executed deploys and explores | B20 (429), bounded queues | B33, B34, B37 | C-RS-2 | a fast spike can beat the sample interval; the body/term caps and the pool byte bound still hold; the execution permit is not wired (C341) | node/src/web/http.rs::a_bounded_deploy_refusal_is_429_with_retry_after |
+| H-RS-02 | T-RS-2 a burst of concurrent decoded/executed deploys and explores | B20 (429), bounded queues | B33, B34, B35, B37 | C-RS-2 | a fast spike can beat the sample interval; the body/term caps and the pool byte bound still hold; the execution permit caps the batch, not the rate of a sequential block | node/src/web/http.rs::a_bounded_deploy_refusal_is_429_with_retry_after |
 | H-RS-03 | T-RS-3 pool amplification: count-only caps, duplicate re-parse, body/term asymmetry | B21, B22 | B36 | C-RS-1 | the HTTP body cap still allows a 2 MiB decode before the 64 KiB term bound | casper/src/dag.rs::a_pool_at_its_byte_cap_refuses_before_the_store |
-| H-RS-04 | T-RS-4 the replay/merge peak exceeds headroom mid-run | none | B33, B37 | C-RS-3 | replay is superlinear and unmeasured at target height; the execution permit is not wired (C341), so the headroom claim is not a production guarantee | node/src/resources/fallback.rs::critical_stops_production |
+| H-RS-04 | T-RS-4 the replay/merge peak exceeds headroom mid-run | none | B33, B35, B37 | C-RS-3 | replay is superlinear and unmeasured at target height; the execution permit bounds a batched proposal, not replay | node/src/resources/fallback.rs::critical_stops_production |
 | H-RS-05 | T-RS-5 data-dir/disk exhaustion; LMDB map full | LMDB map sizes, sparse reservations | B31 | C-RS-3 | free space is checked at start, not bounded at runtime | node/src/resources/disk.rs::a_missing_data_dir_is_an_error_not_zero_free |
 | H-RS-06 | T-RS-6 no cgroup/ringfence; external host pressure or kernel OOM | devnet memory ceiling (deployment only) | B32, B33, B38 | C-RS-5 | the node cannot set cgroup limits or choose the OOM victim | node/src/resources/cgroup.rs::parses_v2_memory_cpu_and_events |
 | H-RS-07 | T-RS-7 co-located validators: one host loss defeats quorum | none | B32, B38 (advisory) | C-RS-5 | host topology is the operator's; containers may hide siblings | node/src/resources/colocation.rs::counts_only_processes_named_rnode |
@@ -78,7 +78,7 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | H-RS-10 | T-RS-10 a restart replays into the same OOM | supervisor restart | B31, B32 | C-RS-6 | the supervisor can always restart anyway; the preflight must refuse first | spec/audit/evidence/n420-restart-20261024/restart.json |
 | H-RS-11 | T-RS-11 ambiguous acceptance, an orphan root or a stale derived index | root-pair write, reset bracket | B39, B40 | C-RS-1 | no cross-store WAL; D1/D2 reduce and repair the known windows | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
 | H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port, not a protocol-level routing guarantee; the four-validator relay arm records a critical node's deploy included by a healthy peer, and the shared-host cgroup topology remains owed | spec/audit/evidence/n477-relay-arm-20261028/README.md |
-| H-RS-13 | T-RS-14 the execution permit half of B35 is never acquired by the proposer, so `Throttled` keeps full-rate execution | B33 (fallback), B37 (Critical gate) | B45 (owed C341) | C-RS-8 | the execution budget is a metric, not a bound; the fallback still withholds at `Critical` | owed: C341 — the proposer does not acquire the execution permit |
+| H-RS-13 | T-RS-14 the execution permit half of B35 was never acquired by the proposer, so `Throttled` kept full-rate execution | B33 (fallback), B37 (Critical gate) | B45 | C-RS-8 | the execution budget caps a batched proposal and withholds at zero; a sequential block is inherently one-at-a-time; the fallback still withholds at `Critical` | node/src/instances/proposer_instance.rs::a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease |
 | H-RS-14 | T-RS-13 an operator bonds without accepting the hardware/absence risk, or runs below the floor without a notice | B31 (preflight), B37 (Critical gate) | B43, B44 | C-RS-7 | absence is not slashed and is paid by default; the notice/acceptance does not make the host adequate | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
 
 ## Barrier independence
@@ -86,17 +86,18 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 These are stated rather than assumed, because several barriers share an input or a surface:
 
 - **B33/B35 share one signal.** If the watchdog is starved, the permit budgets cannot see pressure;
-  admission still works (it reads the pool), and a stale sample is advisory. The exploration half of
-  B35 is wired; the execution half is not (C341), so the share is currently one-sided. The watchdog runs
-  on a dedicated `std::thread` so the executor it protects cannot starve it.
+  admission still works (it reads the pool), and a stale sample is advisory. Both halves of B35 are
+  wired now; the execution half caps a batched proposal and withholds at zero. The watchdog runs on a
+  dedicated `std::thread` so the executor it protects cannot starve it.
 - **B34/B35 are different questions on one path.** B34 admits into the bounded pool (count/bytes/
   share/rate); B35 bounds how much executes at once. A deploy is admitted by B34 and executed under
   B35; neither is the other, and memory is an input only to B35.
 - **B31 is a start-up barrier only**; B33–B37 cover runtime.
 - **B32 is advisory only.** The node cannot set cgroups, prevent co-location or choose the OOM victim;
   the operator owns the ringfence ([ringfence page](../node/resource-ringfence.md)).
-- **B38 is one surface.** `/api/status` and `/metrics` read the same snapshot; an independent read needs
-  external cgroup monitoring.
+- **B38 is one surface plus the peer route.** `/api/status` and `/metrics` read the same snapshot; the
+  peer `/health` publishes only the finality stall bits, not the operator diagnosis; an independent
+  host read still needs external cgroup monitoring.
 - **B40 reduces but does not eliminate the cross-store window.** Body, trie, DAG metadata and derived
   indexes remain separate transactions; there is no cross-store WAL. D2 repairs the derived rows at boot.
 - **B39 is a repair, not a prevention.** A crash between metadata and index cleanup is still possible; the
@@ -104,8 +105,7 @@ These are stated rather than assumed, because several barriers share an input or
 
 ## ALARP argument
 
-The node-local risk is **as low as reasonably practicable** only if these hold — and **not ALARP for
-the execution-concurrency claim until C341 closes** (B45):
+The node-local risk is **as low as reasonably practicable** only if these hold (B45 now acquires the execution permits):
 
 1. **Cheap inherent measures first.** Refuse provable contradictions at start; cap pool bytes and
    in-flight work; acknowledge a deploy only after it is durable; publish `CURRENT_ROOT` only after the
@@ -145,9 +145,10 @@ start; host/kernel/cgroup/co-location are outside node control; a `Critical` val
 and attesting, so enough degraded stake can stall finality (a deliberate, observable safety/liveness
 trade); peers cannot route around a degraded validator until #427/M3; there is no cross-store WAL; the
 status and metrics share one snapshot; `--allow-under-minimum` is a conscious operator risk acceptance
-and now requires `--accept-under-minimum-risk` for a validator; the execution permit is not acquired
-by the proposer (C341), so B35 bounds exploration, not block execution; absence is not slashed and is
-paid by default (#149), and a network that wants to price it must choose a genesis participation rule.
+and now requires `--accept-under-minimum-risk` for a validator; the execution permit caps a batched
+proposal, not a sequential block's rate; absence is not slashed and is paid by default (#149), and a
+network that wants to price it must choose a genesis participation rule; the peer `/health` liveness
+fields are a signal, not an alarm — the operator owns the alert.
 
 ## Non-claims
 
@@ -155,8 +156,8 @@ paid by default (#149), and a network that wants to price it must choose a genes
 - A `503` means "refused before doing the work", not "the node is healthy".
 - No OOM in one pressure arm does not establish M1; it is one falsifier at one configuration.
 - The policy table is not a measured replay model above the documented range.
-- B35 is not a production execution bound while C341 is open; the exploration half is wired, the
-execution half is not.
+- B35 bounds a batched proposal's execution; it does not rate-limit a sequential block, and a zero permit
+withholds rather than making the node degrade silently.
 - The operator notice/acceptance allocates risk; it does not make an inadequate host adequate, and
 absence remains un-slashed under the shipped defaults.
 - This case makes no consensus-safety, finality-safety or lost-write claim; the merge fix is separate
