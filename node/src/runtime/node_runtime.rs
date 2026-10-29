@@ -894,6 +894,9 @@ fn wire_block_processing_observed(
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
+    // Refused-but-inserted blocks release waiting children through a separate stream: they are
+    // DAG entries with a verdict, not validation successes, so they must not fire the taps.
+    let (released_blocks_tx, released_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
 
     // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
     // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block).
@@ -952,6 +955,7 @@ fn wire_block_processing_observed(
         receiver_state,
         incoming_blocks_rx,
         validated_blocks_rx,
+        released_blocks_rx,
         shard_id.to_string(),
         parts.block_store.clone(),
         parts.dag.clone(),
@@ -1019,6 +1023,7 @@ fn wire_block_processing_observed(
     let processor = block_processor::apply(
         processor_input_rx,
         validated_blocks_tx.clone(),
+        released_blocks_tx,
         shard_id.to_string(),
         min_phlo_price,
         max_number_of_parents,

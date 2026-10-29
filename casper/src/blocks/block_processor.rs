@@ -176,6 +176,7 @@ pub(crate) async fn publish_accepted_root(
 pub async fn apply<F, Fut>(
     mut input_blocks: mpsc::Receiver<BlockMessage>,
     validated_tx: mpsc::Sender<BlockMessage>,
+    released_tx: mpsc::Sender<BlockMessage>,
     shard_id: String,
     min_phlo_price: i64,
     max_number_of_parents: i32,
@@ -301,15 +302,22 @@ pub async fn apply<F, Fut>(
                 // disagreement from a post-state one — the two are now different statuses — nor read
                 // what either means. The hash-carrying line is the interpreter's
                 // (`casper.interpreter.validate`); this one says which block and who sent it.
-                Err(status) => log.warn(
-                    source,
-                    &format!(
-                        "Block #{} {} from {} failed validation: {status}",
-                        block.block_number,
-                        block.block_hash.to_hex(),
-                        rchain_shared::base16::encode(&block.sender.as_bytes()[..8])
-                    ),
-                ),
+                Err(status) => {
+                    // **A failed insert is still a DAG entry and must release its waiting
+                    // children.** Only the accepted arm uses `validated_tx` (and its taps);
+                    // this separate stream feeds the receiver's `finished_if_present` without
+                    // proposing or attesting to a refused block.
+                    chan::send(&released_tx, block.clone()).await;
+                    log.warn(
+                        source,
+                        &format!(
+                            "Block #{} {} from {} failed validation: {status}",
+                            block.block_number,
+                            block.block_hash.to_hex(),
+                            rchain_shared::base16::encode(&block.sender.as_bytes()[..8])
+                        ),
+                    )
+                }
             }
         }
     }
