@@ -1284,7 +1284,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         if self
             .block_metadata_store
             .contains(&block_metadata.block_hash)
-            .await?
+            .await
         {
             return Ok(());
         }
