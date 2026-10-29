@@ -11757,3 +11757,16 @@ three of four validators. The only path from the critical node's pool to a healt
 `RNODE_DEPLOY_RELAY` callback. **Owed:** the same reading on the public testnet's exact shared-host
 topology (two validators in one ~4 GiB host cgroup, which Docker cannot express as nested container
 limits) and a batch-path live arm; the batch and relay remain off by default.
+
+## 144. Reconciliation snapshots across recovery (C342, #488)
+
+The range-cache optimization in #489 stored each node's inventory before recovery and then reused
+it in both post-recovery verification phases. Immutable block contents do not make that inventory
+immutable: recovery changes which blocks a node holds. The source fragments reproduce both wrong
+verdicts and a complete verification exit of zero despite current unfinalized divergence.
+
+`refresh_block_ranges` now replaces each inventory at every verification round, covers current
+finalized heights, and rejects failed or malformed transfers. Nine regression cases fail on
+`40efb9599a44bf36f877143a3cb94ccda56700bc`; all ten cases pass after the correction, including
+the unchanged valid-range control. The [retained evidence](evidence/n489-range-cache-20261029/README.md)
+is offline and invokes no live node controls. This is not live recovery or fresh-join acceptance.
