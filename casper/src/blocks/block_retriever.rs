@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use rchain_comm::peer_node::PeerNode;
 use rchain_models::block_hash::BlockHash;
+use rchain_shared::lock::Unpoison;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::time::current_millis;
 
@@ -277,10 +278,7 @@ impl BlockRetriever {
                 self.capacity_refusals
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let retained = {
-                    let mut overflow = self
-                        .overflow
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut overflow = self.overflow.lock().unpoison();
                     if overflow.len() < MAX_CAPACITY_OVERFLOW {
                         overflow.push_back((*hash, peer.cloned()));
                         true
@@ -404,11 +402,7 @@ impl BlockRetriever {
         );
         // The freed slot is spent on the oldest capacity-refused hash, if any (F-U8-03). The
         // admission happens outside the request-map guard so it cannot deadlock on it.
-        let next = self
-            .overflow
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front();
+        let next = self.overflow.lock().unpoison().pop_front();
         if let Some((hash, peer)) = next {
             self.log.info(
                 self.log_source,
@@ -734,7 +728,7 @@ mod tests {
             .await;
         assert_eq!(result.status, AdmitHashStatus::CapacityReached);
         assert_eq!(retriever.capacity_refusals(), 1);
-        assert_eq!(retriever.overflow.lock().unwrap().len(), 1);
+        assert_eq!(retriever.overflow.lock().unpoison().len(), 1);
 
         retriever.ack_received(&numbered(0)).await;
         assert!(
