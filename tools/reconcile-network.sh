@@ -69,6 +69,10 @@
 #   or `docker` (the devnet: stop/start the container, and its data hangs off a volume, so "aside" is a
 #   tar on the host kept beside the volume rather than a rename).
 #
+# Built-in endpoints are intended for planning only; a systemd --apply or
+# --restore-from-master requires RECONCILE_NODES=<reviewed live host table>.
+# Always verify hosts and units immediately before a destructive operation.
+#
 # Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
 #           [--apply | --restore-from-master] [--master NAME]
 #   and, when no node has a finalised block to attest at all:
@@ -87,8 +91,8 @@ set -uo pipefail
 # host  api-port  unit  name  master?
 DEFAULT_NODES='164.90.140.144 40403 rnode    A master
 164.90.140.144 41403 rnode-d  D
-104.131.176.164 40403 rnode   B
-104.131.176.164 41403 rnode-c C'
+167.99.43.214 40403 rnode   B
+167.99.43.214 41403 rnode-c C'
 
 if [ -n "${RECONCILE_NODES:-}" ]; then NODES="$(cat "$RECONCILE_NODES")"; else NODES="$DEFAULT_NODES"; fi
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_droplet}
@@ -116,6 +120,33 @@ while [ $# -gt 0 ]; do case "$1" in
   --restore-from-master) RESTORE=1; APPLY=1;;
   --master) MASTER=$2; shift;;
 esac; shift; done
+
+# Never allow service stops or data-directory moves based on a compiled-in
+# address inventory. A published testnet host may be replaced while this
+# script remains at an older revision. Planning uses the documented defaults;
+# mutations require a separately inspected, operator-provided inventory.
+# The controller's operation branches treat every non-Docker value as
+# systemd. Reject unrecognised values before the live-target guard, so a
+# typo cannot bypass it while still reaching the systemd stop/move paths.
+case "$CONTROL" in
+  docker|systemd) ;;
+  *) echo "REFUSING: unsupported RECONCILE_CONTROL=$CONTROL" >&2; exit 2 ;;
+esac
+
+if [ "$APPLY" = "1" ] && [ "$CONTROL" = "systemd" ] && [ -z "${RECONCILE_NODES:-}" ]; then
+  echo "REFUSING: live apply requires RECONCILE_NODES pointing to the verified current host table." >&2
+  echo "          Built-in endpoints are for planning only; no node has been stopped." >&2
+  exit 2
+fi
+
+# Invalid or unreadable inventories must never silently fall back to a
+# built-in table when a service controller is about to be used.
+if [ -n "${RECONCILE_NODES:-}" ]; then
+  if [ ! -f "$RECONCILE_NODES" ] || [ ! -r "$RECONCILE_NODES" ] || [ -z "$NODES" ]; then
+    echo "REFUSING: RECONCILE_NODES is missing, unreadable, or empty: $RECONCILE_NODES" >&2
+    exit 2
+  fi
+fi
 
 is_local() { case "$1" in local|127.0.0.1|localhost) return 0;; esac; return 1; }
 
