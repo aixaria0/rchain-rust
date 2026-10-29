@@ -11811,12 +11811,15 @@ adversarial verifier produced the §9 table in `failure-hazop.md`; U19/U20 recor
 the still-owed falsifiers. The live phase (NodeSyncing recovery vs NodeRunning processor fault) is
 not proven: the operator `status/operator`/logs remain the discriminator.
 
-**How it is falsified.** A fault must produce a counted, readable state and stop proposing; a
-partial insert must complete on retry; `/health` must report `pipelineFaults`/`ready:false`/`phase`;
-a tip beyond the finality bound must stop propose and attest and expose `proposalHalted`; the
-operator resume route must clear the latch and the next proposal re-check the bound. This pass lands
-those plus the receiver/insert/proposer tests; the disposition ledger, boot audit, watchdog and
-failed-parent release remain `owed:` in U19/U20.
+**How it is falsified.** A fault must produce a durable disposition and a retry; a validation that
+never returns must fault and stop holding the pipeline; a partial insert must complete on retry; a
+failed parent must release its waiting child; `/health` must report
+`pipelineFaults`/`orphanBodies`/`ready:false`/`nodePhase`; a node outside `Running` must refuse
+deploy admission and propose/attest; a tip beyond the finality bound must stop propose and attest and
+expose `proposalHalted`; the operator resume route must clear the latch and the next proposal
+re-check the bound. This pass lands those plus the receiver/insert/proposer tests. Still `owed:` in
+U19/U20: a hash-level scan for bodies written before the ledger, a `Running` constructor that
+refuses an unsettled row, per-shard phase, and the end-to-end re-offer/phase-gate falsifiers.
 
-**What it does not claim.** No live admission/width/join arm; 30 HAZOP falsifiers and two safety-case
+**What it does not claim.** No live admission/width/join arm; 27 HAZOP falsifiers and two safety-case
 evidences remain visible debt; C343 stays `in progress`.
