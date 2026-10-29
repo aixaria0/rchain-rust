@@ -28,6 +28,13 @@ hosts, the genesis, the wallets.
 > cannot be restarted on a 1 GB host — that is the most important operational
 > constraint here. Not production, holds no value, and its chain can be reset at any time.
 
+**Read-only follow-up, 2026-10-29 16:55 UTC:** A reported height 76 / finalized 3 while D/B/C
+reported 6 / finalized 2. The block sets at finalized heights matched across all four APIs,
+but D was repeatedly dropping blocks at its 1024-entry receiver limit. The first A/D overflow
+was logged at 14:37 UTC. Available APIs and `degraded: normal` are not evidence of healthy
+consensus. The installed binary is still `d1af45d1`; newer merged source has not been deployed.
+See the [dated logs, private join results and acceptance limits](../../../spec/audit/evidence/n479-native-join-20261029/README.md).
+
 ---
 
 # Part 1 — For users
@@ -649,8 +656,8 @@ The generalised procedure — prerequisites, the firewall rule below, the genesi
 admission and recovery — is [Running a node: testnet now, mainnet later](validator-observer-setup.md).
 This section records **this live net's own run**.
 
-Success looks like this in the log — note the LFS step, which restores from the **approved genesis**
-fringe. That is why joining works even though this idle chain has no *last-finalised* fringe:
+Successful restoration logs these markers in order. The historical genesis-only run used the
+approved-genesis fringe; a populated chain restores its selected finalized fringe and ancestry:
 
 ```
 INFO [casper.engine.NodeSyncing] Blocks for approved state added to DAG.
@@ -664,7 +671,7 @@ independently replays non-genesis history before entering Running.
 
 See the [source-pinned public-genesis recovery evidence](../../../spec/audit/evidence/n457-public-genesis-20261029/README.md) for the missing-input refusal and the limits of the current mature-history campaign.
 
-**Measured 2026-10-25: a joiner must be reachable from every validator, not only its bootstrap.**
+**Historical measurement, 2026-10-25, before #474: bootstrap-only reachability could stall LFS.**
 The earlier height-1 run only restored the approved genesis fringe. A subsequent fresh join
 of the populated chain stalled at `h=0` after receiving the finalized fringe, store items and
 block gossip. A controlled A/B at height 58 (same binary `2745dbb3`, same chain, same flags)
@@ -675,14 +682,20 @@ isolated the joiner's inbound firewall rule as the cause:
 | All validators (A in nyc3 and B in ams3) | Joined at `h=58` with `peers=5`, entered Running, and followed deploy 58 → 59 |
 | Bootstrap only | Stalled at `h=0` despite `peers=6` and incoming gossip; LFS timed out after three 30 s rounds |
 
-The joiner must accept **inbound protocol and discovery traffic from every validator** on
-its configured `--protocol-port` and `--discovery-port`, and reach the bootstrap outbound.
+For that revision, the joiner needed inbound protocol and discovery traffic from every validator
+on its configured ports. Since [#474](https://github.com/rhovision-org/rholo/pull/474), LFS ancestry
+uses its configured bootstrap, which must be able to deliver replies. Full peer connectivity still
+matters for discovery and post-sync consensus; the historical all-validator requirement above
+is not the current ancestry-request selection rule.
 A nonzero `peers` count in `/api/status` does **not** demonstrate reverse reachability.
 Check `ufw status verbose` and the host/provider firewall **before** attributing a stalled
 join to LFS or genesis. Limit allowed sources to the known validator peers; there is no
 reason to expose administrative APIs or unrelated ports.
 
-The observed live stall was a reachability problem, **not** the block walk. The walk had
+That October 25 comparison isolated reachability. The later October 27 logs also exposed
+duplicate-driven ancestry request amplification; #474 corrected that mechanism and bootstrap
+selection. The [native historical-chain record](../../../spec/audit/evidence/n479-native-join-20261029/README.md)
+separates those mechanisms, private acceptance, and the current live failure. The walk had
 a separate latent defect: it consumed a key before validating the received block hash,
 so a refused body could strand the key in `Received` and prevent retries. The fix checks
 membership and content hash before updating state, retries `Received` keys, and records the
