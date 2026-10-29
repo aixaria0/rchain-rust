@@ -719,7 +719,7 @@ async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployReques
     // **A syncing node does not claim it can include work.** The pool may have room; the node
     // still cannot produce a block from it. Refuse before admission, with a 503 rather than a
     // pool-capacity answer. `acceptsDeploys` itself keeps its Law 86a meaning.
-    if !rchain_casper::engine::node_phase::is_running()
+    if !rchain_casper::engine::node_phase::phase().admits_work()
         || rchain_casper::engine::node_syncing::sync_state().is_some()
         || rchain_casper::blocks::block_processor::pipeline_faults() > 0
         || rchain_casper::blocks::proposer::proposer::proposal_isolated()

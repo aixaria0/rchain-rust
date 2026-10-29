@@ -47,6 +47,18 @@ impl NodePhase {
             NodePhase::Blocked(_) => "blocked",
         }
     }
+
+    /// **Deploy admission is about the pool, not readiness.** `Syncing` and `Blocked` are the two
+    /// phases in which telling a client "accepted" would be a promise the node cannot keep: it is
+    /// restoring a chain it is not serving, or it has refused to serve. `Starting` is launch still
+    /// deciding — the deploy can be pooled and is included when the node reaches `Running`, or
+    /// after a sync; refusing it here would turn a millisecond-wide boot window into a client-visible
+    /// 503 for a deploy the node was seconds from accepting (the `deploy_is_processed_into_a_block`
+    /// integration test hit exactly that window). `/health`'s `ready` is still false in `Starting`;
+    /// admission and readiness answer different questions.
+    pub fn admits_work(&self) -> bool {
+        !matches!(self, NodePhase::Syncing | NodePhase::Blocked(_))
+    }
 }
 
 static PHASE: Mutex<NodePhase> = Mutex::new(NodePhase::Starting);
