@@ -19,6 +19,10 @@ use crate::blocks::block_retriever::BlockRetriever;
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
 use crate::validate::{block_hash, block_signature, format_of_fields};
 
+/// Reserved capacity for missing parents of blocks already pending in the receiver.
+/// Finite: an attacker can never turn pending dependencies into unbounded state.
+const MAX_DEPENDENCY_HEADROOM: usize = 32;
+
 /// Block-receive status (port of `RecvStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecvStatus {
@@ -142,49 +146,23 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
             ));
         }
 
-        // Bound the receiver state (R29), but do not refuse the missing parent
-        // of blocks already inside the bound. Otherwise 1024 waiting children
-        // permanently exclude the very block that would release them.
-        //
-        // Reclaim only a blocked leaf, never a ready-to-validate block or a
-        // block with tracked children. The leaf remains in BlockStore and can
-        // be re-requested if later descendants need it. The bound remains hard.
-        let mut available = self.clone();
-        if available.blocks_st.len() >= MAX_PENDING_BLOCKS && !available.blocks_st.contains_key(&id)
-        {
-            let needed = available
+        // R29 bounds unsolicited blocks at MAX_PENDING_BLOCKS. Reserve a small,
+        // finite allowance for missing parents of blocks already admitted.
+        // Refusing those parents when the ordinary bound is full deadlocks
+        // the receiver: none of their waiting children can be validated.
+        // Never evict a stored-but-unvalidated child to make room.
+        if self.blocks_st.len() >= MAX_PENDING_BLOCKS && !self.blocks_st.contains_key(&id) {
+            let needed = self
                 .child_relations
                 .get(&id)
                 .is_some_and(|children| !children.is_empty());
-            let evict = if needed {
-                available
-                    .blocks_st
-                    .iter()
-                    .find(|(hash, deps)| {
-                        !deps.is_empty()
-                            && available
-                                .child_relations
-                                .get(*hash)
-                                .is_none_or(|children| children.is_empty())
-                    })
-                    .map(|(hash, _)| hash.clone())
-            } else {
-                None
-            };
-            let Some(evict) = evict else {
+            if !needed || self.blocks_st.len() >= MAX_PENDING_BLOCKS + MAX_DEPENDENCY_HEADROOM {
                 return Err(format!(
                     "block receiver state full ({} blocks); cannot admit {:?}",
-                    MAX_PENDING_BLOCKS, id
+                    self.blocks_st.len(),
+                    id
                 ));
-            };
-            available.blocks_st.remove(&evict);
-            available.receive_st.remove(&evict);
-            for children in available.child_relations.values_mut() {
-                children.remove(&evict);
             }
-            available
-                .child_relations
-                .retain(|_, children| !children.is_empty());
         }
 
         // Update blocks state, keep unseen parents only.
@@ -195,11 +173,11 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
             .collect();
         let mut unseen_parents = parents_not_stored;
         unseen_parents.retain(|parent| {
-            !available.blocks_st.contains_key(parent)
-                && !available.receive_st.contains_key(parent)
+            !self.blocks_st.contains_key(parent)
+                && !self.receive_st.contains_key(parent)
                 && parent != &id
         });
-        let mut new_blocks_st = available.blocks_st.clone();
+        let mut new_blocks_st = self.blocks_st.clone();
         // A parent the block must wait for: every unseen parent (not stored, so not validated) and every
         // stored parent that is not yet in the DAG. `parent != id` as above, so a malformed self-reference
         // cannot make a block wait on itself.
@@ -209,14 +187,14 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
         new_blocks_st.insert(id.clone(), deps);
 
         // Update block status to received and set unseen parents to Requested.
-        let mut new_receive_st = available.receive_st.clone();
+        let mut new_receive_st = self.receive_st.clone();
         new_receive_st.insert(id.clone(), RecvStatus::EndStoreBlock);
         for parent in &unseen_parents {
             new_receive_st.insert(parent.clone(), RecvStatus::Requested);
         }
 
         // Update children relations of the received block.
-        let mut new_child_relations = available.child_relations.clone();
+        let mut new_child_relations = self.child_relations.clone();
         for (parent, _) in &parents {
             new_child_relations
                 .entry(parent.clone())
@@ -1236,16 +1214,48 @@ mod tests {
         let (begun, accepted) = state.begin_stored(parent.clone());
         assert!(accepted);
         let (admitted, _) = begun.end_stored(parent.clone(), Vec::new()).unwrap();
-        assert_eq!(admitted.blocks_st.len(), MAX_PENDING_BLOCKS);
+        assert_eq!(admitted.blocks_st.len(), MAX_PENDING_BLOCKS + 1);
         assert!(admitted.blocks_st.contains_key(&parent));
-        assert_eq!(
-            admitted.child_relations[&parent].len(),
-            MAX_PENDING_BLOCKS - 1
-        );
+        assert_eq!(admitted.child_relations[&parent].len(), MAX_PENDING_BLOCKS);
 
         let (released, ready) = admitted.finished(parent.clone(), BTreeSet::new()).unwrap();
-        assert_eq!(ready.len(), MAX_PENDING_BLOCKS - 1);
+        assert_eq!(ready.len(), MAX_PENDING_BLOCKS);
         assert!(!released.blocks_st.contains_key(&parent));
+    }
+
+    #[test]
+    fn dependency_headroom_is_finite_and_unrelated_blocks_are_refused() {
+        let mut state = BlockReceiverState::<MId>::new();
+        for n in 0..MAX_PENDING_BLOCKS {
+            let id = format!("orphan-{n:04}");
+            state
+                .blocks_st
+                .insert(id.clone(), BTreeSet::from(["missing".to_string()]));
+            state.receive_st.insert(id, RecvStatus::EndStoreBlock);
+        }
+        for n in 0..MAX_DEPENDENCY_HEADROOM {
+            let id = format!("parent-{n:02}");
+            state
+                .child_relations
+                .insert(id.clone(), BTreeSet::from(["orphan-0000".to_string()]));
+            let (begun, can_start) = state.begin_stored(id.clone());
+            assert!(can_start);
+            let (next, _) = begun.end_stored(id, Vec::new()).unwrap();
+            state = next;
+        }
+        assert_eq!(
+            state.blocks_st.len(),
+            MAX_PENDING_BLOCKS + MAX_DEPENDENCY_HEADROOM
+        );
+        let needed = "one-more-parent".to_string();
+        state
+            .child_relations
+            .insert(needed.clone(), BTreeSet::from(["orphan-0000".to_string()]));
+        let (begun, _) = state.begin_stored(needed.clone());
+        assert!(begun.end_stored(needed, Vec::new()).is_err());
+        let unrelated = "unrelated".to_string();
+        let (begun, _) = state.begin_stored(unrelated.clone());
+        assert!(begun.end_stored(unrelated, Vec::new()).is_err());
     }
 
     #[test]
