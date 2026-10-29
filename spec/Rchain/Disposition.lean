@@ -29,7 +29,7 @@ namespace Rchain
 
 namespace Disposition
 
-/-- Block hashes and heights are opaque numbers in the model; the Rust side uses the refined
+/-- Block hashes and heights are abstract numbers in the model; the Rust side uses the refined
     `BlockHash`/`BlockHeight` types. -/
 abbrev BlockHash := Nat
 abbrev Height := Nat
@@ -269,25 +269,25 @@ inductive Refusal where
   deriving DecidableEq, Repr
 
 inductive GateResult where
-  | admit
+  | allow
   | refuse (reason : Refusal)
   deriving DecidableEq, Repr
 
-/-- **The gate**: admit only in `Running` and within the bound. -/
+/-- **The gate**: allow only in `Running` and within the bound. -/
 def gate (phase : Phase) (tip finalized : Nat) : GateResult :=
   if phase ≠ .running then .refuse .notRunning
-  else if withinProposalFinalityBound tip finalized = true then .admit
+  else if withinProposalFinalityBound tip finalized = true then .allow
   else .refuse .tooFarAhead
 
 /-- A gate that checks the bound but not the phase. -/
 def legacyGate (_phase : Phase) (tip finalized : Nat) : GateResult :=
-  if withinProposalFinalityBound tip finalized = true then .admit else .refuse .tooFarAhead
+  if withinProposalFinalityBound tip finalized = true then .allow else .refuse .tooFarAhead
 
 /-- A gate with no bound at all. -/
-def unboundedGate (_phase : Phase) (_tip _finalized : Nat) : GateResult := .admit
+def unboundedGate (_phase : Phase) (_tip _finalized : Nat) : GateResult := .allow
 
 theorem gate_admits_only_in_running_and_within_bound (phase : Phase) (tip finalized : Nat)
-    (h : gate phase tip finalized = .admit) :
+    (h : gate phase tip finalized = .allow) :
     phase = .running ∧ withinProposalFinalityBound tip finalized = true := by
   unfold gate at h
   by_cases hp : phase = .running
@@ -305,7 +305,7 @@ theorem gate_admits_only_in_running_and_within_bound (phase : Phase) (tip finali
 
 /-- At the bound the gate admits (`32 - 0 = 32`). -/
 theorem gate_admits_at_the_bound :
-    gate .running MAX_PROPOSAL_FINALITY_LAG 0 = .admit := by
+    gate .running MAX_PROPOSAL_FINALITY_LAG 0 = .allow := by
   decide
 
 /-- One height beyond the bound the gate refuses. -/
@@ -320,12 +320,12 @@ theorem gate_refuses_outside_running (phase : Phase) (tip finalized : Nat)
 
 /-- **88b's falsifier, in the tree**: a gate without the phase check admits a syncing node. -/
 theorem a_gate_without_the_phase_admits_a_syncing_node :
-    legacyGate .syncing 5 5 = .admit := by
+    legacyGate .syncing 5 5 = .allow := by
   decide
 
 /-- **88b's other falsifier**: a gate without the bound accepts a private chain. -/
 theorem a_gate_without_the_bound_admits_a_private_chain :
-    unboundedGate .running (MAX_PROPOSAL_FINALITY_LAG + 1) 0 = .admit := by
+    unboundedGate .running (MAX_PROPOSAL_FINALITY_LAG + 1) 0 = .allow := by
   decide
 
 end Disposition
