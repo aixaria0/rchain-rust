@@ -3,13 +3,19 @@
 Rholang's <!-- counts:laws -->86 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
 
+> **Operator risk.** A validator is bonded and slashable for an invalid block or proven equivocation;
+an absent or stuck validator is not currently slashed, but it holds finality back and can still count in
+the quorum denominator. Read [`TERMS.md`](TERMS.md) and [validator risk, hardware and participation](docs/src/node/operator-risk.md)
+before bonding.
+
 **Whole classes of defect are absent by construction**: no `unsafe` in any of the fourteen crates, so
 memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
 **A small artifact, deliberately**: recounted 2026-10-15, ~203,000 lines of Rust across 474 files
 compile to a single **43.6 MB** native binary — nothing to boot but the process, and no collector inside it to
-pause — so a validator runs on a commodity laptop with an NVMe.
+pause — so the node runs on a commodity laptop with an NVMe. A **validator** still needs the
+per-validator hardware floor; a laptop is a good observer, not automatically a good validator.
 
 ## Provenance
 
@@ -70,11 +76,11 @@ engineering concern either way, and this node measures its own (see
 [hardware requirements](docs/src/node/validator-requirements.md)).
 
 **Decentralization.** Recounted 2026-10-15, ~203,000 lines of Rust compile to a single 43.6 MB native binary
-— no JVM and no collector in the process — so a validator runs on any modern desktop or laptop with an
-NVMe SSD.
-Validator operation sits within consumer-grade hardware, which is what makes the network genuinely
-decentralized
-(see [hardware requirements](docs/src/node/validator-requirements.md)).
+— no JVM and no collector in the process — so the node runs on any modern desktop or laptop with an
+NVMe SSD. A **validator** still needs the per-validator floor; a laptop is a good observer, not
+automatically a good validator (see [hardware requirements](docs/src/node/validator-requirements.md)
+and [validator risk](docs/src/node/operator-risk.md)). Validator operation can sit within
+consumer-grade hardware when that floor is met, which is what makes the network genuinely decentralized.
 
 **The calculus hierarchy.** Rust natively expresses the λ-calculus (closures), the π-calculus
 (channels and `Send`/`Sync` name mobility), and the ρ-calculus (the reflective π-calculus: a name is a

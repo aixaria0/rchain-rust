@@ -456,6 +456,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "resource-guard.allow-under-minimum",
             run.allow_under_minimum,
         );
+        flag(
+            &mut e,
+            "resource-guard.accept-under-minimum-risk",
+            run.accept_under_minimum_risk,
+        );
         opt_str(
             &mut e,
             "dev.deployer-private-key",
@@ -503,6 +508,17 @@ mod tests {
         assert_eq!(
             casper, None,
             "an absent flag must not write the key at all: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn the_below_minimum_acceptance_reaches_the_resource_guard() {
+        let mapped = from_options(&options(&["run", "--accept-under-minimum-risk"]));
+        let guard = field(&mapped, "resource-guard").expect("resource-guard block");
+        assert_eq!(
+            field(guard, "accept-under-minimum-risk"),
+            Some(&Hocon::Boolean(true)),
+            "the explicit acceptance must reach the guard: {mapped:?}"
         );
     }
 

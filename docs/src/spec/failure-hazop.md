@@ -34,6 +34,13 @@ written — as a theorem, in `spec/Rchain/`, with a `witness` and a bumped `lawC
 changes. A `candidate:` slug would be the register's marker that the property has *no theorem*, which this
 pass does not accept where the state is representable.
 
+**Extended 2026-10-29 — the validator liveness node U18.** U17 studies resource admission and
+degradation; U18 studies the **validator/operator layer** above it: what a stuck or under-provisioned
+validator does to finality and quorum, what the protocol does not slash, and what the operator must
+accept. It reuses the local mechanisms in U8/U9/U17 rather than duplicating them. The acceptance
+worksheet's H-U series is U1–U10 and has no U17 sibling, so U18 cites **H-U2-04** and **H-U7-02**
+rather than inventing a partially populated H-U18 table.
+
 **Companion, not a replacement.** The hazards and their root-cause analysis live in
 `testnet-acceptance.md` §1 as rows `H-U*-*`; this page does not restate them. What it adds is the
 **disposition** — which rung of the ladder below the deviation lands on, what the node does today, and
@@ -464,7 +471,7 @@ acknowledging work it has not durably accepted.
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
 | **F-U17-01** | NO | **No start-up preflight**: a host below the chain's replay floor starts, replays into OOM and never opens its API | nothing reads `/proc/meminfo`, cgroups or disk free; the expensive `BlockMetadataStore::create` rebuild runs before any check; the documented replay model is unenforced | silent until the kernel OOM-kills `rnode`; the service still reports `active` | Terminal | R2 | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
-| **F-U17-02** | MORE | **More in-flight work than memory allows**: the node accepts more than the host can execute; HTTP can decode 2 MiB per request, gRPC 16 MiB, explores fork runtimes | admission is the pool's count/byte/share/rate bounds and does **not** read memory; headroom bounds **execution permits** (`casper/src/budget.rs`, Law 86d); #426's memory semantics are not the gate | a full pool refuses **429 + `Retry-After`**; a low-headroom node executes a smaller batch and holds or relays the rest; the replay/merge peak remains H-RS-04 | Drift | R2 | node/src/web/http.rs::a_bounded_deploy_refusal_is_429_with_retry_after |
+| **F-U17-02** | MORE | **More in-flight work than memory allows**: the node accepts more than the host can execute; HTTP can decode 2 MiB per request, gRPC 16 MiB, explores fork runtimes | admission is the pool's count/byte/share/rate bounds and does **not** read memory; headroom bounds **execution permits** (`casper/src/budget.rs`, Law 86d); #426's memory semantics are not the gate | a full pool refuses **429 + `Retry-After`**; the **exploration** permit is wired, but the proposer never acquires the **execution** permit, so a `Throttled` host keeps proposing at full rate (C341); the replay/merge peak remains H-RS-04 | Drift | R2 | owed: C341 — the execution permit is not acquired by the proposer |
 | **F-U17-03** | LESS | **Less headroom than the floor and no ringfence**: no cgroup limit/CPU-quota read, two validators per 1 GB host, `available_parallelism` ignores `cpu.max` | no cgroup awareness; no co-location detection | silent; the operator sees only the external monitor | Drift | R2 | node/src/resources/cgroup.rs::parses_v2_memory_cpu_and_events |
 | **F-U17-04** | AS WELL AS | **Alongside the pressure the node keeps accepting and advertising healthy**: a pool-full node still says it accepts, or a throttled node hides its word | `acceptsDeploys` is the pool's count/byte capacity (Law 86a) and `degraded` is the advisory fallback word; the autopropose halt remains the production gate | accepting under memory pressure is **correct**; a full pool reports `acceptsDeploys: false`, and a throttled node reports `degraded: throttled` while still serving | Drift | R2 | node/src/api/conversion.rs::degraded_is_advisory_and_accepts_deploys_is_pool_capacity |
 | **F-U17-05** | PART OF | **Only part of the path is bounded**: per-peer rate and pool count yes; bytes, duplicates and gRPC no | the term bound is applied after body decode (`multi_parent_casper.rs:99,120`); the pool has a byte budget; a full pool/share/rate is **429**; the duplicate reservation runs before the parse | unauthenticated amplification is bounded by the byte pool and the 64 KiB term; the decode caps remain above it | Drift | R2 | casper/src/dag.rs::a_pool_at_its_byte_cap_refuses_before_the_store |
@@ -483,6 +490,65 @@ acknowledging work it has not durably accepted.
 | U17-01, U17-03, U17-06, U17-07 | owed: node-local operating policy — preflight, ringfence, duplicate parse, restart loop | these are not consensus state relations; the Lean4-first rule applies where a state relation is at stake |
 | U17-10 | law 80 — `CURRENT_ROOT` names only an accepted block | `Rchain.Publication`: `record` writes a known root, `accept` publishes one, and `a_current_root_is_an_accepted_state` rules out the orphan; `an_early_publish_reaches_an_orphan_root` is the replay-checkpoint shape |
 | U17-11 | law 72 (extended) — a rewind's completion record brackets its derived indexes as its fourth effect | `a_rewound_record_implies_every_effect_applied` now concludes `indexed = true`, and `a_skipped_index_cleanup_reaches_a_record_that_lies` is the early-return shape the extension rules out |
+
+### U18 — Validator liveness, load bearing and quorum risk
+
+**Design intent.** A validator is a bonded role: it must keep enough hardware and headroom to produce,
+attest and serve, and its operator must know that a stuck node is a network liveness risk even when the
+protocol does not slash it. The node should degrade visibly and safely; the operator should accept the
+risk explicitly; and a network should not be one host, one upgrade or one absent key away from losing
+quorum.
+
+**Guide words.** row: NO, MORE, LESS, AS WELL AS, PART OF, OTHER THAN, REVERSE, EARLY, LATE, BEFORE, AFTER
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U18-01** | NO | **No operator risk notice or acceptance**: a validator can bond and run below the floor without a ToS/risk notice; the only trace is a log line | before B43/B44 the repository has AGPL-3.0 but no operator terms; preflight's `--allow-under-minimum` is logged but not an acceptance of the bond/quorum risk | the new B43 notice and B44 `--accept-under-minimum-risk` make a below-floor validator's acceptance explicit and logged; observers are unaffected | Drift | R2 | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| **F-U18-02** | MORE | **More load than headroom but full-rate execution**: a `Throttled` host keeps proposing and executing at full rate because the execution permit is never acquired; pressure reaches `Critical`, production is withheld, attestations are missed and finality lags | the proposer checks only `fallback.stops_production()` (`node/src/instances/proposer_instance.rs:161-190`); `CapacityBudget.execution` is created in HTTP and read for metrics (`node/src/web/http.rs:1977, 2004-2007`), never acquired on the block path (C341) | the fallback word is visible and `Critical` withholds production, but `Throttled` does not reduce batch/execution; the headroom claim in Law 86d/B35 is not realized | Drift | R2 | owed: C341 — the proposer does not acquire the execution permit |
+| **F-U18-03** | LESS | **Less hardware than the validator floor**: an operator overrides the preflight, runs a capacity-limited validator, misses attestations and stays in the whole-map denominator | the floor is a policy table and the override is a boolean; the public testnet already runs ~2 GiB per validator, a quarter of the documented minimum (`docs/src/node/validator-requirements.md:31-44`) | B31 refuses a below-floor validator; B44 now requires the explicit acceptance; the observer role is allowed below the floor with a warning | Drift | R2 | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| **F-U18-04** | AS WELL AS | **Alongside a host or common failure, co-located validators fail together** and remove more than one third of the bonded stake, so the strict quorum cannot be reached | the node cannot enforce anti-affinity; co-location is only an advisory (`resource-safety-case.md` H-RS-07); the testnet runs two validators per host; #428 M1 owns the failure-domain math | the co-location counter is advisory; the whole-map denominator keeps every silent validator's stake; two equal validators on one host are half the pool | Terminal | R4 | owed: #428 M1 — failure-domain math and operator anti-affinity |
+| **F-U18-05** | PART OF | **Only part of the degradation is acted on**: `Throttled` is advisory for production, the execution permit is unwired, so a partially degraded node looks alive and keeps working at a rate its host cannot carry | the same C341 gap; the fallback state machine gates only `Critical`/`Unavailable`, and work is shed at the HTTP pool/explore paths, not at block execution | `/health` reports `degraded`; production continues; no execution-permit acquisition or batch reduction | Drift | R2 | owed: C341 — no Throttled-batch falsifier exists |
+| **F-U18-06** | OTHER THAN | **The role is other than the one the hardware supports**: a low-power host runs a validator instead of an observer, entering the bond and the finality denominator | the preflight's `auto` mode enforces validators and warns observers; the operator chooses the key; the hardware page says a laptop runs the node but is a poor validator (`validator-requirements.md:230-250`) | a below-floor validator is refused unless B44 is accepted; an observer below the floor starts with a warning; the notice points at the risk | Drift | R2 | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| **F-U18-07** | REVERSE | **Silence is free and still paid**: an absent validator's bond is intact, it remains in the denominator and, with `absence-slack = 0`, is paid if drawn; the network bears the finality stall | slashing is behavioural only; the income-only participation rule is a genesis parameter and off by default; no inactivity leak or eviction (#149, `docs/src/node/validator-economics.md:119-145, 166-215`) | a silent validator is a drag, not an offence; the network can lose finality while the operator loses no bond | Terminal | R4 | owed: #149 — no inactivity leak and no liveness penalty |
+| **F-U18-08** | EARLY | **The preflight is early and start-only**: a host that becomes under-provisioned later (co-tenant, disk fill, CPU quota) is not re-admitted; the start verdict is treated as a permanent fact | B31 is a start-up barrier; the runtime fallback watches memory and OOM, not disk fill or CPU quota; disk is checked at start (`resource-safety-case.md` H-RS-05/08) | a running node can degrade after start; the fallback word/status is the only runtime signal | Drift | R2 | owed: B31 is start-up only — runtime disk/CPU re-admission is unmeasured |
+| **F-U18-09** | LATE | **Detection is late**: finality can be frozen before the operator notices; there is no universal validator-liveness alarm, and the resource gauges that would show the pressure are owed | finality-stall counters and status exist; B38's resource gauges on `/metrics` are still owed; the operator may see height advancing while finality does not | the node reports status/metrics but has no external alert or liveness handshake; a stall can be discovered after the fact | Terminal | R4 | owed: B38 — resource gauges and a liveness alarm |
+| **F-U18-10** | BEFORE | **The bond comes before the risk acceptance and the hardware declaration**: the lifecycle admits the bond; the preflight runs at node start, not at bonding; no on-chain hardware/risk commitment exists | Law 82 admits `bonded` on the bond transaction; B44 is a start-up flag, not a consensus field; the operator can bond first and discover the floor later | the bond is accepted without a hardware attestation; the start-up notice/flag is the only commitment | Drift | R4 | owed: the bond path has no hardware or risk commitment |
+| **F-U18-11** | AFTER | **After `Critical` or a stall there is no automatic unjail/recovery**: the node withholds production by design and finality stays frozen until the operator acts; reset/rewind repairs state, not liveness | `fallback.stops_production()` withholds propose/attest at `Critical`/`Unavailable`; recovery is operator-driven; the reset/rewind inverses are bounded but do not restore an absent validator | the node can sit degraded indefinitely; the operator must fix the host, restart and rejoin; a finality stall is visible but not self-healing | Terminal | R3 | owed: no automatic liveness recovery — operator runbook only |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U18-02, U18-05 | Law 86d — one permit progresses; the permit budget bounds the batch | the **execution half is owed (C341)**: the model and the exploration path are wired, the proposer is not, so the row claims a control that is not there |
+| U18-03, U18-06, U18-10 | Law 82 — the validator lifecycle is admission, not membership; the bond is a separate act | the bond does not read hardware; the preflight and the operator notice are node-local admission |
+| U18-04, U18-07 | Law 14a/52 — strict >2/3 of the whole bonded map; only the partition shrinks | the silent validator remains in the denominator; co-location can remove a failure domain |
+| U18-08, U18-09 | Law 51/54 — non-progress is classified; a liveness predicate reads the current view | no universal alarm; the gauges and the current-view read are the control |
+| U18-11 | Law 53 — a refusal is terminal until a restoring rule or rewind removes it | the reset/rewind inverses exist; they do not create a live validator |
+| U18-01 | owed: operator policy — a notice and an explicit acceptance | this is an operator contract, not a consensus state relation |
+
+### Risk allocation
+
+| consequence | network bears | operator bears | control | residual |
+|---|---|---|---|---|
+| finality lag or stall | the chain stops finalising while height may continue | missed production/attestation income; no bond loss for silence today | admission/fallback; monitoring; notice; staged income policy | no inactivity leak; absence can remain free |
+| quorum unreachable | the network cannot finalise | reputation; income; a buggy invalid block can still slash | whole-map denominator; operator anti-affinity guidance | co-location and correlated upgrades are operator choices (#428 M1) |
+| invalid block or equivocation | safety/attribution event | bond, accrued rewards and escrow at a graded share | behavioural slashing, every node re-derives | an overloaded/buggy node can produce one; hardware is part of the risk |
+| late detection | the stall is discovered after the fact | missed income; recovery time | status/metrics; finality-stall counters | B38 gauges and a universal liveness alarm are owed |
+
+### Provenance
+
+This node is a desk study, not an independent certification. It re-read U17 and the existing
+load/concurrency rows (F-U8-02/F-U8-03, F-U9-01/-02/-05) rather than duplicating them. The acceptance
+worksheet's H-U series is U1–U10 and has no U17 sibling, so no H-U18 table is manufactured; the closest
+root-cause rows are **H-U2-04** (round closure on a proper subset) and **H-U7-02** (a block the
+proposer rejects after admission), and they are cited here rather than copied. Read:
+`docs/src/spec/resource-safety-case.md`, `docs/src/node/validator-economics.md`,
+`docs/src/node/validator-requirements.md`, `node/src/instances/proposer_instance.rs`,
+`node/src/resources/policy.rs`, `node/src/web/http.rs`, `casper/src/budget.rs`.
+Ran: `tools/check-hazop-worksheet.sh --gate`. Not read: the whole of `casper/src/merging.rs` and
+`casper/src/dag.rs`; the historical H-U challenge bodies beyond the named rows.
 
 ## 4. The fault tree
 
@@ -649,7 +715,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 20 · node-words owed: 44
+**Debt.** falsifiers owed: 29 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.

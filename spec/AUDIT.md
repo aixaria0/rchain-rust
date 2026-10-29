@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 2 · DONE 373** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 2 · DONE 373** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  169 of 375 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  170 of 376 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 375 are settled: **311 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C341` | **The execution half of the permit budget is a metric, not a bound.** `CapacityBudget` is built only inside the HTTP server (`node/src/web/http.rs:1977`); the explore path acquires its permit, but the proposer never acquires the execution permit. It checks only `fallback.stops_production()` (Critical/Unavailable), so a `Throttled` host keeps proposing and executing at full rate. Law 86d and barrier B35 claim the execution half bounds the batch; it does not. F-U17-02, H-RS-02 and H-RS-04 are corrected to the gap; HAZOP U18-02/U18-05 and H-RS-13 carry it. The review is docs-only: the repair is owed, not claimed. | The proposer acquires the execution permit and a falsifier shows a Throttled host makes a smaller batch or withholds; then B35/F-U17-02/H-RS-04 can be restored to their execution claim. | §143 |
 
 ### T1 coverage — closed
 

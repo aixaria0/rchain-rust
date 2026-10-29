@@ -45,6 +45,7 @@
 - [ERTP: brands, issuers, purses and payments](node/ertp.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Ringfencing a node](node/resource-ringfence.md)
+- [Validator risk, hardware and participation](node/operator-risk.md)
 - [Validator economics](node/validator-economics.md)
 - [Scaling and performance limits](node/scaling.md)
 - [Local devnet (Docker)](node/devnet.md)

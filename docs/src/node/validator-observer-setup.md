@@ -32,8 +32,9 @@ boundary re-selects the active set each epoch. The lifecycle is
   headroom for that replay, not just for steady state. A devnet running in 1–4 GB is a devnet; it is
   below the advised validator minimum.
 - **A cgroup and a disk of its own** — [ringfence the node](resource-ringfence.md). The shipped start-up
-  preflight refuses a below-minimum **validator** and warns an **observer**
-  (`--allow-under-minimum` is an explicit override and is logged).
+  preflight refuses a below-minimum **validator** and warns an **observer**. A below-floor validator
+  needs both `--allow-under-minimum` and `--accept-under-minimum-risk`; read the
+  [operator risk notice](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md) and [validator risk](operator-risk.md) first.
 - **A validator key you can keep.** It is a file, not an argument — see §4.
 - **A reachable host.** §3 is the part that is usually missed.
 
