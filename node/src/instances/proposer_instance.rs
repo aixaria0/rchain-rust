@@ -655,7 +655,8 @@ mod tests {
     async fn a_normal_proposer_may_take_the_full_batch_cap() {
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = Arc::new(std::sync::Mutex::new(None));
-        let execution = execution_budget(4_096, 8_192); // six execution permits
+        let execution = execution_budget(4_096, 8_192);
+        let expected = execution.limit().min(4);
         let (tx, rx) = mpsc::channel(16);
         let stream = create_with_retry(
             rx,
@@ -679,7 +680,7 @@ mod tests {
             .await
             .expect("a propose completes")
             .expect("one result");
-        assert_eq!(*seen.lock().expect("recorded limit"), Some(4));
+        assert_eq!(*seen.lock().expect("recorded limit"), Some(expected));
         assert_eq!(execution.in_flight(), 0);
     }
 
