@@ -31,17 +31,20 @@ the cgroup must give each one its own share:
 | one validator | **8 GB minimal**, 16–32 GB comfortable |
 | two validators (the current public testnet) | **16 GB minimal**, 32–64 GB comfortable |
 
-The current public testnet is **two validators on each `s-2vcpu-4gb` host** — about 2 GiB per
-validator, a quarter of the documented minimum. That is below the specification, and the testnet is
-**declared capacity-limited** until it is resized to 16–32 GiB per host (or split to one validator
-per 8–16 GiB host). The admission changes in
+Until 2026-10-29, the public testnet ran **two validators on each `s-2vcpu-4gb` host** — about 2 GiB
+per validator. The [operator's resize record](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6492321348)
+now reports 16 GiB RAM on each host, with two validators retained: A has 2 vCPU / 25 GB disk and B
+has 4 vCPU / 80 GB disk. The nominal memory share reaches 8 GiB per validator; dedicated cgroup
+allocations are not established by that arithmetic. CPU and storage still fall short of the full
+per-validator profile above. The network remains **capacity-limited for qualification claims**;
+the memory resize alone does not establish application conformance or throughput. The admission changes in
 [#477](https://github.com/rhovision-org/rholo/issues/477) keep such a node serving — the pool is the
 throttle, pending work relays to peers, and memory bounds execution permits rather than ingress — but
 they do **not** make it a valid surface for application conformance, throughput claims, or a
 representative validator benchmark. A node protecting itself is not a substitute for the host meeting
 its own minimum.
 
-The live incident is the measurement: at height 1688 the host had **547 MiB available**, two
+The earlier incident remains a historical measurement: at height 1688 the host had **547 MiB available**, two
 validators were `degraded: throttled`, and the old boolean gate refused every deploy and explore. The
 correct reading is not "the guard worked" but "the host is below the floor"; see
 [the public testnet](testnet.md) for the current declaration.

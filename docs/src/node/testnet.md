@@ -7,15 +7,20 @@ The **generalised** procedure — standing up a testnet of your own, from the st
 is [Running a node: testnet now, mainnet later](validator-observer-setup.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets.
 
-> **Capacity-limited (2026-10-28, [#477](https://github.com/rhovision-org/rholo/issues/477)).** Both
-> hosts are `s-2vcpu-4gb` and each runs two validators: about 2 GiB per validator, below the 8 GiB
-> per-validator minimum (16 GB per host for this layout). The node now keeps serving under memory
-> pressure — the pool is the throttle, independent work is batched, pending work relays to peers, and
-> HTTP refusals are **429** with `Retry-After`, never a memory 503 — but this topology is **not a valid
-> surface for application conformance or throughput claims** until it is resized. See
-> [the per-host table](validator-requirements.md#the-minimum-is-per-validator-a-host-running-two-must-size-for-both).
+> **Deployment snapshot (2026-10-29, [#479](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6492321348)).**
+> Both hosts were resized to 16 GiB RAM, retaining two validators each. A has 2 vCPU and a 25 GB disk;
+> B has 4 vCPU and an 80 GB disk. The nominal memory share is now 8 GiB per validator; it is not a
+> dedicated cgroup allocation. CPU and storage still do not meet the complete per-validator profile,
+> and application conformance, throughput and restart-under-load acceptance remain unqualified.
+> See [the capacity requirements](validator-requirements.md#the-minimum-is-per-validator-a-host-running-two-must-size-for-both)
+> and the [retained read-only snapshot](../../../spec/audit/evidence/n479-current-epoch-20261029/README.md).
 >
-> **Status: four bonded validators at 250 each, pool 1000, and the chain finalises.**
+> **Live status: four bonded validators, but finality is stalled.** After the
+> 2026-10-29 rebuild, A continued producing blocks while B/C/D remained at height 6
+> after receiver exhaustion (1024 pending entries). A shared early finalized block
+> does **not** mean the current testnet is healthy or usable for acceptance claims.
+> This split does not requalify mature-chain join or restart under load; those remain
+> [#479](https://github.com/rhovision-org/rholo/issues/479) and [#485](https://github.com/rhovision-org/rholo/issues/485).
 > A brand-new key can be funded, deploy, be trusted and bond into the pool. **Losing one validator is
 > survivable** — the other three keep finalising at 75 %; losing two leaves 50 %, which is not a quorum
 > under the strict supermajority rule, so finality stops until one returns
@@ -26,6 +31,16 @@ hosts, the genesis, the wallets.
 > cannot be restarted on a 1 GB host — that is the most important operational
 > constraint here. Not production, holds no value, and its chain can be reset at any time.
 
+**Read-only follow-up, 2026-10-29 16:55 UTC:** A reported height 76 / finalized 3 while D/B/C
+reported 6 / finalized 2. A later independent read at 18:11 UTC observed A at
+height 353 / finalized 3 and D/B/C at height 6 / finalized 2; shared
+finality had not resumed. The sampled block sets through height 3 were
+identical across all four APIs,
+but D was repeatedly dropping blocks at its 1024-entry receiver limit. The first A/D overflow
+was logged at 14:37 UTC. Available APIs and `degraded: normal` are not evidence of healthy
+consensus. The installed binary is still `d1af45d1`; newer merged source has not been deployed.
+See the [dated logs, private join results and acceptance limits](../../../spec/audit/evidence/n479-native-join-20261029/README.md).
+
 ---
 
 # Part 1 — For users
@@ -34,12 +49,11 @@ hosts, the genesis, the wallets.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard **`/testnet`**; genesis built from this net's `bonds.txt`, four equal
-  stakes. Rebuilt 2026-10-24 from a fresh genesis `c596bef4bb678b3ac0cdb931b5b6968653209ca40bc35b6fec0050254d479b26` |
+| Chain | `testnet` network id, shard **`/testnet`**; four equal stakes. Rebuilt 2026-10-29 with extended wallet allocations; the current full trusted hash is in [Genesis](#genesis) |
 | Validators | **four, at equal stake — 250 each, pool 1000**, two per host. Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
-| Hosts | A `164.90.140.144` (nyc3) and B `167.99.43.214` (**ams3**) — deliberately on two continents, so every 3-of-4 quorum crosses the Atlantic. Both `s-2vcpu-4gb` |
-| Cost | 2 × DigitalOcean droplets, **$12/mo** (the size is the row above) |
-| Binary | `dev` @ `185ed283`, static musl, `sha256:c4948443bb6b…`, **the same build on all four nodes and on the playground** — rebuilt 2026-10-24 |
+| Hosts | A `164.90.140.144` (nyc3), `m-2vcpu-16gb`; B `167.99.43.214` (**ams3**), `s-4vcpu-16gb-amd`. Two validators per host; see the dated capacity declaration above |
+| Cost | Two DigitalOcean hosts; the operator's [2026-10-29 resize record](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6492321348) carries the reported cost change |
+| Binary | All four validator APIs report `d1af45d1db3f5fe2fa6047ad6c8a72b654d041df`, installed as `/usr/local/bin/rnode-d1af45d1`; artifact `sha256:76547fa988a4b2e216feb373cb17affa9cc4217ac9595ea97e77a2e1db3a8745`. The snapshot independently hashes host A's executable; the [operator rebuild record](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6497437735) records both hosts |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -66,10 +80,11 @@ is the public endpoint's routing, and it has a cost if A dies — see
 | HTTP API | **https://testnet.rhobot.net** (nginx → node A's `40403`) |
 | Health snapshot | `https://testnet.rhobot.net/health` — JSON, refreshed by each node every 60 s |
 | Direct, if you prefer | `GET http://164.90.140.144:40403/api/status`, `POST http://164.90.140.144:40403/api/explore-deploy` (eval a read-only term) |
-| Admin | `POST http://164.90.140.144:40405/api/v1/propose` — force a block (keep this one private in general) |
+| Admin | Host-local loopback listener on `127.0.0.1:40405`; keep it private. The read-only snapshot confirms the A/D admin listeners are loopback-bound |
 
-Ports `40400` (protocol) and `40404` (discovery) are open on all four nodes, as are `40401`, `40403` and
-`40405` for clients — and the `414xx` family for nodes D and C, which share the hosts — what each is for is in
+Ports `40400` (protocol), `40404` (discovery), `40401` (external gRPC) and `40403` (HTTP) serve the
+validators, with the `414xx` family for nodes D and C. An allow rule does not make the loopback admin
+listener public. What each port is for is in
 [the setup guide § Network and firewall](validator-observer-setup.md).
 
 ## Use it from r-wallet
@@ -83,7 +98,7 @@ Two entries in that list are easy to confuse, and they are different chains:
 | entry in r-wallet | what it actually is |
 |---|---|
 | **RChain testnet** | this net — `testnet.rhobot.net` |
-| **Rholang playground** | the playground node at `playground.rhobot.net` (formerly `rnodeapi.rhobot.net`) — a dev-mode chain that is *not* this one: one validator on rhobot-2, shard **`/playground`**, genesis `edd277849ea96848f983d854fa8eb92d942fda2e6b9d4937d4827da423a9f8d9`, rebuilt 2026-10-24 from the same image as this net |
+| **Rholang playground** | the playground node at `playground.rhobot.net` (formerly `rnodeapi.rhobot.net`) — a separate dev-mode chain: one validator on rhobot-2, shard **`/playground`**, genesis `edd277849ea96848f983d854fa8eb92d942fda2e6b9d4937d4827da423a9f8d9`, recorded at its 2026-10-24 rebuild. Its current executable was not checked by the 2026-10-29 validator snapshot |
 
 Until 2026-09-22 the wallet's only "testnet" entry pointed at the playground, so picking it put you on
 the wrong chain, with a dead faucet link; that is fixed in
@@ -338,20 +353,23 @@ does not depend on one node's availability, whatever the pool's arithmetic does 
 
 ## Recovery
 
-What the shape tolerates, and what the operator does about it. The first row is **measured on this net**;
-the others are arithmetic on the same numbers, and are labelled as such.
+The rows distinguish dated observations from quorum arithmetic. Restarting replays the stored state;
+it is not a guarantee that an inconsistent or diverged state will recover. The current restart-under-load
+and proposer-wedge records are in [#485](https://github.com/rhovision-org/rholo/issues/485).
 
 | what failed | what happens | action |
 |---|---|---|
-| **any one** validator | **nothing** — the survivors hold 750 of 1000 = 75 % and keep finalising. Measured by stopping A: deploys went to the other three and finality advanced, then A rejoined to the tip in under 20 s | `systemctl start rnode` (or `rnode-d`, `rnode-c`) on the host that holds it. A returning validator is level with the tip in seconds; that rejoin path was broken until [#223](https://github.com/rhovision-org/rholo/issues/223) |
-| **two** validators (50 %) | *arithmetic, not yet run:* 500 of 1000 is not `> ⅔`, so the fringe cannot advance however many blocks are produced | **one** of the two coming back restores 75 % and the chain finalises again. Nothing is lost while they are away: the state is on disk, and the pool still counts their stake |
-| **all four** | production stops; every node's state sits unchanged on disk | stop and start all four: each replays its own store and the chain resumes with no loss (this exact restart was measured on the previous shape on 2026-10-04: h 59 → 78, finality 53 → 72 after all nodes were restarted) |
+| **validator restarted during a block burst** | The 2026-10-29 restart test showed an overflowed receiver refusing further block hashes and a persistent split, even though peers still appeared connected | Preserve logs and stores; do not repeat restarts under load as a recovery strategy. Apply and verify a receiver fix under controlled conditions before a four-validator restart acceptance arm; see [#485](https://github.com/rhovision-org/rholo/issues/485) |
+| **one** validator unavailable, with the survivors on a healthy common DAG | The survivors have 750 of 1000 = 75 %, enough stake to finalise. A healthy-store outage/rejoin was measured on 2026-10-04; its sub-20-second return is a historical observation | Follow the operator recovery procedure for that store and binary. The October 29 restart-under-load split in [#485](https://github.com/rhovision-org/rholo/issues/485) is not covered by the earlier healthy-store result |
+| **two** validators unavailable (50 %) | 500 of 1000 is not `> ⅔`; the old chain's frozen-finality occurrence is recorded on [#479](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6492321348) | A node that successfully rejoins the same valid chain can restore 75 % available stake. That arithmetic does not repair a persisted proposer rejection or prove a stalled joiner has caught up |
+| **all four** | production stops; restart replays persisted state, including any persisted inconsistency | The healthy-store restart was measured on the previous shape on 2026-10-04 (h 59 → 78, finality 53 → 72). It is not a remedy for every persisted wedge: see the single-head failure below and [#485](https://github.com/rhovision-org/rholo/issues/485) |
 | a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
 | the chain **diverges** — several heads, finality frozen | nothing in-protocol recovers it: `docs/src/spec/testnet-acceptance.md` §TE-1 states the verdict as *"Recovery from the divergent finality itself: none."*, and the live occurrence is witnessed at `spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` | **the store-level restore** — see below. It is the only recovery demonstrated for this state |
+| **one agreed head, but the proposer rejects its own child** with `JustificationRegression` | A clean restart reproduced the rejection on the old 3,122-block chain | Preserve the store and logs and follow [#485](https://github.com/rhovision-org/rholo/issues/485). A divergence-only restore is not an established remedy for this state. The 2026-10-29 rebuild restored service on a fresh chain; it did not prove the original proposer defect fixed |
 
 ### Recovering a diverged chain
 
-The last row is the one recovery demonstrated for a chain whose finality has frozen, and it is worth
+The divergence row is the recovery demonstrated for several heads with frozen finality, and it is worth
 stating what it does and does not do, because **it is not a sync**.
 
 - **It copies state.** `tools/reconcile-network.sh --restore-from-master` stops the whole network — the
@@ -443,12 +461,36 @@ one, as do `scripts/qos-cli/agent.mjs` and `scripts/localnet/pk.txt`. The exact 
 
 ```
 /var/lib/rnode/genesis/bonds.txt       4 lines: <65-byte pubkey> <stake>  (four validators at 250 each)
-/var/lib/rnode/genesis/wallets.txt     4 funded REV addresses, 1e12 drops = 10,000 REV each
+/var/lib/rnode/genesis/wallets.txt     9 funded REV addresses in the 2026-10-29 genesis
 /etc/rnode/validator.key               node A's validator key        (0600 rnode:rnode)
 /etc/rnode-d/validator.key             node D's validator key        (host A runs two validators)
 /etc/rnode-c/validator.key             node C's validator key        (host B runs two)
 /etc/rnode/faucet.env                  FAUCET_KEY=… — the key node A's faucet signs with (dave's, funded)
 ```
+
+**Current trusted genesis (2026-10-29):**
+`133b1d307b1750129cf0cfb69c4c8f950da21c4e8db2a6a076464d0ccfd98d44`.
+All four validator APIs returned this block at height zero in the retained snapshot, matching the
+[operator's rebuild record](https://github.com/rhovision-org/rholo/issues/479#issuecomment-6497437735).
+The four bonds remain 250 each. Wallets were extended from four entries to nine: the existing four
+validator vaults, plus `validator`, `deployer`, `alice`, `bob` and `carol` from quantum-os's published
+test keys. **The actual deployed genesis input allocates 10,000 drops per
+new account, NOT 10,000 REV** (1 REV = 100,000,000 drops; therefore 10,000
+drops = 0.0001 REV). The four pre-existing vaults each have
+1,000,000,000,000 drops (10,000 REV) in their genesis input. The five
+additional accounts are underfunded for ordinary deploy phlo precharge.
+This was confirmed by read-only reads of the same `wallets.txt` values on
+both hosts on 2026-10-29; it corrects an earlier operator claim.
+`dave` was already validator A's funded vault. These are published
+throwaway keys: anyone can spend their test allocations. They must not
+hold real value. Editing the input file does not alter the running
+genesis or repair these accounts. Input allocation does not prove an
+account's current on-chain balance. See the preflight in
+`tools/verify-testnet-wallets.py` (#493).
+
+The 2026-10-24 hash
+`c596bef4bb678b3ac0cdb931b5b6968653209ca40bc35b6fec0050254d479b26`
+is historical; preserved old-chain evidence refers to that chain, not the rebuilt one.
 
 Historical 2026-10-04 genesis hash `713c0ebb0eb4ce866ae118aa1177a498b4edb2d431dd8b77d28abcdd4da9ea91` (four bonds at 250). This is **not** the current testnet genesis.
 
@@ -475,7 +517,8 @@ that signed for one validator all produced `e525129d…`, adding B's
 bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
 produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap of 250 and an active set of
 4 — produced `713c0ebb…`, and the 2026-10-24 rebuild — the shard renamed from `/root` to `/testnet` — produced
-`c596bef4…`, which is the current one. **The old single-bond hash is not reachable again**: #71's fix moved the content,
+`c596bef4…`. The 2026-10-29 rebuild extended the wallet allocations and produced `133b1d30…`, the current
+hash pinned above; bonds and the first-bond ceremony identity were retained. **The old single-bond hash is not reachable again**: #71's fix moved the content,
 so the same bond set no longer gives the same block.
 
 ### Rebuilding: the four things that bit, measured on 2026-10-24
@@ -540,16 +583,21 @@ agree on all of them or it will not join.
 
 ### Genesis wallets
 
-`wallets.txt` funds **four** REV addresses with 1,000,000,000,000 drops (10,000 REV) each, so tooling
-already wired to those keys works unchanged and a facilitator can be handed a key with REV to give away.
-The four funded addresses include **dave's** (`1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj`);
-the `deployer` key is **not** among them, and its vault reads `0`.
+The current `wallets.txt` holds **nine** entries: four pre-existing
+vaults with 1,000,000,000,000 drops (10,000 REV) each, and five new
+public test-key entries with only 10,000 drops (0.0001 REV) each.
+The earlier four-address allocation described below is historical, and
+the new accounts must not be advertised as deploy-ready until funded
+on-chain. The four previously funded addresses include **dave's** (`1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj`);
+the `deployer` key was **not** among those four historical funded vaults.
+The new genesis lists it with only 10,000 drops; no current balance
+has been independently proved by the input-file inspection.
 
 | key | role on this net |
 |---|---|
 | `dave` (`7707a3e0…`) | **the faucet's signing key** — funded, supplied through `/etc/rnode/faucet.env` — and the trusted key seeded by `--pos-multi-sig-public-keys`, so it is the key that can `trust` newcomers |
-| `deployer` (`3554e876…`) | **not funded on this genesis.** This page used to call it the faucet's key; drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rhovision-org/rholo/issues/247) |
-| the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
+| `deployer` (`3554e876…`) | **Underfunded for deploys on the current genesis** (10,000 drops in the new public test-key allocation). On an earlier genesis it was unfunded, and drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rhovision-org/rholo/issues/247) |
+| the developer keys in `scripts/localnet/pk.txt` | publicly known test accounts; five new genesis inputs each provide only 10,000 drops, insufficient for standard deploy precharge |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
 here — they get REV from the faucet.
@@ -630,8 +678,8 @@ The generalised procedure — prerequisites, the firewall rule below, the genesi
 admission and recovery — is [Running a node: testnet now, mainnet later](validator-observer-setup.md).
 This section records **this live net's own run**.
 
-Success looks like this in the log — note the LFS step, which restores from the **approved genesis**
-fringe. That is why joining works even though this idle chain has no *last-finalised* fringe:
+Successful restoration logs these markers in order. The historical genesis-only run used the
+approved-genesis fringe; a populated chain restores its selected finalized fringe and ancestry:
 
 ```
 INFO [casper.engine.NodeSyncing] Blocks for approved state added to DAG.
@@ -645,7 +693,7 @@ independently replays non-genesis history before entering Running.
 
 See the [source-pinned public-genesis recovery evidence](../../../spec/audit/evidence/n457-public-genesis-20261029/README.md) for the missing-input refusal and the limits of the current mature-history campaign.
 
-**Measured 2026-10-25: a joiner must be reachable from every validator, not only its bootstrap.**
+**Historical measurement, 2026-10-25, before #474: bootstrap-only reachability could stall LFS.**
 The earlier height-1 run only restored the approved genesis fringe. A subsequent fresh join
 of the populated chain stalled at `h=0` after receiving the finalized fringe, store items and
 block gossip. A controlled A/B at height 58 (same binary `2745dbb3`, same chain, same flags)
@@ -656,14 +704,20 @@ isolated the joiner's inbound firewall rule as the cause:
 | All validators (A in nyc3 and B in ams3) | Joined at `h=58` with `peers=5`, entered Running, and followed deploy 58 → 59 |
 | Bootstrap only | Stalled at `h=0` despite `peers=6` and incoming gossip; LFS timed out after three 30 s rounds |
 
-The joiner must accept **inbound protocol and discovery traffic from every validator** on
-its configured `--protocol-port` and `--discovery-port`, and reach the bootstrap outbound.
+For that revision, the joiner needed inbound protocol and discovery traffic from every validator
+on its configured ports. Since [#474](https://github.com/rhovision-org/rholo/pull/474), LFS ancestry
+uses its configured bootstrap, which must be able to deliver replies. Full peer connectivity still
+matters for discovery and post-sync consensus; the historical all-validator requirement above
+is not the current ancestry-request selection rule.
 A nonzero `peers` count in `/api/status` does **not** demonstrate reverse reachability.
 Check `ufw status verbose` and the host/provider firewall **before** attributing a stalled
 join to LFS or genesis. Limit allowed sources to the known validator peers; there is no
 reason to expose administrative APIs or unrelated ports.
 
-The observed live stall was a reachability problem, **not** the block walk. The walk had
+That October 25 comparison isolated reachability. The later October 27 logs also exposed
+duplicate-driven ancestry request amplification; #474 corrected that mechanism and bootstrap
+selection. The [native historical-chain record](../../../spec/audit/evidence/n479-native-join-20261029/README.md)
+separates those mechanisms, private acceptance, and the current live failure. The walk had
 a separate latent defect: it consumed a key before validating the received block hash,
 so a refused body could strand the key in `Received` and prevent retries. The fix checks
 membership and content hash before updating state, retries `Received` keys, and records the
