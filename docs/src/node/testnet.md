@@ -846,6 +846,33 @@ found along the way live in the tracker, not here: [#39](https://github.com/rhov
 [#247](https://github.com/rhovision-org/rholo/issues/247), and
 [the acceptance specification](../spec/testnet-acceptance.md).
 
+### Genesis wallet units — preflight before rebuilding
+
+Wallet amounts are **drops**, not REV: `1 REV = 100,000,000 drops`.
+For an allocation of **10,000 REV per account**, the `wallets.txt` entry
+must contain **1,000,000,000,000 drops**. A literal `10000` funds only
+`0.0001 REV`, insufficient for a normal deploy's phlo precharge.
+
+On 2026-10-29 the current four-validator genesis was inspected on both
+hosts: four validator vaults contained `1000000000000` drops each, but
+five quantum-os example accounts contained only `10000` drops each.
+The historical claim that those five accounts received 10,000 REV is
+incorrect. Changing a local genesis input file **does not change the
+already-running chain**. Correct funding requires on-chain transfers
+from funded accounts or a coordinated new genesis; neither is done by
+this check.
+
+Before any future genesis build, run:
+
+```sh
+python3 tools/verify-testnet-wallets.py /path/to/genesis/wallets.txt --minimum-rev 10000
+python3 tools/test-verify-testnet-wallets.py
+```
+
+Do not proceed if the first command fails. This verifies the public
+testnet's intended **minimum** allocation for every listed account;
+it does not fund accounts, sign transactions or modify chain state.
+
 ## Using it from quantum-os
 
 The room agents and the playground both take a node URL, so pointing them at this net is one flag:

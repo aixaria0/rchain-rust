@@ -6,6 +6,7 @@ on:
       - "tests/reconcile-docker-lifecycle.sh"
       - "tests/reconcile-regression.py"
       - "tests/reconcile-cache-regression.py"
+      - "tests/reconcile-target-guard.py"
       - ".github/workflows/reconcile-docker.yml"
   workflow_dispatch:
 permissions:
@@ -22,6 +23,8 @@ jobs:
         run: python3 tests/reconcile-regression.py
       - name: Verify range snapshots across recovery and finality progress
         run: python3 tests/reconcile-cache-regression.py
+      - name: Check live target inventory guard
+        run: python3 tests/reconcile-target-guard.py
       - name: Verify Docker engine
         run: docker info
       - name: Exercise recovery on disposable Docker resources

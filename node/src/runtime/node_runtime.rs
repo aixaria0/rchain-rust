@@ -2232,11 +2232,23 @@ fn fire_autopropose_tap(health: &ProposeHealth, enqueue: impl FnOnce()) -> bool 
 /// validator identity) are assembled once by [`setup_node_program`], not here.
 /// **The pending-work relay** (Law 86e, issue #477). Opt in with
 /// `RNODE_DEPLOY_RELAY=1`; the API port defaults to the external gRPC port (40401) and can be
-/// overridden with `RNODE_DEPLOY_RELAY_PORT`. After a deploy is admitted, the signed deploy is
-/// offered to each connected peer's deploy service, which re-runs the full ingress validation.
+/// overridden with `RNODE_DEPLOY_RELAY_PORT`. By default each peer's external deploy
+/// port is derived from its advertised protocol port (+1), so co-hosted validators
+/// on 40400/41400 receive on 40401/41401 respectively. After admission, the signed
+/// deploy is offered to each peer's deploy service for normal ingress validation.
 /// The sender keeps its own pool row (copy, not move), and a bounded seen set stops a relay
 /// from circulating. Off by default: a node whose peers do not expose the API port would spend
 /// a dial per deploy for nothing.
+/// The external deploy port follows the protocol port in the published testnet
+/// layout. A single fixed port for every peer sends co-hosted validators'
+/// deploys to the *other* validator on that host (40401 vs 41401).
+fn deploy_relay_port(protocol_port: u16, override_port: Option<u16>) -> Option<i32> {
+    override_port
+        .filter(|port| *port > 0)
+        .or_else(|| protocol_port.checked_add(1).filter(|port| *port > 0))
+        .map(i32::from)
+}
+
 fn deploy_relay_from_env(
     connections: rchain_casper::protocol::comm_util::ConnectionsCell,
 ) -> Option<rchain_casper::api::block_api_impl::RelayFunction> {
@@ -2247,9 +2259,9 @@ fn deploy_relay_from_env(
     if !enabled {
         return None;
     }
-    let port: i32 = flag("RNODE_DEPLOY_RELAY_PORT")
+    let override_port: Option<u16> = flag("RNODE_DEPLOY_RELAY_PORT")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(40401);
+        .filter(|port| *port > 0);
     let fanout: usize = flag("RNODE_DEPLOY_RELAY_FANOUT")
         .and_then(|v| v.parse().ok())
         .unwrap_or(usize::MAX);
@@ -2273,6 +2285,10 @@ fn deploy_relay_from_env(
             let peers = connections.read().await.clone();
             for peer in peers.into_iter().take(fanout) {
                 let host = peer.endpoint.host.clone();
+                let protocol_port = u16::from(peer.endpoint.tcp_port);
+                let Some(port) = deploy_relay_port(protocol_port, override_port) else {
+                    continue;
+                };
                 let Ok(client) = rchain_casper::protocol::client::GrpcDeployService::connect(
                     &host,
                     port,
@@ -2287,6 +2303,29 @@ fn deploy_relay_from_env(
             }
         });
     }))
+}
+
+#[cfg(test)]
+mod deploy_relay_port_tests {
+    use super::deploy_relay_port;
+
+    #[test]
+    fn peer_specific_port_follows_each_validators_protocol_listener() {
+        assert_eq!(deploy_relay_port(40400, None), Some(40401));
+        assert_eq!(deploy_relay_port(41400, None), Some(41401));
+        assert_ne!(
+            deploy_relay_port(40400, None),
+            deploy_relay_port(41400, None)
+        );
+    }
+
+    #[test]
+    fn explicit_relay_port_remains_available_for_nonstandard_service_layouts() {
+        assert_eq!(deploy_relay_port(41400, Some(45001)), Some(45001));
+        assert_eq!(deploy_relay_port(40400, Some(45001)), Some(45001));
+        assert_eq!(deploy_relay_port(40400, Some(0)), Some(40401));
+        assert_eq!(deploy_relay_port(u16::MAX, None), None);
+    }
 }
 
 // **The cross-deploy batch switch** (Law 86c). Off by default: the sequential path is the
