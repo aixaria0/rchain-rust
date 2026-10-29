@@ -77,13 +77,39 @@ fn the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override(
         let _ = std::fs::remove_dir_all(&dir);
         eprintln!("preflight arming: arm 1 refused with: {err}");
 
-        // Arm 2 — the same validator, the same floor, the override set: starts, and says so.
+        // Arm 1b — the override without the explicit risk acceptance is still refused.
+        eprintln!("preflight arming: arm 1b (validator, override, no acceptance)");
+        let dir = temp_dir("preflight-no-acceptance");
+        let ports = free_ports(4);
+        let mut conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
+        conf.resource_guard.min_available_mb = IMPOSSIBLE_FLOOR_MB;
+        conf.resource_guard.allow_under_minimum = true;
+        let id = node_environment::create(&conf).expect("node environment");
+        let setup = tokio::time::timeout(
+            Duration::from_secs(300),
+            setup_node_program(&conf, &id, Arc::new(StderrLog::default())),
+        )
+        .await
+        .expect("the acceptance check must decide before setup");
+        let err = match setup {
+            Err(e) => e,
+            Ok(_) => panic!(
+                "a validator override without accept-under-minimum-risk must be refused"
+            ),
+        };
+        assert!(err.contains("accept-under-minimum-risk"), "{err}");
+        assert!(err.contains("TERMS.md"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("preflight arming: arm 1b refused with: {err}");
+
+        // Arm 2 — the same validator, the same floor, override + acceptance: starts, and says so.
         eprintln!("preflight arming: arm 2 (validator, same floor, override)");
         let dir = temp_dir("preflight-override");
         let ports = free_ports(4);
         let mut conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
         conf.resource_guard.min_available_mb = IMPOSSIBLE_FLOOR_MB;
         conf.resource_guard.allow_under_minimum = true;
+        conf.resource_guard.accept_under_minimum_risk = true;
         {
             // Its own scope: the node holds the heavyweight lock `start` takes until it is dropped,
             // so letting it live to the end of the async block would stall arm 3 on that lock.
@@ -97,6 +123,21 @@ fn the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override(
                     .iter()
                     .any(|line| line.contains("overrides it")),
                 "an explicit override must be logged, not silent: {:?}",
+                node.log.messages()
+            );
+            assert!(
+                node.log.messages().iter().any(|line| {
+                    line.contains("operator risk notice") && line.contains("TERMS.md")
+                }),
+                "a validator must see the operator risk notice: {:?}",
+                node.log.messages()
+            );
+            assert!(
+                node.log
+                    .messages()
+                    .iter()
+                    .any(|line| line.contains("risk accepted")),
+                "the acceptance must be recorded, not silent: {:?}",
                 node.log.messages()
             );
             node.request_stop();

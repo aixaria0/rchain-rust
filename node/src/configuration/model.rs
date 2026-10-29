@@ -46,6 +46,8 @@ pub struct ResourceGuardConf {
     pub enforce_startup: String,
     /// Start below the policy floor; explicit and logged.
     pub allow_under_minimum: bool,
+    /// Accept the below-floor validator risk; required with `allow_under_minimum`.
+    pub accept_under_minimum_risk: bool,
     /// 0 = use the chain-length policy table.
     pub min_available_mb: i64,
     pub min_data_dir_free_mb: i64,
@@ -56,6 +58,7 @@ impl Default for ResourceGuardConf {
         ResourceGuardConf {
             enforce_startup: "auto".to_string(),
             allow_under_minimum: false,
+            accept_under_minimum_risk: false,
             min_available_mb: 0,
             min_data_dir_free_mb: 1024,
         }

@@ -11758,6 +11758,29 @@ three of four validators. The only path from the critical node's pool to a healt
 topology (two validators in one ~4 GiB host cgroup, which Docker cannot express as nested container
 limits) and a batch-path live arm; the batch and relay remain off by default.
 
+## 143. The headroom budget the proposer never spends (C341, #477)
+
+The load-bearing and concurrency review read the permit path from the HTTP server to the proposer. The
+`CapacityBudget` is built in `node/src/web/http.rs:1977`; the explore path acquires its `PermitBudget`
+before forking runtimes (`http.rs:1586-1603`), but the proposer receives only the `ResourceGuard` and
+checks `fallback.stops_production()` (`node/src/instances/proposer_instance.rs:161-190`). It never
+acquires the **execution** permit. The execution half is read for `/metrics` and the operator status
+split (`http.rs:2004-2007`, `node/src/api/conversion.rs:174-181`) and nowhere else.
+
+So the sentence in barrier B35 — "execution takes the floor, exploration the surplus" — is true of the
+model and the exploration path, and false of block production. A `Throttled` host does not make a
+smaller batch; it keeps proposing at full rate until the fallback word reaches `Critical`, which
+withholds production. HAZOP row F-U17-02 and safety-case rows H-RS-02/H-RS-04 claimed the missing
+control; they are corrected in this pass, and **C341 is `done` in the same PR**: the proposer now
+acquires the execution permits and passes the batch cap, with a batching-enabled `Throttled` falsifier.
+The claim is narrowed to the truth: a batched block is capped by the permits, a sequential block is
+inherently one-at-a-time, and zero permits withhold. B35/F-U17-02/H-RS-04 are restored at that scope.
+
+The same review adds the operator risk contract: `TERMS.md`, the validator start-up notice, and the
+`--accept-under-minimum-risk` requirement for a below-floor validator (B43/B44). It does not add
+liveness slashing or an inactivity leak: absence is not a current offence, paid by default, and remains
+a maintainer/genesis decision (#149).
+
 ## 144. Reconciliation snapshots across recovery (C342, #488)
 
 The range-cache optimization in #489 stored each node's inventory before recovery and then reused

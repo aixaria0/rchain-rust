@@ -53,6 +53,7 @@ pub fn policy_from_guard(
     Ok(ResourcePolicy {
         enforcement,
         allow_under_minimum: guard.allow_under_minimum,
+        accept_under_minimum_risk: guard.accept_under_minimum_risk,
         min_available_mb: if guard.min_available_mb > 0 {
             Some(
                 u64::try_from(guard.min_available_mb)
@@ -70,6 +71,12 @@ pub fn is_validator(conf: &NodeConf) -> bool {
     conf.casper.validator_private_key.is_some()
 }
 
+/// The operator risk notice. It is a log line, not a verdict: the notice must not turn a healthy start
+/// into a warning, and a below-floor validator's refusal is the separate acceptance check.
+pub const OPERATOR_RISK_NOTICE: &str = "validator operator risk notice: an invalid block or proven \
+equivocation can cost a stated share of your bond; an absent validator is not currently slashed but \
+forfeits income and can stall finality, and enough silence stops the >2/3 quorum. Read TERMS.md.";
+
 /// Log the facts, then enforce the verdict: a refusal is returned (the caller's setup fails), a warning
 /// is logged, and an unreadable fact is a warning rather than a silent pass.
 pub fn enforce(
@@ -81,6 +88,9 @@ pub fn enforce(
     let policy = policy_from_conf(conf)?;
     let verdict = evaluate_startup(facts, chain_blocks, &policy, is_validator(conf));
     let source = LogSource::new("resource-preflight");
+    if is_validator(conf) {
+        log.info(LogSource::new("operator-risk"), OPERATOR_RISK_NOTICE);
+    }
     log.info(
         source,
         &format!(
@@ -121,6 +131,7 @@ mod tests {
         let mut guard = ResourceGuardConf {
             enforce_startup: "enforce".to_string(),
             allow_under_minimum: true,
+            accept_under_minimum_risk: true,
             min_available_mb: 4096,
             min_data_dir_free_mb: 2048,
         };

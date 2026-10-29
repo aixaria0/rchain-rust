@@ -579,6 +579,7 @@ fn resource_guard_from_hocon(h: &Hocon) -> Result<ResourceGuardConf, String> {
     Ok(ResourceGuardConf {
         enforce_startup: to_string(get(h, "enforce-startup")?)?,
         allow_under_minimum: to_bool(get(h, "allow-under-minimum")?)?,
+        accept_under_minimum_risk: to_bool(get(h, "accept-under-minimum-risk")?)?,
         min_available_mb: to_i64(get(h, "min-available-mb")?)?,
         min_data_dir_free_mb: to_i64(get(h, "min-data-dir-free-mb")?)?,
     })

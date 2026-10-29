@@ -305,6 +305,11 @@ pub struct Run {
     #[arg(long = "allow-under-minimum")]
     pub allow_under_minimum: bool,
 
+    /// Accept the documented risk of starting a validator below the resource floor. Required with
+    /// `--allow-under-minimum` for a validator; read `TERMS.md`.
+    #[arg(long = "accept-under-minimum-risk")]
+    pub accept_under_minimum_risk: bool,
+
     /// Disable UPnP.
     #[arg(long = "no-upnp")]
     pub no_upnp: bool,

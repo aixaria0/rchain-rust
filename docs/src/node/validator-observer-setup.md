@@ -32,8 +32,9 @@ boundary re-selects the active set each epoch. The lifecycle is
   headroom for that replay, not just for steady state. A devnet running in 1–4 GB is a devnet; it is
   below the advised validator minimum.
 - **A cgroup and a disk of its own** — [ringfence the node](resource-ringfence.md). The shipped start-up
-  preflight refuses a below-minimum **validator** and warns an **observer**
-  (`--allow-under-minimum` is an explicit override and is logged).
+  preflight refuses a below-minimum **validator** and warns an **observer**. A below-floor validator
+  needs both `--allow-under-minimum` and `--accept-under-minimum-risk`; read the
+  [operator risk notice](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md) and [validator risk](operator-risk.md) first.
 - **A validator key you can keep.** It is a file, not an argument — see §4.
 - **A reachable host.** §3 is the part that is usually missed.
 
@@ -233,8 +234,9 @@ shard named and read the reply out of the term, not only from `deploy-status`
   is running and names its last failure), `acceptsDeploys` (the deploy pool's count/byte capacity),
   `degraded` (the **advisory** fallback word; it does not gate admission).
 - `GET /api/last-finalized-block` — finality, the number that matters for consensus health.
-- `GET /health` — **not a node route**: the `/health` an operator sees is the host's nginx snapshot,
-  refreshed by a timer (`node/src/web/http.rs` mounts `/status`, `/version`, `/metrics`, not `/health`).
+- `GET /health` — **a node route** (200 while serving): `ok`, `degraded`, `acceptsDeploys`, height,
+  pool, and the peer-liveness fields `finalityStalled`/`finalityStallEpisodes`. The public testnet's
+  `testnet.rhobot.net/health` is a separate host snapshot; do not confuse the two.
 - `GET /api/deploy-status/<id>` — submission/execution/inclusion; read the deploy's own reply for
   contract outcomes.
 - The **operator** half (`/api/v1/status/operator`, numeric headroom, fallback reason, sync attempts) is on
