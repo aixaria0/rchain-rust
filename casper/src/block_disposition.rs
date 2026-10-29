@@ -1306,16 +1306,14 @@ mod tests {
     // --- the start-up audit: scan, re-offer, bounded drain (units 3–4) ---
 
     use rchain_block_storage::block_store::{self, BlockStore};
-    use rchain_block_storage::dag::codecs::{
-        BlockMetadataCodec, BytesCodec, SignedDeployDataCodec,
-    };
+    use rchain_block_storage::dag::codecs::{BlockMetadataCodec, SignedDeployDataCodec};
     use rchain_block_storage::dag::dag_storage::DeployId;
     use rchain_models::block::state_hash::StateHash;
     use rchain_models::casper::protocol::casper_message::{RholangState, SignedDeployData};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::SeqNum;
-    use rchain_shared::store::{InMemoryKeyValueStore, SharedStore};
-    use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+    use rchain_shared::store::InMemoryKeyValueStore;
+    use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec, SharedStore};
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::block_metadata_store::BlockMetadataStore as CasperMetadataStore;
@@ -1350,7 +1348,7 @@ mod tests {
         }
     }
 
-    async fn empty_dag() -> Arc<BlockDagKeyValueStorage> {
+    async fn empty_dag() -> Arc<dyn BlockDagStorage> {
         let metadata = CasperMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
             in_memory(),
             Arc::new(BlockHashCodec),

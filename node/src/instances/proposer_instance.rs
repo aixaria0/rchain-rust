@@ -811,4 +811,54 @@ mod tests {
             "a zero-permit withhold must not schedule the not-due retry"
         );
     }
+
+    /// **A shard outside `Running` does not propose** (B47, F-U20-04). The request is answered
+    /// with a `Failure` naming the phase, the proposer is never called, and nothing is retried.
+    #[tokio::test]
+    async fn a_syncing_cell_does_not_propose() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel(16);
+        let phase = NodePhaseCell::new();
+        phase.set_phase(NodePhase::Syncing);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer(BlockCreatorResult::NoNewDeploys, calls.clone()),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            healthy(),
+            execution_budget(4_096, 8_192),
+            phase,
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(50),
+        );
+        let (otx, orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let mut stream = Box::pin(stream);
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("the request is answered")
+            .expect("one result");
+        assert!(matches!(
+            first.0.propose_status,
+            ProposeStatus::ResourcePressure(ref state) if state == "not-running"
+        ));
+        assert!(first.1.is_none(), "no block is produced outside Running");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the proposer must not be called while the shard is syncing"
+        );
+        match orx.await.expect("the requester is answered") {
+            ProposerResult::Failure {
+                status, message, ..
+            } => {
+                assert!(matches!(
+                    status,
+                    ProposeStatus::ResourcePressure(ref state) if state == "not-running"
+                ));
+                assert!(message.contains("syncing"), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
 }

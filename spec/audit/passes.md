@@ -11823,3 +11823,39 @@ refuses an unsettled row, per-shard phase, and the end-to-end re-offer/phase-gat
 
 **What it does not claim.** No live admission/width/join arm; 27 HAZOP falsifiers and two safety-case
 evidences remain visible debt; C343 stays `in progress`.
+
+## 146. Law 88, per-shard phase, audit before Running and the legacy body scan (C343 follow-up)
+
+**Found.** #497 left four items owed, and the follow-up closes them. **Law 88** was still a
+`candidate:` slug: `spec/Rchain/Disposition.lean` now states 88a (a stored body is a DAG block or
+carries an unsettled `Pending`/`Faulted` row, and the start-up audit adopts every unaccounted body
+before `Running`) and 88b (a proposal is admitted only in `Running` and within
+`MAX_PROPOSAL_FINALITY_LAG`), both `proved-model` with defect variants as the falsifiers. The phase
+was one process-wide static: `NodePhaseCell` is now one clone-shared watch cell per shard, carried
+by `ShardParts` and read by the API, proposer, launch and disposition loops; `/health` reports
+`shardPhases` and requires every shard Running for `ready`, and deploy admission reads the shard the
+deploy names. `Running` was set before the re-offer: the audit now runs in `node_launch` — the
+one-time keys-only legacy scan, the ledger re-offer, a bounded 30 s drain — and only then moves the
+phase. The scan needed block hashes, not bodies: `keys()` is a defaulted method on both store traits
+with keys-only overrides for LMDB and the codec-backed typed store, a durable `legacy-body-scan`
+marker gates the walk, and the reset orphan purge uses the same path.
+
+**Why believed.** The law is the model of the code's durable state and proposal policy; the Rust
+tests are its witnesses (`keys_decodes_only_the_key_and_survives_an_undecodable_value`,
+`the_legacy_scan_adopts_every_unaccounted_body_and_writes_its_marker`,
+`a_stored_body_without_a_dag_entry_is_reoffered`,
+`the_phase_stays_starting_until_the_drain_closes`, `two_cells_hold_independent_phases`,
+`a_syncing_cell_does_not_propose`, `health_is_ready_only_when_every_shard_runs`). `rustWitness` is
+populated on both rows; the formal gate runs them.
+
+**How it is falsified.** Deleting the audit before `Running` leaves a body unaccounted and fails
+`startup_without_audit_leaves_an_orphan`; deleting the phase check or the bound fails the gate
+theorems; deleting the codec `keys()` override makes the undecodable-value test fail; writing the
+scan marker before the walk leaves a crash window the scan test's second pass cannot skip; moving
+readiness back to one shard fails the two-shard `/health` test.
+
+**What it does not claim.** The audit's drain is bounded, not fail-closed: a missing-parent row stays
+`Pending` and visible, an undecodable body remains the periodic count audit's signal, and the live
+block-6 phase still needs the old hosts' `status/operator` and logs. `pipelineFaults`,
+`proposalHalted`, `orphanBodies` and `sync_state` remain process-wide. No live-net arm was run. C343
+stays `in progress`; the HAZOP/safety-case debt is re-counted from their gates.
