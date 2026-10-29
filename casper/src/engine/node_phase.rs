@@ -7,8 +7,10 @@
 //! the right fields.
 //!
 //! The phase is **set by launch and only by launch**; the disposition loops wait for
-//! [`NodePhase::Running`] so a start-up re-offer cannot race a recovery into the live DAG. This is
-//! not a consensus fact and is not persisted: a restart begins at [`NodePhase::Starting`].
+//! [`NodePhase::Running`] so a start-up re-offer cannot race a recovery into the live DAG, and a
+//! propose that arrives while launch is still deciding waits for the decision
+//! ([`wait_until_decided`]) instead of answering a healthy boot with a failure. This is not a
+//! consensus fact and is not persisted: a restart begins at [`NodePhase::Starting`].
 //!
 //! **What it does not yet do, said rather than implied:** `Running` is set immediately before
 //! `NodeRunning::new`, not after the start-up disposition audit completes, so a body re-offered at
@@ -81,5 +83,30 @@ pub fn is_running() -> bool {
 pub async fn wait_until_running() {
     while !is_running() {
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// How long a propose may wait for launch to decide before it is answered "not ready".
+///
+/// The proposer stream starts **beside** `node_launch`, not after it (`setup_shard_runtime` spawns
+/// launch and then constructs the stream), so a propose that arrives while a genesis master is still
+/// in its boot repair sees `Starting`. Refusing immediately turned a healthy boot into a failure for
+/// the client; waiting for ever would turn a hung launch into a hung propose. Two minutes is far
+/// above any observed launch decision and far below a client's patience.
+pub const PHASE_DECISION_WAIT: Duration = Duration::from_secs(120);
+
+/// Wait for launch to leave `Starting` (or for the bounded window to close) and return the phase a
+/// propose should be judged against.
+pub async fn wait_until_decided() -> NodePhase {
+    let deadline = tokio::time::Instant::now() + PHASE_DECISION_WAIT;
+    loop {
+        let current = phase();
+        if !matches!(current, NodePhase::Starting) {
+            return current;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return current;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

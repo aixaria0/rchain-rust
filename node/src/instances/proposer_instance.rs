@@ -195,12 +195,15 @@ fn create_with_retry(
                     return Some(result);
                 }
 
-                // **Only a node in the running phase proposes** (B47, F-U20-04). Launch normally
-                // refuses to construct this instance before `Running`, so this arm is a local
-                // invariant rather than the only gate — but a phase regression must withhold
-                // production here, not be discovered by a peer.
-                if !rchain_casper::engine::node_phase::is_running() {
-                    let phase = rchain_casper::engine::node_phase::phase();
+                // **Only a node in the running phase proposes** (B47, F-U20-04). The proposer
+                // stream starts beside launch, so a request can arrive while launch is still
+                // `Starting`; wait for the decision rather than answer a healthy boot with a
+                // failure. `Syncing`/`Blocked` are refused immediately.
+                let phase = rchain_casper::engine::node_phase::wait_until_decided().await;
+                if !matches!(
+                    &phase,
+                    rchain_casper::engine::node_phase::NodePhase::Running
+                ) {
                     let result = (
                         ProposeResult {
                             propose_status: ProposeStatus::ResourcePressure(
