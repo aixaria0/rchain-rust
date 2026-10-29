@@ -162,10 +162,10 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
                     .iter()
                     .find(|(hash, deps)| {
                         !deps.is_empty()
-                            && !available
+                            && available
                                 .child_relations
                                 .get(*hash)
-                                .is_some_and(|children| !children.is_empty())
+                                .is_none_or(|children| children.is_empty())
                     })
                     .map(|(hash, _)| hash.clone())
             } else {
