@@ -57,9 +57,9 @@ pub fn block_metadata_to_info(meta: &BlockMetadata) -> BlockInfo {
 
 /// Project stored metadata into the DAG index without cloning its justification set.
 ///
-/// The bulk startup path owns each decoded metadata record. Moving the fields lets
-/// the original record be released as the index is built, instead of retaining two
-/// full maps of the same history through reconstruction.
+/// Moves the justification set from an owned record rather than cloning it.
+/// The caller still loads all metadata through to_map() before projection;
+/// this is not a bounded-memory streaming reconstruction.
 pub fn block_metadata_into_info(meta: BlockMetadata) -> BlockInfo {
     BlockInfo {
         hash: meta.block_hash,
