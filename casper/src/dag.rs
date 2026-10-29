@@ -1518,14 +1518,19 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .add(block_metadata.clone())
             .await?;
 
+        // **Read the store before taking the representation write guard.** The store has just
+        // applied its contiguity rule, so this is the post-add map; the whole body is serialized by
+        // `self.lock`, so no insert/update can interleave between the read and the write. Holding the
+        // write guard across this LMDB read serialized every representation reader behind a disk
+        // operation (F-U9-02).
+        let height_map = self.block_metadata_store.height_map().await;
+
         let mut guard = self.representation.write().await;
         let repr = Arc::make_mut(&mut *guard);
         let msg = message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
             .ok_or_else(|| "justification not present in message map".to_string())?;
         repr.dag_message_state.promote_msg_mut(&msg);
-        // Re-read rather than patch: the store has just applied its own contiguity rule, and reading
-        // back is what makes this and `insert` agree by construction rather than by two implementations.
-        repr.height_map = self.block_metadata_store.height_map().await;
+        repr.height_map = height_map;
         Ok(())
     }
 

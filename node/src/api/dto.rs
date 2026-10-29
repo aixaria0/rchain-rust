@@ -98,7 +98,12 @@ pub struct VersionInfo {
 /// **What any caller may read**: the chain-public half of the node's status (W-N3-01).
 ///
 /// It was one struct. The other half — divergence records, the safety halt, poison recoveries, the
-/// sync task's state — is operator state, and it was served to anyone who could reach the public port.
+/// sync task's state — is operator state.
+///
+/// **The peer-liveness exception:** `/health` may publish `finalityStalled`/`finalityStallEpisodes`
+/// (a separate `PeerLiveness` projection from `ShardHealth`), because a peer needs to know whether a
+/// validator is live. That does not widen this type: `to_public_status` still takes no finality or
+/// health argument, and the operator-only reason/reporter/halt remain off the public route., and it was served to anyone who could reach the public port.
 /// Split rather than gated, and split *structurally*: `to_public_status` takes no health, finality or
 /// reporter argument, so a field added to one of those cannot leak here by someone forgetting to edit
 /// a serializer — it does not compile. That is the difference between this and one struct with two

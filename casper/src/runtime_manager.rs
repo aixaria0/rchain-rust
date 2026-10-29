@@ -498,6 +498,12 @@ impl Default for BatchPolicy {
     }
 }
 
+/// The effective batch cap: an explicit execution-permit limit wins over the configured max, and
+/// zero is never a batch size (the proposer withholds before calling this).
+fn effective_max_batch(configured: usize, limit: Option<usize>) -> usize {
+    limit.unwrap_or(configured).max(1)
+}
+
 /// Errors private to the runtime-manager play helpers. Distinguishes the Law 24 certificate
 /// failure — which triggers the sequential fallback (Law 25, whole-run form) — from ordinary
 /// failures that must surface to the caller.
@@ -1532,6 +1538,38 @@ impl RuntimeManager {
         ),
         String,
     > {
+        self.compute_state_with_limit(
+            start_hash,
+            terms,
+            system_deploys,
+            rand,
+            block_data,
+            fringe_state_hash,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::compute_state`] with an explicit execution-concurrency cap. The proposer passes
+    /// the permit count it acquired; validation/replay keeps the default (`None`) so it always
+    /// progresses.
+    pub async fn compute_state_with_limit(
+        &self,
+        start_hash: &Blake2b256Hash,
+        terms: &[SignedDeployData],
+        system_deploys: &[SystemDeploy],
+        rand: &Blake2b512Random,
+        block_data: BlockData,
+        fringe_state_hash: &Blake2b256Hash,
+        batch_limit: Option<usize>,
+    ) -> Result<
+        (
+            Blake2b256Hash,
+            Vec<UserDeployRuntimeResult>,
+            Vec<SystemDeployRuntimeResult>,
+        ),
+        String,
+    > {
         let creator = block_data.sender.bytes().to_vec();
         let seq_num = i64::from(block_data.seq_num);
         // **The close deploy's participation is in the deploy itself on this path** (B4, #150): the play
@@ -1568,6 +1606,7 @@ impl RuntimeManager {
                 rand,
                 &block_data,
                 self.batch.enabled,
+                batch_limit,
             )
             .await
         {
@@ -1583,6 +1622,7 @@ impl RuntimeManager {
                         rand,
                         &block_data,
                         false,
+                        None,
                     )
                     .await
                     .map_err(String::from)?;
@@ -1640,6 +1680,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: &BlockData,
         batching: bool,
+        batch_limit: Option<usize>,
     ) -> Result<
         (
             Blake2b256Hash,
@@ -1652,8 +1693,15 @@ impl RuntimeManager {
         runtime.set_block_data(block_data.clone());
         let (mut state_hash, processed_deploys, mut native_effects) =
             if batching && !terms.is_empty() && self.batch.enabled {
-                self.play_deploys_batched_with(runtime, start_hash, terms, rand, block_data)
-                    .await?
+                self.play_deploys_batched_with(
+                    runtime,
+                    start_hash,
+                    terms,
+                    rand,
+                    block_data,
+                    batch_limit,
+                )
+                .await?
             } else {
                 let (hash, processed) =
                     Self::play_deploys_with_cost_accounting_with(runtime, start_hash, terms, rand)
@@ -1705,6 +1753,7 @@ impl RuntimeManager {
         terms: &[SignedDeployData],
         rand: &Blake2b512Random,
         block_data: &BlockData,
+        batch_limit: Option<usize>,
     ) -> Result<
         (
             Blake2b256Hash,
@@ -1713,7 +1762,7 @@ impl RuntimeManager {
         ),
         RuntimeRunError,
     > {
-        let max_batch = self.batch.max_batch.max(1);
+        let max_batch = effective_max_batch(self.batch.max_batch, batch_limit);
         let mut base = *start_hash;
         let mut results: Vec<UserDeployRuntimeResult> = Vec::new();
         let mut native = BlockNativeEffects::empty();
@@ -1923,6 +1972,7 @@ impl RuntimeManager {
                 rand,
                 block_data,
                 false,
+                None,
             )
             .await?;
         let logs_match = relaxed_user
@@ -2977,4 +3027,12 @@ mod tests {
             "and carry the same processed deploys"
         );
     }
+
+    #[test]
+    fn an_execution_limit_caps_the_configured_batch() {
+        assert_eq!(super::effective_max_batch(4, None), 4);
+        assert_eq!(super::effective_max_batch(4, Some(1)), 1);
+        assert_eq!(super::effective_max_batch(4, Some(0)), 1);
+    }
+
 }

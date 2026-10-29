@@ -28,6 +28,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use rchain_casper::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
 use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, ProposerResult};
 use rchain_casper::state::ProposerState;
+
+use crate::resources::budget::PermitBudget;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 
@@ -110,6 +112,7 @@ pub fn create(
     proposer: Proposer,
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     resources: Arc<ResourceGuard>,
+    execution: Arc<PermitBudget>,
     log: Arc<dyn Log>,
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
     create_with_retry(
@@ -118,6 +121,7 @@ pub fn create(
         proposer,
         state,
         resources,
+        execution,
         log,
         NOT_DUE_RETRY,
     )
@@ -129,6 +133,7 @@ fn create_with_retry(
     proposer: Proposer,
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     resources: Arc<ResourceGuard>,
+    execution: Arc<PermitBudget>,
     log: Arc<dyn Log>,
     not_due_retry: Duration,
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
@@ -147,6 +152,7 @@ fn create_with_retry(
             let tx = propose_requests_tx.clone();
             let proposer = proposer.clone();
             let resources = resources.clone();
+            let execution = execution.clone();
             let log = log.clone();
             async move {
                 let permit = match lock.clone().try_acquire_owned() {
@@ -189,11 +195,50 @@ fn create_with_retry(
                     return Some(result);
                 }
 
+                // **The execution lease** (C341): the proposer takes at most the configured
+                // batch cap and the headroom budget allows. A Throttled host therefore runs a
+                // smaller batch; only zero permits withholds, and a withheld propose schedules no
+                // retry (the timer asks again).
+                let cap = execution.limit().min(proposer.batch_cap());
+                let mut permits = Vec::new();
+                for _ in 0..cap {
+                    match execution.try_acquire() {
+                        Some(permit) => permits.push(permit),
+                        None => break,
+                    }
+                }
+                if permits.is_empty() {
+                    let result = (
+                        ProposeResult {
+                            propose_status: ProposeStatus::ResourcePressure(
+                                "throttled".to_string(),
+                            ),
+                        },
+                        None,
+                    );
+                    chan::oneshot_send(
+                        propose_id_def,
+                        ProposerResult::Failure {
+                            status: result.0.propose_status.clone(),
+                            seq_number: 0,
+                            message: "the execution permit budget is exhausted; not proposing"
+                                .to_string(),
+                        },
+                    );
+                    log_propose_result(&log, &result);
+                    state.lock().await.latest_propose_result = Some(result.clone());
+                    drop(permit);
+                    return Some(result);
+                }
+
                 let (r_tx, r_rx) = oneshot::channel();
                 {
                     state.lock().await.curr_propose_result = Some(r_rx);
                 }
-                let r = proposer.propose(source, propose_id_def).await;
+                let r = proposer
+                    .propose_with_limit(source, propose_id_def, Some(permits.len()))
+                    .await;
+                drop(permits);
                 let r = match r {
                     Ok(r) => r,
                     Err(e) => (
@@ -285,10 +330,11 @@ mod tests {
             dyn Fn(
                     &ValidatorIdentity,
                     ProposeSource,
+                    Option<usize>,
                 ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
-        > = Arc::new(move |_v, _source| {
+        > = Arc::new(move |_v, _source, _limit| {
             let previous = calls.fetch_add(1, Ordering::SeqCst);
             let outcome = if previous > 0 && matches!(outcome, BlockCreatorResult::Created(_)) {
                 BlockCreatorResult::NoNewDeploys
@@ -320,12 +366,78 @@ mod tests {
         )
     }
 
+    /// The same counted proposer, recording the batch limit the node passes through.
+    fn proposer_recording(
+        outcome: BlockCreatorResult,
+        calls: Arc<AtomicUsize>,
+        seen: Arc<std::sync::Mutex<Option<usize>>>,
+    ) -> Proposer {
+        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0i64 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
+        let create_block: Arc<
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                    Option<usize>,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
+        > = Arc::new(move |_v, _source, limit| {
+            *seen.lock().expect("recorded limit") = limit;
+            calls.fetch_add(1, Ordering::SeqCst);
+            let outcome = outcome.clone();
+            Box::pin(async move { Ok(outcome) })
+        });
+        let validate: Arc<
+            dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = Arc::new(|_b| Box::pin(async { Ok(()) }));
+        let effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync> =
+            Arc::new(|_b| Box::pin(async {}));
+        Proposer::new(
+            get_seq,
+            check_active,
+            create_block,
+            validate,
+            effect,
+            ValidatorIdentity::from_hex(
+                "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+            )
+            .unwrap(),
+            Arc::new(rchain_shared::log::NopLog),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            false,
+            block_store(),
+        )
+    }
+
+    fn throttled() -> Arc<ResourceGuard> {
+        ResourceGuard::inert(crate::resources::ResourceSnapshot {
+            fallback: crate::resources::ResourceState::Throttled,
+            fallback_reason: "headroom below the throttle floor",
+            ..crate::resources::ResourceSnapshot::default()
+        })
+    }
+
     /// A guard whose fallback state is `Normal`: the propose gate is open.
     fn healthy() -> Arc<ResourceGuard> {
         ResourceGuard::inert(crate::resources::ResourceSnapshot {
             fallback: crate::resources::ResourceState::Normal,
             ..crate::resources::ResourceSnapshot::default()
         })
+    }
+
+    fn execution_budget(available_mb: u64, total_mb: u64) -> Arc<PermitBudget> {
+        let guard = ResourceGuard::inert(crate::resources::ResourceSnapshot {
+            mem_available_mb: available_mb,
+            mem_total_mb: total_mb,
+            fallback: crate::resources::ResourceState::Normal,
+            ..crate::resources::ResourceSnapshot::default()
+        });
+        crate::resources::CapacityBudget::new(guard).execution
     }
 
     /// Send one request, drive the stream for `window`, and report how often the creator was asked.
@@ -342,6 +454,7 @@ mod tests {
             proposer(outcome, calls.clone()),
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             healthy(),
+            execution_budget(4_096, 8_192),
             Arc::new(rchain_shared::log::NopLog),
             retry,
         );
@@ -461,6 +574,7 @@ mod tests {
             proposer(BlockCreatorResult::NoNewDeploys, calls.clone()),
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             critical,
+            execution_budget(4_096, 8_192),
             Arc::new(rchain_shared::log::NopLog),
             Duration::from_millis(50),
         );
@@ -499,4 +613,111 @@ mod tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
+
+    #[tokio::test]
+    async fn a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let execution = execution_budget(900, 8_192); // one execution permit
+        let (tx, rx) = mpsc::channel(16);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
+                .with_batch_cap(4),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            throttled(),
+            execution.clone(),
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(50),
+        );
+        let mut stream = Box::pin(stream);
+        let (otx, _orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("a Throttled propose completes")
+            .expect("one result");
+        assert_eq!(*seen.lock().expect("recorded limit"), Some(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            execution.in_flight(),
+            0,
+            "the execution lease must be returned after the propose"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_normal_proposer_may_take_the_full_batch_cap() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let execution = execution_budget(4_096, 8_192); // six execution permits
+        let (tx, rx) = mpsc::channel(16);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
+                .with_batch_cap(4),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            healthy(),
+            execution.clone(),
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(50),
+        );
+        let mut stream = Box::pin(stream);
+        let (otx, _orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("a propose completes")
+            .expect("one result");
+        assert_eq!(*seen.lock().expect("recorded limit"), Some(4));
+        assert_eq!(execution.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn zero_execution_permits_withholds_without_a_retry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let execution = execution_budget(100, 8_192); // below the floor: zero permits
+        let (tx, rx) = mpsc::channel(16);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer_recording(BlockCreatorResult::NoNewDeploys, calls.clone(), seen.clone())
+                .with_batch_cap(4),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            throttled(),
+            execution.clone(),
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(40),
+        );
+        let mut stream = Box::pin(stream);
+        let (otx, orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("the request is answered")
+            .expect("one result");
+        assert!(matches!(
+            first.0.propose_status,
+            ProposeStatus::ResourcePressure(ref state) if state == "throttled"
+        ));
+        assert!(first.1.is_none());
+        assert!(matches!(
+            orx.await.expect("the requester is answered"),
+            ProposerResult::Failure { status: ProposeStatus::ResourcePressure(_), .. }
+        ));
+        assert_eq!(*seen.lock().expect("recorded limit"), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(execution.in_flight(), 0);
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), stream.next())
+                .await
+                .is_err(),
+            "a zero-permit withhold must not schedule the not-due retry"
+        );
+    }
+
 }

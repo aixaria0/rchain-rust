@@ -107,7 +107,7 @@ use crate::configuration::model::NodeConf;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
-use crate::resources::ResourceGuard;
+use crate::resources::{CapacityBudget, ResourceGuard};
 use crate::runtime::shutdown::{stop_requested, SHUTDOWN_DRAIN_TIMEOUT};
 use crate::web::http::{
     acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
@@ -462,6 +462,11 @@ pub struct NodeProgram {
     block_report_api: Arc<BlockReportApi>,
     reporter: Arc<NewPrometheusReporter>,
     metrics: Arc<MetricsRegistry>,
+    /// One execution/explore budget shared by the HTTP listener and every proposer.
+    capacity_budget: Arc<CapacityBudget>,
+    /// The primary shard's finality cells, exposed on the public `/health` route as the peer-liveness
+    /// exception (only `finalityStalled`/`finalityStallEpisodes`; operator diagnosis stays off it).
+    peer_liveness: ShardHealth,
     host: String,
     port_http: Port,
     port_admin_http: Port,
@@ -530,6 +535,8 @@ impl NodeProgram {
             block_report_api,
             reporter,
             metrics,
+            capacity_budget,
+            peer_liveness,
             host,
             port_http,
             port_admin_http,
@@ -610,6 +617,8 @@ impl NodeProgram {
                     status_provider,
                     pos_read.clone(),
                     resources.clone(),
+                    capacity_budget,
+                    peer_liveness,
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
@@ -1253,6 +1262,9 @@ pub async fn setup_node_program(
         std::time::Duration::from_secs(5),
     )
     .map_err(|e| format!("resource watchdog: {e}"))?;
+    // One permit budget for the whole node: HTTP exploits and the proposer must see the same
+    // execution/explore counters (C341).
+    let capacity_budget = Arc::new(CapacityBudget::new(resources.clone()));
 
     // Node-level resources, built once: the validator identity, and the REPL eval runtime (an
     // isolated `eval-*` store set, deliberately chain-independent — port of Scala's `evalStores`).
@@ -1275,6 +1287,7 @@ pub async fn setup_node_program(
             &comm_state,
             &validator_opt,
             resources.clone(),
+            capacity_budget.clone(),
             &log,
             metrics.clone(),
         )
@@ -1463,6 +1476,8 @@ pub async fn setup_node_program(
         block_report_api: primary_parts.block_report_api.clone(),
         reporter: Arc::new(NewPrometheusReporter::new(prometheus_scrape_config())),
         metrics,
+        capacity_budget,
+        peer_liveness: primary.health.clone(),
         host: conf.api_server.host.clone(),
         port_http: Port::try_from(conf.api_server.port_http).map_err(|e| e.to_string())?,
         port_admin_http: Port::try_from(conf.api_server.port_admin_http)
@@ -1631,6 +1646,7 @@ fn listener_stopped(
 struct ShardRuntime {
     parts: ShardParts,
     peer_tx: mpsc::Sender<PeerMessage>,
+    health: ShardHealth,
 }
 
 /// A registry for the test call sites of [`setup_shard`].
@@ -1669,6 +1685,19 @@ async fn build_eval_runtime(data_dir: &std::path::Path) -> Result<Arc<RhoRuntime
 /// pushed by whatever can change it, which is why this is called from the autopropose tap and the
 /// autopropose timer rather than once from setup. A gauge pushed only at setup would read `0` for ever
 /// and look like a healthy node, which is the failure this exists to prevent.
+fn push_finality_health(metrics: &MetricsRegistry, source: &Source, health: &ShardHealth) {
+    metrics.set_gauge(
+        source,
+        "finality_stalled",
+        if health.finality_stall_sustained() { 1 } else { 0 },
+    );
+    metrics.set_gauge(
+        source,
+        "finality_stall_episodes",
+        i64::try_from(health.stall_episodes()).unwrap_or(i64::MAX),
+    );
+}
+
 fn push_proposer_health(metrics: &MetricsRegistry, source: &Source, health: &ProposeHealth) {
     let health: ProposerHealth = health.snapshot();
     metrics.set_gauge(
@@ -1699,6 +1728,7 @@ async fn setup_shard_runtime(
     comm_state: &CommState,
     validator_opt: &Option<ValidatorIdentity>,
     resources: Arc<ResourceGuard>,
+    capacity_budget: Arc<CapacityBudget>,
     log: &Arc<dyn Log>,
     metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardRuntime, String> {
@@ -1821,6 +1851,7 @@ async fn setup_shard_runtime(
                 let tap_metrics = metrics.clone();
                 let tap_source = health_source.clone();
                 let tap_health = propose_health.clone();
+                let tap_shard_health = shard_health.clone();
                 // The tap runs on every validated block; if the propose queue is full or the
                 // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -1832,6 +1863,7 @@ async fn setup_shard_runtime(
                     // enqueued — so hoisting it here is the same writes in the same order, with the
                     // guard now standing between them and the queue instead of around one of them.
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
+                    push_finality_health(&tap_metrics, &tap_source, &tap_shard_health);
                     fire_autopropose_tap(&tap_health, || {
                         let (otx, _orx) = tokio::sync::oneshot::channel();
                         if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
@@ -1858,6 +1890,7 @@ async fn setup_shard_runtime(
                 // halt readable — pushed at the tick *and* once more after the flag is set, because the
                 // tick that breaks is the last write this task will ever make.
                 let timer_metrics = metrics.clone();
+                let timer_shard_health = shard_health.clone();
                 let timer_source = health_source.clone();
                 let timer_health = propose_health.clone();
                 let timer_dag = parts.dag.clone();
@@ -1897,6 +1930,7 @@ async fn setup_shard_runtime(
                                 ),
                             }
                             push_proposer_health(&timer_metrics, &timer_source, &timer_health);
+                            push_finality_health(&timer_metrics, &timer_source, &timer_shard_health);
                             timer_log.error(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
@@ -2135,6 +2169,7 @@ async fn setup_shard_runtime(
             proposer,
             proposer_parts.state,
             resources.clone(),
+            capacity_budget.execution.clone(),
             log.clone(),
         );
         tokio::spawn(async move {
@@ -2144,7 +2179,11 @@ async fn setup_shard_runtime(
         });
     }
 
-    Ok(ShardRuntime { parts, peer_tx })
+    Ok(ShardRuntime {
+        parts,
+        peer_tx,
+        health: shard_health,
+    })
 }
 
 /// **Fire the autopropose tap for one validated block, unless the timer is halted** (W-N4-08).
@@ -2758,7 +2797,35 @@ fn check_store_format(dir: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::interpreter_util::NoAdvance;
     use rchain_models::block_metadata::SlashSeverity;
+
+    #[test]
+    fn the_finality_liveness_gauges_are_pushed() {
+        let registry = MetricsRegistry::new();
+        let health = ShardHealth::new();
+        let reason = NoAdvance::Support {
+            supporting: 0,
+            total: 1,
+            full_partitions: 0,
+            candidates: 1,
+            partition: 1,
+        };
+        health.note_finality_stall(Some(&reason));
+        health.note_finality_stall(Some(&reason));
+        push_finality_health(&registry, &Source::base().sub("shard_0"), &health);
+        let snapshot = registry.snapshot();
+        let value = |name: &str| {
+            snapshot
+                .metrics
+                .gauges
+                .iter()
+                .find(|m| m.name == name)
+                .map(|m| m.value)
+        };
+        assert_eq!(value("rchain.shard_0.finality_stalled"), Some(1));
+        assert_eq!(value("rchain.shard_0.finality_stall_episodes"), Some(1));
+    }
 
     /// A block store whose every read fails, so a read error is observable as one.
     struct FailingBlockStore;
