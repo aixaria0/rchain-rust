@@ -136,6 +136,32 @@ Original host evidence remains under `/home/aria/tmp/rholo-native-compat-2026102
 The earlier incomplete-snapshot setup and the network-identity setup rejection are also retained;
 neither is reported as a protocol acceptance result.
 
+## Follow-up: old-chain hash in the rebuilt network's receiver
+
+The first A/D overflow hash, `c20645c3f68aad1717bed1290e7097d12ac1d5f14cd393263273fdbe38828c80`,
+is an exact key in the immutable public metadata fixture at `15e2e162` (#480).
+Decoding `BlockMetadataProto` gives **height 1571**. Traversing all **6,148** ancestor records
+reaches only the previous genesis `c596bef4…`, while the rebuilt validators report `133b1d30…`.
+The fixture's compressed and uncompressed SHA-256 values are independently checked.
+
+This establishes that an old-chain hash reached the rebuilt network's receiver-capacity path.
+It does not establish which peer sent it, the complete contents of the 1024-entry queue,
+or that this input alone caused exhaustion. The documented third-host observer has an established
+TCP connection to A/D, but its HTTP API timed out; sender attribution remains unproven.
+No peer was stopped, disconnected or reconfigured.
+
+`cross-genesis.py` and `cross-genesis-result.json` reproduce the exact-key lookup, protobuf
+height decode, strict parent-height checks and complete ancestry traversal. Reproduce using a
+checkout containing the public fixture at `15e2e16240424fe4a5a8aa9131e5462bdbe56f2a`:
+
+```sh
+python3 spec/audit/evidence/n479-native-join-20261029/cross-genesis.py --fixture-repo /path/to/fixture-checkout
+```
+
+A matching `networkId=testnet` does not establish matching genesis. The newer merged queue/retry
+changes are not a demonstrated cross-genesis isolation fix. Attribution and a safe chain-identity
+compatibility strategy remain required before claiming this live incident resolved.
+
 ## F. Residual risks
 
 The running network remains on `d1af45d1`; current `dev@1a0009f5` also contains merged ingress,
