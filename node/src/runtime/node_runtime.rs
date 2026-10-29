@@ -117,6 +117,7 @@ use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::block_disposition::{
     BlockDisposition, BlockDispositionCodec, BlockDispositionStore,
 };
+use rchain_casper::engine::node_phase::NodePhaseCell;
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 use rchain_ocapn::conn::Export;
@@ -785,6 +786,9 @@ pub struct ShardParts {
     /// The durable record of every stored body this shard still owes an outcome (U19). Only
     /// `Pending`/`Faulted` rows: accepted and refused blocks are the DAG metadata.
     pub block_disposition: BlockDispositionStore,
+    /// **This shard's launch phase** (B47). Clone-shared with its `BlockApiImpl`, proposer, launch
+    /// and disposition loops; one cell per shard, so one shard's sync does not move another's.
+    pub phase: NodePhaseCell,
     pub runtime_manager: Arc<RuntimeManager>,
     pub approved_store: ApprovedStore,
     /// This shard's store manager, over its own data directory ([`shard_data_dir`]).
@@ -1054,6 +1058,7 @@ fn wire_block_processing_observed(
     // **A body the node owes an outcome is re-offered, not forgotten** (U19). The start-up audit
     // runs once; the retry loop then keeps the faulted rows moving until their budget is spent.
     tokio::spawn(rchain_casper::block_disposition::reoffer_unsettled(
+        parts.phase.clone(),
         parts.block_disposition.clone(),
         parts.block_store.clone(),
         parts.dag.clone(),
@@ -1061,6 +1066,7 @@ fn wire_block_processing_observed(
         disposition_log.clone(),
     ));
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
+        parts.phase.clone(),
         parts.block_disposition.clone(),
         parts.block_store.clone(),
         processor_input_tx_disposition,
@@ -1069,6 +1075,7 @@ fn wire_block_processing_observed(
     // A stored body the DAG never accounts for is loud even when no ledger row names it (a body
     // written by a pre-ledger build). The audit is a count comparison, not a block scan.
     tokio::spawn(rchain_casper::block_disposition::audit_stored_bodies(
+        parts.phase.clone(),
         parts.block_store.clone(),
         parts.dag.clone(),
         disposition_log,
@@ -1515,6 +1522,10 @@ pub async fn setup_node_program(
         members: shards
             .iter()
             .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+            .collect(),
+        phases: shards
+            .iter()
+            .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.phase.clone()))
             .collect(),
     });
 
@@ -2134,6 +2145,7 @@ async fn setup_shard_runtime(
         parts.dag.clone(),
         importer,
         exporter,
+        parts.phase.clone(),
         log.clone(),
     );
     let node_launch_log = log.clone();
@@ -2234,6 +2246,7 @@ async fn setup_shard_runtime(
             proposer_parts.state,
             resources.clone(),
             capacity_budget.execution.clone(),
+            parts.phase.clone(),
             log.clone(),
         );
         tokio::spawn(async move {
@@ -2658,6 +2671,9 @@ pub async fn setup_shard(
         }
     });
 
+    // **This shard's phase cell**, created here so the API and every later consumer share it. A
+    // restart begins at `Starting`; only this shard's launch writes it.
+    let phase = NodePhaseCell::new();
     let block_api: Arc<dyn rchain_casper::api::block_api::BlockApi> = Arc::new(BlockApiImpl::new(
         block_dag_storage.clone(),
         block_store.clone(),
@@ -2679,6 +2695,7 @@ pub async fn setup_shard(
         std::collections::BTreeSet::new(),
         propose_health,
         shard_health,
+        phase.clone(),
         deploy_relay_from_env(connections.clone()),
     ));
 
@@ -2764,6 +2781,7 @@ pub async fn setup_shard(
         block_store,
         dag: block_dag_storage,
         block_disposition,
+        phase,
         runtime_manager,
         approved_store,
         store_manager,

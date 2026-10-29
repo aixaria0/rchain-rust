@@ -37,6 +37,7 @@ use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
 use crate::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
 use crate::blocks::proposer::proposer::ProposerResult;
+use crate::engine::node_phase::NodePhaseCell;
 use crate::event_converter::to_rspace_event;
 use crate::interpreter_util::ShardHealth;
 use crate::runtime_manager::{CapturedReply, RuntimeManager};
@@ -93,6 +94,9 @@ pub struct BlockApiImpl {
     /// **This shard's finality-and-merge health** (W-N10-02, W-N10-03) — the cell the validation path
     /// writes, one per shard, beside `propose_health` and for the same reason. See [`ShardHealth`].
     shard_health: ShardHealth,
+    /// **This shard's launch phase** (B47). Deploy admission is judged by the shard the deploy names,
+    /// not by a process-wide flag: one syncing shard must not refuse every shard's work.
+    phase: NodePhaseCell,
     /// The pending-work relay, when the operator enabled it (Law 86e). `None` admits locally only.
     relay: Option<RelayFunction>,
 }
@@ -291,6 +295,7 @@ impl BlockApiImpl {
         system_public_keys: BTreeSet<Vec<u8>>,
         propose_health: ProposeHealth,
         shard_health: ShardHealth,
+        phase: NodePhaseCell,
         relay: Option<RelayFunction>,
     ) -> Self {
         BlockApiImpl {
@@ -314,6 +319,7 @@ impl BlockApiImpl {
             system_public_keys,
             propose_health,
             shard_health,
+            phase,
             relay,
         }
     }
@@ -546,20 +552,18 @@ impl BlockApi for BlockApiImpl {
                 "Deploy was rejected because node is running in read-only mode.".to_string(),
             );
         }
-        // **A syncing node cannot include work**, even when its pool has room. `acceptsDeploys`
-        // remains the pool's Law 86a answer; readiness is this explicit refusal. Applied here so
-        // HTTP, gRPC, the faucet and every other caller of the one deploy path agree.
-        let phase = crate::engine::node_phase::phase();
-        if !phase.admits_work() {
+        // **A shard outside its serving phases cannot include work**, even when its pool has room.
+        // `acceptsDeploys` remains the pool's Law 86a answer; readiness is this explicit refusal.
+        // Applied here so HTTP, gRPC, the faucet and every other caller of the one deploy path
+        // agree, and read from **this shard's** cell so one syncing shard does not refuse the
+        // others. The global `sync_state` is not consulted: the shard's `Syncing` phase is the same
+        // fact at the right scope.
+        if !self.phase.admits_work() {
             return Err(format!(
-                "Deploy refused: the node is in phase {} and is not ready to include work.",
-                phase.label()
+                "Deploy refused: shard {} is in phase {} and is not ready to include work.",
+                self.shard_id,
+                self.phase.phase().label()
             ));
-        }
-        if crate::engine::node_syncing::sync_state().is_some() {
-            return Err(
-                "Deploy refused: the node is syncing and is not ready to include work.".to_string(),
-            );
         }
         if crate::blocks::block_processor::pipeline_faults() > 0 {
             return Err(

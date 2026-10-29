@@ -35,6 +35,10 @@ use rchain_shared::base16;
 use rchain_shared::rate_limiter::KeyedRateLimiter;
 use rchain_shared::refined::{Port, ShardId};
 
+use std::collections::BTreeMap;
+
+use rchain_casper::engine::node_phase::{NodePhase, NodePhaseCell};
+
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
@@ -160,6 +164,35 @@ pub struct StatusProvider {
 pub struct ShardRegistry {
     pub primary: ShardId,
     pub members: Vec<(ShardId, Arc<dyn BlockApi>)>,
+    /// **One phase cell per member shard** (B47). `/health` reads every one; deploy admission reads
+    /// the shard the request names. A shard absent here is not claimed Running.
+    pub phases: BTreeMap<ShardId, NodePhaseCell>,
+}
+
+impl ShardRegistry {
+    /// The primary shard's phase, or `Starting` when the fixture has no cell for it.
+    pub fn primary_phase(&self) -> NodePhase {
+        self.phases
+            .get(&self.primary)
+            .map(NodePhaseCell::phase)
+            .unwrap_or(NodePhase::Starting)
+    }
+
+    /// The named shard's phase, if it is a member.
+    pub fn phase_of(&self, id: &ShardId) -> Option<NodePhase> {
+        self.phases.get(id).map(NodePhaseCell::phase)
+    }
+
+    /// **Node readiness is every shard's readiness.** A node with one serving and one syncing shard
+    /// is not ready for node-level work; an empty member list (the HTTP fixture) is governed by the
+    /// primary cell rather than vacuously true.
+    pub fn all_running(&self) -> bool {
+        matches!(self.primary_phase(), NodePhase::Running)
+            && self
+                .members
+                .iter()
+                .all(|(id, _)| self.phases.get(id).is_some_and(NodePhaseCell::is_running))
+    }
 }
 
 /// State shared by the public HTTP server (port of the `webApi` + `prometheusReporter` +
@@ -657,41 +690,33 @@ fn deploy_response(result: Result<String, BlockApiException>) -> Response {
 /// nginx snapshot on the public testnet can proxy this route; a host-level `mem_available_mb` still
 /// belongs on the operator surface.
 async fn api_health(State(state): State<HttpState>) -> Response {
-    // **Phase is a readiness signal, not a resource verdict** (U20/B47). `syncing` is the
-    // node-syncing task's own global reading; `None` is the ordinary running case. The existing
-    // `acceptsDeploys` remains Law 86a pool capacity; `ready` is the answer to "can this node
-    // include work now?" and is the field a deploy client should gate on.
-    let syncing = rchain_casper::engine::node_syncing::sync_state().is_some();
+    // **Phase is a readiness signal, not a resource verdict** (U20/B47). `acceptsDeploys` remains
+    // Law 86a pool capacity; `ready` is the answer to "can this node include work now?" and is the
+    // field a deploy client should gate on. Readiness is **every shard's**: a node with one
+    // serving and one syncing shard is not ready for node-level work.
     let pipeline_faults = rchain_casper::blocks::block_processor::pipeline_faults();
     let proposal_isolated = rchain_casper::blocks::proposer::proposer::proposal_isolated();
     // **Confirmed, not sampled**: `orphan_bodies` is zero until the periodic audit has seen the
     // same store/DAG gap for three consecutive samples, so an in-flight block does not flap this.
     let orphan_bodies = rchain_casper::block_disposition::orphan_bodies();
-    // **Launch's own phase** (B47): a node that has not reached the running engine is not ready,
-    // whatever its pool says.
-    let node_phase = rchain_casper::engine::node_phase::phase();
-    let running = matches!(
-        &node_phase,
-        rchain_casper::engine::node_phase::NodePhase::Running
-    );
-    let blocked =
-        !running || syncing || pipeline_faults > 0 || proposal_isolated || orphan_bodies > 0;
+    let primary_phase = state.shards.primary_phase();
+    let all_running = state.shards.all_running();
+    let shard_phases: BTreeMap<String, &'static str> = state
+        .shards
+        .phases
+        .iter()
+        .map(|(id, cell)| (id.to_string(), cell.phase().label()))
+        .collect();
+    let blocked = !all_running || pipeline_faults > 0 || proposal_isolated || orphan_bodies > 0;
     match state.web_api.status().await {
         Ok(status) => (
             StatusCode::OK,
             Json(json!({
                 "ok": !blocked,
                 "ready": !blocked,
-                "phase": if !running {
-                    node_phase.label()
-                } else if syncing {
-                    "syncing"
-                } else if blocked {
-                    "blocked"
-                } else {
-                    "running"
-                },
-                "nodePhase": node_phase.label(),
+                "phase": primary_phase.label(),
+                "nodePhase": primary_phase.label(),
+                "shardPhases": shard_phases,
                 "pipelineFaults": pipeline_faults,
                 "orphanBodies": orphan_bodies,
                 "orphanDetections": rchain_casper::block_disposition::orphan_detections(),
@@ -716,21 +741,39 @@ async fn api_health(State(state): State<HttpState>) -> Response {
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
-    // **A syncing node does not claim it can include work.** The pool may have room; the node
-    // still cannot produce a block from it. Refuse before admission, with a 503 rather than a
-    // pool-capacity answer. `acceptsDeploys` itself keeps its Law 86a meaning.
-    if !rchain_casper::engine::node_phase::phase().admits_work()
-        || rchain_casper::engine::node_syncing::sync_state().is_some()
-        || rchain_casper::blocks::block_processor::pipeline_faults() > 0
+    // **A shard outside its serving phases does not claim it can include work.** The pool may have
+    // room; the shard still cannot produce a block from it. Judge the shard the deploy names, so one
+    // syncing shard does not refuse every shard's work. `acceptsDeploys` keeps its Law 86a meaning.
+    let target = ShardId::try_from(req.data.shard_id.clone())
+        .ok()
+        .and_then(|id| state.shards.phase_of(&id));
+    if let Some(phase) = target {
+        if !phase.admits_work() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!(
+                        "shard {} is in phase {}; deploy admission is refused",
+                        req.data.shard_id,
+                        phase.label()
+                    ),
+                    "ready": false,
+                    "phase": phase.label(),
+                })),
+            )
+                .into_response();
+        }
+    }
+    if rchain_casper::blocks::block_processor::pipeline_faults() > 0
         || rchain_casper::blocks::proposer::proposer::proposal_isolated()
         || rchain_casper::block_disposition::orphan_bodies() > 0
     {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
-                "error": "node is not ready (syncing or blocked); deploy admission is refused",
+                "error": "node is blocked (pipeline fault, isolation or an orphan body); deploy admission is refused",
                 "ready": false,
-                "phase": "not-ready",
+                "phase": "blocked",
             })),
         )
             .into_response();
@@ -2449,9 +2492,16 @@ mod tests {
             }),
             block_report_api: test_block_report_api(),
             // The HTTP tests drive the routes, not the shard list; one member stands in.
-            shards: Arc::new(ShardRegistry {
-                primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
-                members: Vec::new(),
+            shards: Arc::new({
+                let primary =
+                    rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap();
+                let phase = NodePhaseCell::new();
+                phase.set_phase(NodePhase::Running);
+                ShardRegistry {
+                    primary: primary.clone(),
+                    members: Vec::new(),
+                    phases: BTreeMap::from([(primary, phase)]),
+                }
             }),
             status_provider: None,
             // `GET /api/v1/pos` (AUDIT C148) is pinned on its own below; the other routes never read
@@ -2919,6 +2969,84 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["finalityStalled"], true);
         assert_eq!(json["finalityStallEpisodes"], 1);
+    }
+
+    /// **Node readiness is every shard's readiness** (B47): one running shard and one syncing shard
+    /// is not ready, the flat `phase`/`nodePhase` are the primary's reading, and `shardPhases`
+    /// names each member. Moving the second shard to `Running` is what flips `ready`.
+    #[tokio::test]
+    async fn health_is_ready_only_when_every_shard_runs() {
+        use tower::ServiceExt;
+
+        let primary = ShardId::try_from("/root".to_string()).unwrap();
+        let child = ShardId::try_from("/root/child".to_string()).unwrap();
+        let primary_cell = NodePhaseCell::new();
+        primary_cell.set_phase(NodePhase::Running);
+        let child_cell = NodePhaseCell::new();
+        child_cell.set_phase(NodePhase::Syncing);
+        let mut s = state();
+        s.shards = Arc::new(ShardRegistry {
+            primary: primary.clone(),
+            members: vec![
+                (
+                    primary.clone(),
+                    Arc::new(TxnStubApi {
+                        shard_id: "/root".to_string(),
+                    }) as Arc<dyn BlockApi>,
+                ),
+                (
+                    child.clone(),
+                    Arc::new(TxnStubApi {
+                        shard_id: "/root/child".to_string(),
+                    }) as Arc<dyn BlockApi>,
+                ),
+            ],
+            phases: BTreeMap::from([
+                (primary.clone(), primary_cell),
+                (child.clone(), child_cell.clone()),
+            ]),
+        });
+
+        let reply = router(s.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["ready"], false,
+            "one syncing shard withholds readiness"
+        );
+        assert_eq!(
+            json["nodePhase"], "running",
+            "the flat phase is the primary's"
+        );
+        assert_eq!(json["shardPhases"]["/root"], "running");
+        assert_eq!(json["shardPhases"]["/root/child"], "syncing");
+
+        child_cell.set_phase(NodePhase::Running);
+        let reply = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["ready"], true, "every shard is running");
     }
 
     /// **A full pool is a 429 with a retry; a malformed deploy stays a 400** (Law 86a).
@@ -3936,9 +4064,15 @@ mod tests {
         members: Vec<(rchain_shared::refined::ShardId, Arc<dyn BlockApi>)>,
     ) -> HttpState {
         let mut s = state();
-        s.shards = Arc::new(ShardRegistry {
-            primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
-            members,
+        s.shards = Arc::new({
+            let primary = rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap();
+            let phase = NodePhaseCell::new();
+            phase.set_phase(NodePhase::Running);
+            ShardRegistry {
+                primary: primary.clone(),
+                members,
+                phases: BTreeMap::from([(primary, phase)]),
+            }
         });
         s
     }

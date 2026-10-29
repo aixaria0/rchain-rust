@@ -41,6 +41,8 @@ use rchain_shared::refined::BlockHeight;
 use rchain_shared::typed_store::{Codec, KeyValueTypedStore};
 use tokio::sync::mpsc;
 
+use crate::engine::node_phase::NodePhaseCell;
+
 /// Where a pending body is in the pipeline. Diagnostic only: every pending row is equally
 /// re-offerable at boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -515,6 +517,7 @@ pub const RETRY_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 /// order inserts it first; a genuinely missing parent leaves the row `Pending` for the next start
 /// rather than spending its retry budget on a question that cannot be answered yet.
 pub async fn reoffer_unsettled(
+    phase: NodePhaseCell,
     ledger: BlockDispositionStore,
     block_store: BlockStore,
     dag: Arc<dyn BlockDagStorage>,
@@ -525,7 +528,7 @@ pub async fn reoffer_unsettled(
     // **Do not re-offer into a DAG launch is still restoring.** A recovery replays into its own
     // staging DAG; a body offered to the live processor before the running engine exists would be
     // validated against a chain the node is not serving.
-    crate::engine::node_phase::wait_until_running().await;
+    phase.wait_until_running().await;
     let rows = match ledger.unsettled().await {
         Ok(rows) => rows,
         Err(e) => {
@@ -637,13 +640,14 @@ pub async fn reoffer_unsettled(
 /// successful one settles it. A terminal fault stays in the ledger and keeps the pipeline fault
 /// surface loud; nothing here clears it without an operator.
 pub async fn retry_faulted_blocks(
+    phase: NodePhaseCell,
     ledger: BlockDispositionStore,
     block_store: BlockStore,
     to_processor: mpsc::Sender<BlockMessage>,
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("casper.blocks.BlockDisposition");
-    crate::engine::node_phase::wait_until_running().await;
+    phase.wait_until_running().await;
     let mut interval = tokio::time::interval(RETRY_SWEEP_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -766,12 +770,13 @@ impl OrphanStreak {
 /// any future accounting bug. The audit does not delete or repair: it makes the state loud and
 /// withholds readiness, and the operator reset remains the repair.
 pub async fn audit_stored_bodies(
+    phase: NodePhaseCell,
     block_store: BlockStore,
     dag: Arc<dyn BlockDagStorage>,
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("casper.blocks.BlockDisposition");
-    crate::engine::node_phase::wait_until_running().await;
+    phase.wait_until_running().await;
     let mut interval = tokio::time::interval(ORPHAN_AUDIT_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut streak = OrphanStreak::default();
