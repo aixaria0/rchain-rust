@@ -117,6 +117,7 @@ use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::block_disposition::{
     BlockDisposition, BlockDispositionCodec, BlockDispositionStore,
 };
+use rchain_casper::engine::node_phase::NodePhaseCell;
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 use rchain_ocapn::conn::Export;
@@ -785,6 +786,9 @@ pub struct ShardParts {
     /// The durable record of every stored body this shard still owes an outcome (U19). Only
     /// `Pending`/`Faulted` rows: accepted and refused blocks are the DAG metadata.
     pub block_disposition: BlockDispositionStore,
+    /// **This shard's launch phase** (B47). Clone-shared with its `BlockApiImpl`, proposer, launch
+    /// and disposition loops; one cell per shard, so one shard's sync does not move another's.
+    pub phase: NodePhaseCell,
     pub runtime_manager: Arc<RuntimeManager>,
     pub approved_store: ApprovedStore,
     /// This shard's store manager, over its own data directory ([`shard_data_dir`]).
@@ -871,7 +875,7 @@ pub fn wire_block_processing(
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     health: ShardHealth,
 ) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
-    wire_block_processing_observed(
+    let handles = wire_block_processing_observed(
         comm_state,
         parts,
         shard_id,
@@ -882,7 +886,17 @@ pub fn wire_block_processing(
         attest_on_new_blocks,
         None,
         health,
-    )
+    );
+    (handles.incoming_blocks, handles.validated_blocks)
+}
+
+/// The three senders the block pipeline exposes. The processor input is exposed because the
+/// start-up disposition audit runs **before** the shard reaches `Running` and must hand its
+/// re-offer to the already-spawned processor without going through the receiver.
+pub struct BlockProcessingHandles {
+    pub incoming_blocks: mpsc::Sender<BlockMessage>,
+    pub validated_blocks: mpsc::Sender<BlockMessage>,
+    pub processor_input: mpsc::Sender<BlockMessage>,
 }
 
 fn wire_block_processing_observed(
@@ -896,7 +910,7 @@ fn wire_block_processing_observed(
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     queue_metrics: Option<(Arc<MetricsRegistry>, usize)>,
     health: ShardHealth,
-) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
+) -> BlockProcessingHandles {
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
@@ -1051,30 +1065,30 @@ fn wire_block_processing_observed(
     );
     tokio::spawn(processor);
 
-    // **A body the node owes an outcome is re-offered, not forgotten** (U19). The start-up audit
-    // runs once; the retry loop then keeps the faulted rows moving until their budget is spent.
-    tokio::spawn(rchain_casper::block_disposition::reoffer_unsettled(
-        parts.block_disposition.clone(),
-        parts.block_store.clone(),
-        parts.dag.clone(),
-        processor_input_tx_disposition.clone(),
-        disposition_log.clone(),
-    ));
+    // **The retry loop and the periodic audit** run for the life of the shard. The start-up
+    // re-offer is *not* spawned here: launch runs it before the shard reaches `Running` (unit 3),
+    // so a restarted node cannot report running with the ledger unsettled.
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
+        parts.phase.clone(),
         parts.block_disposition.clone(),
         parts.block_store.clone(),
-        processor_input_tx_disposition,
+        processor_input_tx_disposition.clone(),
         disposition_log.clone(),
     ));
     // A stored body the DAG never accounts for is loud even when no ledger row names it (a body
     // written by a pre-ledger build). The audit is a count comparison, not a block scan.
     tokio::spawn(rchain_casper::block_disposition::audit_stored_bodies(
+        parts.phase.clone(),
         parts.block_store.clone(),
         parts.dag.clone(),
         disposition_log,
     ));
 
-    (incoming_blocks_tx, validated_blocks_tx)
+    BlockProcessingHandles {
+        incoming_blocks: incoming_blocks_tx,
+        validated_blocks: validated_blocks_tx,
+        processor_input: processor_input_tx_disposition,
+    }
 }
 
 /// Build the RSpace importer over the on-chain state stores (port of
@@ -1515,6 +1529,10 @@ pub async fn setup_node_program(
         members: shards
             .iter()
             .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+            .collect(),
+        phases: shards
+            .iter()
+            .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.phase.clone()))
             .collect(),
     });
 
@@ -2093,7 +2111,7 @@ async fn setup_shard_runtime(
     };
 
     // Block receiver + processor streams (spawned internally).
-    let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing_observed(
+    let handles = wire_block_processing_observed(
         comm_state,
         &parts,
         &shard_id,
@@ -2105,6 +2123,7 @@ async fn setup_shard_runtime(
         Some((metrics, index)),
         shard_health.clone(),
     );
+    let incoming_blocks_tx = handles.incoming_blocks;
 
     // This shard's slice of the peer-message stream (fed by the router).
     let (peer_tx, peer_message_rx) = mpsc::channel::<PeerMessage>(50);
@@ -2132,8 +2151,11 @@ async fn setup_shard_runtime(
         parts.block_store.clone(),
         parts.approved_store.clone(),
         parts.dag.clone(),
+        parts.block_disposition.clone(),
+        handles.processor_input,
         importer,
         exporter,
+        parts.phase.clone(),
         log.clone(),
     );
     let node_launch_log = log.clone();
@@ -2234,6 +2256,7 @@ async fn setup_shard_runtime(
             proposer_parts.state,
             resources.clone(),
             capacity_budget.execution.clone(),
+            parts.phase.clone(),
             log.clone(),
         );
         tokio::spawn(async move {
@@ -2658,6 +2681,9 @@ pub async fn setup_shard(
         }
     });
 
+    // **This shard's phase cell**, created here so the API and every later consumer share it. A
+    // restart begins at `Starting`; only this shard's launch writes it.
+    let phase = NodePhaseCell::new();
     let block_api: Arc<dyn rchain_casper::api::block_api::BlockApi> = Arc::new(BlockApiImpl::new(
         block_dag_storage.clone(),
         block_store.clone(),
@@ -2679,6 +2705,7 @@ pub async fn setup_shard(
         std::collections::BTreeSet::new(),
         propose_health,
         shard_health,
+        phase.clone(),
         deploy_relay_from_env(connections.clone()),
     ));
 
@@ -2764,6 +2791,7 @@ pub async fn setup_shard(
         block_store,
         dag: block_dag_storage,
         block_disposition,
+        phase,
         runtime_manager,
         approved_store,
         store_manager,

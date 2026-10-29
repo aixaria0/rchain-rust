@@ -27,6 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use rchain_casper::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
 use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, ProposerResult};
+use rchain_casper::engine::node_phase::{NodePhase, NodePhaseCell};
 use rchain_casper::state::ProposerState;
 
 use crate::resources::budget::PermitBudget;
@@ -113,6 +114,7 @@ pub fn create(
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     resources: Arc<ResourceGuard>,
     execution: Arc<PermitBudget>,
+    phase: NodePhaseCell,
     log: Arc<dyn Log>,
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
     create_with_retry(
@@ -122,6 +124,7 @@ pub fn create(
         state,
         resources,
         execution,
+        phase,
         log,
         NOT_DUE_RETRY,
     )
@@ -134,6 +137,7 @@ fn create_with_retry(
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     resources: Arc<ResourceGuard>,
     execution: Arc<PermitBudget>,
+    phase: NodePhaseCell,
     log: Arc<dyn Log>,
     not_due_retry: Duration,
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
@@ -152,6 +156,7 @@ fn create_with_retry(
             let tx = propose_requests_tx.clone();
             let proposer = proposer.clone();
             let resources = resources.clone();
+            let phase = phase.clone();
             let execution = execution.clone();
             let log = log.clone();
             async move {
@@ -199,11 +204,8 @@ fn create_with_retry(
                 // stream starts beside launch, so a request can arrive while launch is still
                 // `Starting`; wait for the decision rather than answer a healthy boot with a
                 // failure. `Syncing`/`Blocked` are refused immediately.
-                let phase = rchain_casper::engine::node_phase::wait_until_decided().await;
-                if !matches!(
-                    &phase,
-                    rchain_casper::engine::node_phase::NodePhase::Running
-                ) {
+                let decided = phase.wait_until_decided().await;
+                if !matches!(&decided, NodePhase::Running) {
                     let result = (
                         ProposeResult {
                             propose_status: ProposeStatus::ResourcePressure(
@@ -220,7 +222,7 @@ fn create_with_retry(
                             message: format!(
                                 "the node is in phase {}; it does not propose before the running \
                                  engine",
-                                phase.label()
+                                decided.label()
                             ),
                         },
                     );
@@ -484,16 +486,19 @@ mod tests {
         })
     }
 
-    /// A guard whose fallback state is `Normal`: the propose gate is open, and the phase gate is
-    /// too (no launch runs in this unit test binary).
+    /// A guard whose fallback state is `Normal`: the resource gate is open.
     fn healthy() -> Arc<ResourceGuard> {
-        rchain_casper::engine::node_phase::set_phase(
-            rchain_casper::engine::node_phase::NodePhase::Running,
-        );
         ResourceGuard::inert(crate::resources::ResourceSnapshot {
             fallback: crate::resources::ResourceState::Normal,
             ..crate::resources::ResourceSnapshot::default()
         })
+    }
+
+    /// A fresh cell in `Running`, so the propose gate is open without touching process state.
+    fn running_phase() -> NodePhaseCell {
+        let cell = NodePhaseCell::new();
+        cell.set_phase(NodePhase::Running);
+        cell
     }
 
     fn execution_budget(available_mb: u64, total_mb: u64) -> Arc<PermitBudget> {
@@ -521,6 +526,7 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             healthy(),
             execution_budget(4_096, 8_192),
+            running_phase(),
             Arc::new(rchain_shared::log::NopLog),
             retry,
         );
@@ -641,6 +647,7 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             critical,
             execution_budget(4_096, 8_192),
+            running_phase(),
             Arc::new(rchain_shared::log::NopLog),
             Duration::from_millis(50),
         );
@@ -698,6 +705,7 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             throttled(),
             execution.clone(),
+            running_phase(),
             Arc::new(rchain_shared::log::NopLog),
             Duration::from_millis(50),
         );
@@ -736,6 +744,7 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             healthy(),
             execution.clone(),
+            running_phase(),
             Arc::new(rchain_shared::log::NopLog),
             Duration::from_millis(50),
         );
@@ -768,6 +777,7 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
             throttled(),
             execution.clone(),
+            running_phase(),
             Arc::new(rchain_shared::log::NopLog),
             Duration::from_millis(40),
         );
@@ -800,5 +810,55 @@ mod tests {
                 .is_err(),
             "a zero-permit withhold must not schedule the not-due retry"
         );
+    }
+
+    /// **A shard outside `Running` does not propose** (B47, F-U20-04). The request is answered
+    /// with a `Failure` naming the phase, the proposer is never called, and nothing is retried.
+    #[tokio::test]
+    async fn a_syncing_cell_does_not_propose() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel(16);
+        let phase = NodePhaseCell::new();
+        phase.set_phase(NodePhase::Syncing);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer(BlockCreatorResult::NoNewDeploys, calls.clone()),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            healthy(),
+            execution_budget(4_096, 8_192),
+            phase,
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(50),
+        );
+        let (otx, orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let mut stream = Box::pin(stream);
+        let first = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("the request is answered")
+            .expect("one result");
+        assert!(matches!(
+            first.0.propose_status,
+            ProposeStatus::ResourcePressure(ref state) if state == "not-running"
+        ));
+        assert!(first.1.is_none(), "no block is produced outside Running");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the proposer must not be called while the shard is syncing"
+        );
+        match orx.await.expect("the requester is answered") {
+            ProposerResult::Failure {
+                status, message, ..
+            } => {
+                assert!(matches!(
+                    status,
+                    ProposeStatus::ResourcePressure(ref state) if state == "not-running"
+                ));
+                assert!(message.contains("syncing"), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 }

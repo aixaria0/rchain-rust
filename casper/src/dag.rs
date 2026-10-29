@@ -8,7 +8,8 @@ use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::{
     BlockDagStorage, DeployId, DeployIdPermit, DeployPermit, DeployerLookup, HaltRecord,
-    HealthCounters, ResetMarker, HALT_RECORD_KEY, HEALTH_COUNTERS_KEY, RESET_MARKER_KEY,
+    HealthCounters, ResetMarker, HALT_RECORD_KEY, HEALTH_COUNTERS_KEY, LEGACY_BODY_SCAN_KEY,
+    RESET_MARKER_KEY,
 };
 
 use rchain_block_storage::dag::finalizer::Message;
@@ -212,7 +213,8 @@ pub struct BlockDagKeyValueStorage {
     /// **The shard's durable records** — the store a reset writes itself into (F-U5-01, register C274),
     /// the one an autopropose halt writes itself into (W-N10-01, F-U10-02), and the one this shard's
     /// monotone health counters write into (W-N10-02). One store, one reserved key each:
-    /// [`RESET_MARKER_KEY`], [`HALT_RECORD_KEY`] and [`HEALTH_COUNTERS_KEY`], all literals so none can
+    /// [`RESET_MARKER_KEY`], [`HALT_RECORD_KEY`], [`HEALTH_COUNTERS_KEY`] and
+    /// [`LEGACY_BODY_SCAN_KEY`], all literals so none can
     /// collide with a block entry or with the others.
     ///
     /// Attached by [`Self::with_reset_marker`], whose name records which record needed it first; `None`
@@ -1165,6 +1167,34 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         let marker = raw.map(|bytes| ResetMarker::decode(&bytes)).transpose()?;
         crate::interpreter_util::note_reset_marker(marker.clone());
         Ok(marker)
+    }
+
+    async fn read_legacy_body_scan_marker(&self) -> Result<Option<u8>, String> {
+        let Some(store) = &self.reset_marker else {
+            return Ok(None);
+        };
+        let raw = store
+            .get(&[LEGACY_BODY_SCAN_KEY.to_vec()])
+            .await
+            .map_err(|e| format!("legacy scan marker read: {e}"))?;
+        match raw.into_iter().next().flatten() {
+            None => Ok(None),
+            Some(bytes) => bytes
+                .first()
+                .copied()
+                .map(Some)
+                .ok_or_else(|| "legacy scan marker is empty".to_string()),
+        }
+    }
+
+    async fn write_legacy_body_scan_marker(&self, version: u8) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Err("this shard has no durable-records store for the legacy scan".to_string());
+        };
+        store
+            .put(&[(LEGACY_BODY_SCAN_KEY.to_vec(), vec![version])])
+            .await
+            .map_err(|e| format!("legacy scan marker write: {e}"))
     }
 
     async fn clear_reset_marker(&self) -> Result<(), String> {

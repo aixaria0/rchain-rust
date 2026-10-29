@@ -291,13 +291,27 @@ gauges; the node's own `GET /health` is a readiness body (200 while serving) and
 `finalityStalled`/`finalityStallEpisodes` as the peer-liveness signal.
 
 **Readiness is not pool capacity.** `acceptsDeploys` remains the Law 86a pool answer; `/health` also
-carries `ready` and `phase` (`running` | `syncing` | `blocked`), `pipelineFaults`, `orphanBodies`,
-`orphanDetections`, and `proposalHalted`. A syncing or blocked node refuses HTTP/gRPC deploy
-admission with a 503 even when the pool has room, because it cannot include the work. A
-block-pipeline fault sets `phase: blocked` and `ready: false`; a validator beyond the finality bound
-sets `proposalHalted` and stops proposing **and** attesting. The operator action is
+carries `ready`, `phase`, `nodePhase`, `shardPhases`, `pipelineFaults`, `orphanBodies`,
+`orphanDetections`, and `proposalHalted`. **The phase is per shard**: `phase`/`nodePhase` are the
+primary shard's label and `shardPhases` maps every member shard to its own. `ready` requires
+**every** member shard Running (plus no pipeline fault, no isolation and no confirmed orphan);
+a node with one serving and one syncing shard is not ready. Deploy admission is judged by the shard
+the deploy names: `Syncing`/`Blocked` refuse it with a 503 even when the pool has room, while
+`Starting` may pool it (the node is seconds from deciding, and `/health` is still not ready there).
+A block-pipeline fault sets `ready: false`; a validator beyond the finality bound sets
+`proposalHalted` and stops proposing **and** attesting. The operator action is
 `POST /api/v1/proposer/resume` on the admin listener; the next proposal re-checks the bound, so a
 node that is still isolated latches again.
+
+**What launch does before it says Running.** A shard moves `Starting` → `Syncing` (if it restores
+state) → the **start-up disposition audit** → `Running`. The audit runs a one-time **keys-only**
+scan for bodies written before the ledger (the `legacy-body-scan` marker in the shard's durable
+records; it adopts orphan hashes as `Pending` and decodes one body at a time), re-offers every
+unsettled row, and waits a **bounded 30 s** for the rows it actually offered. A row whose
+justification is not in the DAG was never offered, stays `Pending` and visible, and does not hold
+boot; an audit error is logged and boot proceeds. The marker is written only after the scan, so a
+crash rescans. `Running` therefore means "the audit was attempted and its window closed", not "the
+ledger is empty".
 
 **A block the node cannot settle is durable and retried.** Each stored body has a disposition row
 while the node owes it an outcome; a fault (an internal replay error, an insert error, a validation
@@ -307,8 +321,10 @@ process counter and does not fall when a retry succeeds; a restart is the clean 
 whose cause is gone. A quarantined row and an unresolved orphan are both visible on `/health` and
 both withhold `ready`. `orphanBodies` is **zero until the periodic audit has seen the same
 block-store/DAG gap for three consecutive samples**, so an in-flight block does not flap readiness.
-A sustained non-zero value means a body the DAG does not account for — a body written by a build
-before the ledger has no row, so the recovery is an operator reset or a peer re-delivery.
+A sustained non-zero value means a body the DAG does not account for. A body written by a build
+before the ledger is adopted by the start-up scan on the next start; a body whose bytes cannot be
+decoded is logged by hash and remains this count audit's signal, so the recovery is an operator
+reset or a peer re-delivery.
 
 | Switch | Default | Effect |
 |---|---|---|
