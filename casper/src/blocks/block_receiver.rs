@@ -15,6 +15,8 @@ use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
 
+use crate::block_disposition::{BlockDispositionStore, PendingStage};
+use crate::blocks::block_processor;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
 use crate::validate::{block_hash, block_signature, format_of_fields};
@@ -451,6 +453,7 @@ async fn incoming_blocks(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     conf_shard_name: Arc<str>,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -530,6 +533,26 @@ async fn incoming_blocks(
                 *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
+        }
+
+        // **The body is now in the store, so the node owes it an outcome** (U19, F-U19-01/05/07).
+        // The row is written before dependency resolution and before any fallible step below, so a
+        // crash or an error leaves a durable obligation the start-up audit re-offers. A failed write
+        // is a store fault: record it and keep going — the block can still be accepted now, and the
+        // only loss is that a crash before settlement would orphan the body, which is exactly what
+        // the fault surface says.
+        if let Err(e) = disposition
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+        {
+            block_processor::note_pipeline_fault(&block, "disposition write", &e);
+            log.error(
+                source,
+                &format!(
+                    "Could not record the disposition of stored block {}: {e}",
+                    block.block_hash.to_hex()
+                ),
+            );
         }
 
         // The loop's own failure idiom (as for `end_stored` below): log with the block, skip it, and
@@ -771,6 +794,7 @@ pub fn apply(
     released_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -783,6 +807,7 @@ pub fn apply(
         released_processing_rx,
         conf_shard_name,
         block_store,
+        disposition,
         dag,
         block_retriever,
         put_to_incoming_queue,
@@ -799,6 +824,7 @@ pub fn apply_with_queue_observer(
     released_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -812,6 +838,7 @@ pub fn apply_with_queue_observer(
         state.clone(),
         Arc::from(conf_shard_name),
         block_store,
+        disposition,
         dag.clone(),
         block_retriever,
         put_to_incoming_queue,

@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
+use crate::block_disposition::{BlockDispositionStore, MAX_FAULT_RETRIES};
 use crate::interpreter_util::ShardHealth;
 use crate::merging::BlockIndex;
 use crate::multi_parent_casper::ValidateError;
@@ -39,7 +40,7 @@ pub fn last_pipeline_fault() -> Option<String> {
     LAST_PIPELINE_FAULT.lock().unpoison().clone()
 }
 
-fn note_pipeline_fault(block: &BlockMessage, stage: &str, error: &str) {
+pub(crate) fn note_pipeline_fault(block: &BlockMessage, stage: &str, error: &str) {
     PIPELINE_FAULTS.fetch_add(1, Ordering::Relaxed);
     *LAST_PIPELINE_FAULT.lock().unpoison() = Some(format!(
         "{} at {}: {error}",
@@ -79,14 +80,10 @@ async fn validation_within_deadline<T: Send + 'static>(
     match tokio::time::timeout(timeout, &mut handle).await {
         Ok(joined) => Some(joined),
         Err(_) => {
-            // **Abort after recording, not instead of it.** Dropping the handle would leave the task
-            // running detached and silent — the very shape this bound exists to make impossible.
+            // **Abort before returning, not instead of it.** Dropping the handle would leave the task
+            // running detached and silent — the very shape this bound exists to make impossible. The
+            // caller records the fault (process cell + durable ledger).
             handle.abort();
-            note_pipeline_fault(
-                block,
-                "validation timeout",
-                &format!("no verdict within {timeout:?}"),
-            );
             log.error(
                 source,
                 &format!(
@@ -99,6 +96,102 @@ async fn validation_within_deadline<T: Send + 'static>(
             );
             None
         }
+    }
+}
+
+/// Record a retryable node fault in the durable ledger **and** the process-wide fault cell.
+///
+/// Both are needed and neither substitutes for the other: the ledger is what survives a restart and
+/// what the retry loop reads; the cell is what `/health` and the propose/deploy gates read now. A
+/// ledger write that fails is itself logged as a fault, because the alternative is a stored body
+/// with no record — the orphan state U19 exists to forbid.
+async fn record_block_fault(
+    disposition: &BlockDispositionStore,
+    block: &BlockMessage,
+    stage: &str,
+    reason: &str,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) {
+    note_pipeline_fault(block, stage, reason);
+    match disposition
+        .mark_faulted(block.block_hash, block.block_number, stage, reason)
+        .await
+    {
+        Ok(attempts) if attempts >= MAX_FAULT_RETRIES => log.error(
+            source,
+            &format!(
+                "Block #{} {} faulted at {stage} ({reason}); the retry budget is spent after \
+                 {attempts} attempts and the block is quarantined until an operator reset",
+                block.block_number,
+                block.block_hash.to_hex()
+            ),
+        ),
+        Ok(attempts) => log.error(
+            source,
+            &format!(
+                "Block #{} {} faulted at {stage} ({reason}); recorded for retry {attempts}/{MAX_FAULT_RETRIES}",
+                block.block_number,
+                block.block_hash.to_hex()
+            ),
+        ),
+        Err(e) => log.error(
+            source,
+            &format!(
+                "Block #{} {} faulted at {stage} ({reason}) but the disposition could not be \
+                 recorded: {e}; if the node restarts before the next attempt the body may be \
+                 orphaned",
+                block.block_number,
+                block.block_hash.to_hex()
+            ),
+        ),
+    }
+}
+
+/// A fault no retry can fix is parked with the budget already spent; it stays loud and only an
+/// operator clears it.
+async fn record_terminal_fault(
+    disposition: &BlockDispositionStore,
+    block: &BlockMessage,
+    stage: &str,
+    reason: &str,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) {
+    note_pipeline_fault(block, stage, reason);
+    if let Err(e) = disposition
+        .mark_terminal_fault(block.block_hash, block.block_number, stage, reason)
+        .await
+    {
+        log.error(
+            source,
+            &format!(
+                "Block {} terminal fault could not be recorded: {e}",
+                block.block_hash.to_hex()
+            ),
+        );
+    }
+}
+
+/// **A verdict settles the obligation.** Accepted and refused blocks are both DAG metadata now; the
+/// ledger row is deleted. A failed delete is not fatal — the next start reads the DAG first and
+/// settles a row whose block is already inserted — but it is logged because the row would otherwise
+/// look like an open obligation.
+async fn settle_block(
+    disposition: &BlockDispositionStore,
+    block: &BlockMessage,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) {
+    if let Err(e) = disposition.settle(block.block_hash).await {
+        log.warn(
+            source,
+            &format!(
+                "could not settle the disposition of block {} after its verdict: {e}; the next \
+                 start reconciles it from the DAG",
+                block.block_hash.to_hex()
+            ),
+        );
     }
 }
 
@@ -237,6 +330,7 @@ pub async fn apply<F, Fut>(
     max_number_of_parents: i32,
     dag: Arc<dyn BlockDagStorage>,
     block_store: BlockStore,
+    disposition: BlockDispositionStore,
     runtime: Arc<RuntimeManager>,
     comm_util: Arc<CommUtil>,
     block_index: F,
@@ -294,13 +388,29 @@ pub async fn apply<F, Fut>(
                 validation_within_deadline(handle, BLOCK_VALIDATION_TIMEOUT, &block, &log, source)
                     .await
             else {
+                record_block_fault(
+                    &disposition,
+                    &block,
+                    "validation timeout",
+                    "no verdict within the deadline",
+                    &log,
+                    source,
+                )
+                .await;
                 continue;
             };
             let result = match joined {
                 Ok(r) => r,
                 Err(e) => {
-                    note_pipeline_fault(&block, "validator task panicked", &e.to_string());
-                    log.error(source, &format!("validator task panicked: {e}"));
+                    record_block_fault(
+                        &disposition,
+                        &block,
+                        "validator task panicked",
+                        &e.to_string(),
+                        &log,
+                        source,
+                    )
+                    .await;
                     continue;
                 }
             };
@@ -308,36 +418,41 @@ pub async fn apply<F, Fut>(
                 Ok(meta) => (meta, Ok(())),
                 Err(ValidateError::ValidationFailed(meta, status)) => (meta, Err(status)),
                 Err(ValidateError::SelfEquivocation) => {
-                    note_pipeline_fault(&block, "self-equivocation", "proposer-only outcome");
-                    log.error(
+                    record_terminal_fault(
+                        &disposition,
+                        &block,
+                        "self-equivocation",
+                        "a received block cannot self-equivocate; retry cannot change this",
+                        &log,
                         source,
-                        &format!(
-                            "Block {} processing error: self-equivocation is a proposer-only outcome",
-                            block.block_hash.to_hex()
-                        ),
-                    );
+                    )
+                    .await;
                     continue;
                 }
                 Err(ValidateError::Internal(e)) => {
-                    // An `Internal` failure is a store or runtime failure this loop has no answer for,
-                    // so the block is dropped and the error is logged. **A `missing justification`
-                    // cannot arrive here** — see the note on `apply` — so there is nothing to defer.
-                    note_pipeline_fault(&block, "validation internal", &e);
-                    log.error(
+                    // An `Internal` failure is a store or runtime failure: retryable by the
+                    // disposition ledger's schedule, not droppable. **A `missing justification`
+                    // cannot arrive here** — see the note on `apply` — so the retry is for the
+                    // store/runtime fault, not for a dependency that was never released.
+                    record_block_fault(
+                        &disposition,
+                        &block,
+                        "validation internal",
+                        &e,
+                        &log,
                         source,
-                        &format!("Block {} processing error: {e}", block.block_hash.to_hex()),
-                    );
+                    )
+                    .await;
                     continue;
                 }
             };
             if let Err(e) = dag.insert(block_meta, block.clone()).await {
-                note_pipeline_fault(&block, "dag insert", &e);
-                log.error(
-                    source,
-                    &format!("Block {} insert error: {e}", block.block_hash.to_hex()),
-                );
+                record_block_fault(&disposition, &block, "dag insert", &e, &log, source).await;
                 continue;
             }
+            // The insert committed, so either verdict is a DAG record; the durable obligation is
+            // discharged before the notification below.
+            settle_block(&disposition, &block, &log, source).await;
             match status {
                 Ok(()) => {
                     // **Awaiting, so a full queue backpressures this processor instead of growing**
@@ -419,8 +534,25 @@ mod tests {
     /// process-wide fault the readiness/refusal gates read.
     #[tokio::test]
     async fn a_hung_validation_times_out_and_faults_the_pipeline() {
+        use crate::block_disposition::{BlockDisposition, BlockDispositionCodec, PendingStage};
+        use rchain_block_storage::dag::codecs::BlockHashCodec;
+        use rchain_shared::store_manager::{database, InMemoryStoreManager};
+
         let block = rchain_block_storage::test_support::block();
         let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let kv = database(
+            &InMemoryStoreManager::default(),
+            "block-disposition",
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockDispositionCodec),
+        )
+        .await
+        .expect("in-memory ledger");
+        let store = BlockDispositionStore::from_store(Arc::new(kv));
+        store
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
         let before = pipeline_faults();
         let handle = tokio::spawn(std::future::pending::<()>());
         let outcome = validation_within_deadline(
@@ -435,6 +567,15 @@ mod tests {
             outcome.is_none(),
             "a hung validation must not be awaited to completion"
         );
+        record_block_fault(
+            &store,
+            &block,
+            "validation timeout",
+            "no verdict within the deadline",
+            &log,
+            LogSource::new("casper.blocks.BlockProcessor"),
+        )
+        .await;
         assert!(
             pipeline_faults() > before,
             "a timeout must be visible as a fault"
@@ -445,6 +586,10 @@ mod tests {
             ),
             "the fault must name the stage and the block"
         );
+        assert!(matches!(
+            store.get(&block.block_hash).await.expect("ledger read"),
+            Some(BlockDisposition::Faulted { attempts: 1, .. })
+        ));
     }
 
     /// The deadline is a *deadline*, not a fixed delay: a validation that returns first is
