@@ -116,11 +116,14 @@ genesis decision for each network. If a network wants to price absence, the stag
 | 0 | current: behavioural slashing; absence paid; no inactivity leak | only invalid/equivocation | shipped |
 | 1 | arm the existing income rule after measuring the participation lag | no | a network/genesis decision; measure first |
 | 2 | an inactivity leak / reward decay (new state) | no | not built; Lean-first and maintainer decision |
-| 3 | liveness slashing | yes | **last resort**, only for sustained, objective, attributable absence, never a single outage or partition; governance and testnet first |
+| 3 | liveness slashing — **now the opt-in jail + stake vote** (RCHIP #55, Law 89) | only through a >2/3 active-stake vote | implemented, **default off**; jail first (bond untouched), the vote is the only bond path; live testnet evidence owed |
+| 4 | mainnet arming | as above | **not authorised**; waits on the live artefact and #428 |
 
-The recommendation is **not** to add liveness slashing now. Hardware is handled by the preflight,
-explicit risk acceptance and the notice; if absence is to be priced, start with income and measurement.
-The protocol's own principle is that a staker must not lose its bond through no fault of its own.
+**Decision record (2026-10-29).** The 2026-10-02 position is retained for the inactivity leak: no
+automatic step burns a bond. RCHIP #55 adds a *bond-preserving jail* and a *vote-gated slash*; the two
+are not a leak. The recommendation for a default network is still **do not arm**; a network that arms
+accepts that a >2/3 active-stake vote can eject a validator, and that a partitioned minority can be
+jailed on the side that still finalises. Mainnet arming waits on the live testnet artefact and #428.
 
 ## 8. Terms and reporting
 

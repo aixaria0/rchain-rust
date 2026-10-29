@@ -4894,6 +4894,72 @@ def lawsC : List Law := [
       chain — it bounds the private chain a node can build; the finality algorithm and slashing \
       are outside it." },
 
+  { number := 89, layer := "PoS",
+    statement := "**Liveness enforcement is jail first; only a vote reaches the bond.** A validator \
+      absent across advancing epoch boundaries is removed from the active set for `J` boundaries and \
+      paid nothing, while its bond and its delegators' principal are untouched. A stake-weighted vote \
+      of strictly more than two thirds of the active stake, opened only against an already-jailed \
+      validator, may slash it at the configured tier and permanently eject it. A stalled boundary or \
+      an off-boundary block changes nothing",
+    status := .provedModel,
+    declarations := [`Rchain.Liveness.State, `Rchain.Liveness.stepJail,
+      `Rchain.Liveness.boundaryStep, `Rchain.Liveness.jail_never_touches_the_bond,
+      `Rchain.Liveness.the_stall_rule_changes_nothing,
+      `Rchain.Liveness.no_boundary_no_action,
+      `Rchain.Liveness.one_lapse_is_not_sustained,
+      `Rchain.Liveness.stallStep,
+      `Rchain.Liveness.a_stall_that_counts_jails_an_innocent,
+      `Rchain.Liveness.passes, `Rchain.Liveness.voteSlash,
+      `Rchain.Liveness.vote_admits_only_above_threshold,
+      `Rchain.Liveness.a_passing_vote_slashes_and_ejects,
+      `Rchain.Liveness.a_simple_majority_is_not_enough,
+      `Rchain.Liveness.openWindow,
+      `Rchain.Liveness.a_vote_without_jail_is_not_opened,
+      `Rchain.Liveness.burnStep,
+      `Rchain.Liveness.jail_that_burns_the_bond_reaches_a_stake,
+      `Rchain.Liveness.releaseIfPresent,
+      `Rchain.Liveness.a_returning_validator_is_released,
+      `Rchain.Liveness.renewIfAbsent,
+      `Rchain.Liveness.a_still_absent_validator_is_renewed],
+    axioms := [],
+    rust := ["rholang/src/native_state.rs", "rholang/src/pos_liveness.rs",
+      "rholang/src/system_processes.rs", "casper/src/genesis/mod.rs",
+      "block-storage/src/dag/liveness.rs"],
+    rustWitness := ["rholang/src/native_state.rs:a_sustained_absence_jails_without_touching_the_bond",
+      "rholang/src/native_state.rs:one_boundary_omission_does_not_jail",
+      "rholang/src/native_state.rs:a_stall_freezes_the_jail_clock",
+      "rholang/src/native_state.rs:a_vote_below_two_thirds_does_not_slash",
+      "rholang/src/native_state.rs:a_passing_vote_slashes_and_permanently_ejects",
+      "rholang/src/native_state.rs:a_jailed_validator_returns_after_the_term",
+      "rholang/src/native_state.rs:a_still_absent_validator_is_renewed",
+      "rholang/src/native_state.rs:a_banished_validator_cannot_rebond",
+      "rholang/src/system_processes.rs:pos_vote_slash_is_authorised_by_the_deployer_id"],
+    witness := [`Rchain.Liveness.jail_never_touches_the_bond,
+      `Rchain.Liveness.the_stall_rule_changes_nothing,
+      `Rchain.Liveness.no_boundary_no_action,
+      `Rchain.Liveness.one_lapse_is_not_sustained,
+      `Rchain.Liveness.a_stall_that_counts_jails_an_innocent,
+      `Rchain.Liveness.vote_admits_only_above_threshold,
+      `Rchain.Liveness.a_passing_vote_slashes_and_ejects,
+      `Rchain.Liveness.a_simple_majority_is_not_enough,
+      `Rchain.Liveness.a_vote_without_jail_is_not_opened,
+      `Rchain.Liveness.jail_that_burns_the_bond_reaches_a_stake,
+      `Rchain.Liveness.a_returning_validator_is_released,
+      `Rchain.Liveness.a_still_absent_validator_is_renewed],
+    falsifiable := "`stallStep` counts absence without checking finality progress and jails a \
+      validator during a stall (`a_stall_that_counts_jails_an_innocent`); `burnStep` jails by \
+      removing the pool entry and `jail_that_burns_the_bond_reaches_a_stake` exhibits the bond that \
+      moved, while `stepJail` leaves `pool` unchanged; a simple-majority gate admits two of three \
+      (`a_simple_majority_is_not_enough`); a vote against an active validator is not opened \
+      (`a_vote_without_jail_is_not_opened`).",
+    note := "RCHIP #55. The model separates the two steps: `stepJail` never writes `pool`, and \
+      `voteSlash` writes it only when `passes` (strict `3 * for > 2 * total`, the same rule as \
+      `is_super_majority`). The Rust side supplies the expiry/renewal arithmetic, the participation \
+      map (from the receiver's finalised fringe), the vote-window tally, the delegation fan-out on a \
+      slash, and the withdrawal escrow; those are outside the model. This is **not** an inactivity \
+      leak: no automatic step touches a bond. Default off; a network arms it at genesis. The boundary- \
+      skip hole (no validity rule requires a `CloseBlock` at a boundary) is a separate residual." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC

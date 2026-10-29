@@ -633,6 +633,47 @@ block_processor.rs`, `block_receiver.rs`, `casper/src/dag.rs`, `casper/src/engin
 `node_syncing.rs`, `recovery.rs`, `casper/src/blocks/proposer/proposer.rs`,
 `docs/src/spec/resource-safety-case.md`. Ran: `tools/check-hazop-worksheet.sh --gate`.
 
+### U21 — Liveness enforcement, jail and vote
+
+**Design intent.** A sustained absentee is removed from consensus without losing its bond, and only a strict supermajority of the active stake can confiscate and permanently eject it; a partitioned or stalled chain changes nothing.
+
+**Guide words.** row: NO, MORE, LESS, AS WELL AS, PART OF, OTHER THAN, REVERSE, EARLY, LATE, BEFORE, AFTER
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U21-01** | NO | **No action without an advancing boundary**: a chain that cannot finalise must not jail | liveness counters and vote windows advance only at an epoch boundary whose quorum-supported tip moved; `apply_liveness_prelude` skips an empty participation map or an unchanged tip | a stall freezes both clocks | Terminal | R4 | rholang/src/native_state.rs::a_stall_freezes_the_jail_clock |
+| **F-U21-02** | MORE | **A colluding supermajority can eject a dissenter**: a passing vote slashes and permanently bans, with no unban path | the vote threshold is strict `3·for > 2·total` of the active stake; a capture above it is the fixed policy decision, mitigated by jail-first, one open window per target, default-off and TERMS disclosure | the risk is stated and accepted; no unban in this pass | Terminal | R4 | rholang/src/native_state.rs::a_passing_vote_slashes_and_permanently_ejects |
+| **F-U21-03** | LESS | **Less than two thirds leaves a jailed validator jailed**: the liveness problem is priced (no income, no active membership) but the bond stays and the finality denominator does not shrink | `passes` is strict; a failed window expires and the target stays jailed until it speaks | a jailed validator can return; the network may have to wait for it or withdraw | Terminal | R3 | rholang/src/native_state.rs::a_vote_below_two_thirds_does_not_slash |
+| **F-U21-04** | AS WELL AS | **Alongside a partition, the finalising side may jail the minority**: jail is automatic and bond-preserving; a vote could then slash | the advance test reads the quorum-supported tip, so the side that cannot finalise counts nothing; the side that can, counts the other's silence | the partition drill (jail but no slash until a vote) is owed | Terminal | R4 | owed: a partition arm showing jail-without-slash on the finalising side |
+| **F-U21-05** | PART OF | **Only the finalised-fringe participation is read**: a stale reachable fringe can shift a reading | participation is the receiver-derived `latest_heights` of the boundary's finalised fringe; a one-boundary omission is not enough because `jail_after` is at least 2 | a one-boundary lapse does not jail | Drift | R3 | rholang/src/native_state.rs::one_boundary_omission_does_not_jail |
+| **F-U21-06** | OTHER THAN | **Stake, not node count, decides**: one large staker can decide for many operators | the tally sums pool bonds of active voters, not keys | the threshold is stated in stake | Terminal | R4 | rholang/src/native_state.rs::a_passing_vote_slashes_and_permanently_ejects |
+| **F-U21-07** | REVERSE | **One message releases the jail**: a validator can oscillate absent N−1 / present 1 to avoid it | a present boundary resets the counter; the jail term then runs and a present validator is released at expiry | the jail is not a sentence; continued silence renews it | Drift | R4 | rholang/src/native_state.rs::a_jailed_validator_returns_after_the_term |
+| **F-U21-08** | EARLY | **Jail is early relative to the vote**: a false positive costs income and active membership for J boundaries | the first automatic step is non-confiscatory; the vote is the only bond path; the term expires | the bond is untouched by the automatic step | Drift | R3 | rholang/src/native_state.rs::a_sustained_absence_jails_without_touching_the_bond |
+| **F-U21-09** | LATE | **Tally is late relative to withdrawal**: a bond can leave the pool before the vote closes | `vote_window × epoch_divisor ≤ quarantine_length` is validated at genesis; a paid claim leaves no bond and the window drops | the genesis invariant is enforced; a vote reaching a staged withdrawal is owed as a test | Terminal | R4 | owed: a vote still reaching a staged withdrawal |
+| **F-U21-10** | BEFORE | **The bond is at risk before the vote**: an implementation that slashes on jail burns a bond through no fault | `stepJail` writes only the counter leaf; `NativeSystemState::slash` is called only from the passing-vote arm | the automatic step moves no stake | Terminal | R4 | rholang/src/native_state.rs::a_sustained_absence_jails_without_touching_the_bond |
+| **F-U21-11** | AFTER | **After a long stall the jail term and vote window freeze**: the network may be unable to clear a jail until finality resumes | the prelude returns without decrementing when the quorum tip does not advance | a stall freezes the clocks; no automatic recovery | Terminal | R4 | rholang/src/native_state.rs::a_stall_freezes_the_jail_clock |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U21-01/U21-04/U21-09 | **Law 89** — a stalled boundary changes nothing; only an advancing boundary counts (`spec/Rchain/Liveness.lean`); Law 52 keeps the denominator whole | the advance test is the quorum-supported tip, not the local height |
+| U21-02/U21-03/U21-06 | **Law 89** — a vote is admitted only above `3·for > 2·total` and a passing vote slashes/ejects | the threshold is the model's `passes` |
+| U21-05/U21-07/U21-08/U21-10 | **Law 89** — jail never touches the bond; one lapse is not sustained; a returning validator is released; continued silence renews | the automatic step is non-confiscatory |
+| U21-11 | **Law 89** — no action without an advancing boundary | the clock is finality progress, not wall time |
+
+### Provenance
+
+This is a desk study of the liveness-enforcement design (RCHIP #55), not a live measurement. Read:
+`rholang/src/native_state.rs` (`apply_liveness_prelude`, `close_block`, `cast_vote`),
+`rholang/src/pos_liveness.rs`, `rholang/src/system_processes.rs` (`voteSlash`/`getVotes`),
+`casper/src/genesis/mod.rs`, `block-storage/src/dag/liveness.rs`,
+`docs/src/node/validator-economics.md`, `docs/src/node/operator-risk.md`, `TERMS.md`. Ran
+`tools/check-hazop-worksheet.sh --gate`. No live-net mutation; the partition and staged-withdrawal
+arms remain owed.
+
 ## 4. The fault tree
 
 ```
@@ -798,7 +839,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 25 · node-words owed: 44
+**Debt.** falsifiers owed: 27 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.
