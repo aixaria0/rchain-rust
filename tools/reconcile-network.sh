@@ -146,7 +146,7 @@ blocks_at() { # host port height
   # answer and a live one are the same answer. Falls back to a single-height request when the range was
   # not cached (a node that refused it, or `RECONCILE_NO_CACHE=1`).
   local range_file="${CACHE_DIR:-}/blocks_${1}_${2}.json"
-  if [ -n "${CACHE_DIR:-}" ] && [ -s "$range_file" ]; then
+  if [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "${CACHE_DIR:-}" ] && [ -s "$range_file" ]; then
     cat "$range_file"
   else
     api "$1" "$2" "/api/blocks/$3/$3"
@@ -164,6 +164,36 @@ for x in b:
     rejected=json.dumps([str(d) for d in (x.get('rejectedDeploys') or [])], separators=(',',':'))
     print('%s %s %s %s %s' % (x.get('blockHash',''), x.get('sender',''),
                               x.get('postStateHash',''), x.get('deployCount',0), rejected))"
+}
+
+# A range is a snapshot of one node's block inventory, not immutable data for this endpoint.
+# Refresh it after recovery and on every verification round: blocks already present do not change,
+# but the set a recovering node holds does. Failed/invalid refreshes discard the previous snapshot
+# and use live per-height requests instead of presenting stale or partial data as a current answer.
+refresh_block_ranges() { # inclusive upper height for this phase
+  [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "${CACHE_DIR:-}" ] || return 0
+  local upper="$1" n range_file pending
+  for n in "${NAMES[@]}"; do
+    range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
+    pending="$range_file.pending"
+    rm -f -- "$range_file" "$pending"
+    if api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$upper" > "$pending" 2>/dev/null \
+      && python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+    valid=isinstance(data,list) and all(isinstance(b,dict) and type(b.get("blockNumber")) is int for b in data)
+except (ValueError,TypeError):
+    valid=False
+sys.exit(0 if valid else 1)
+' < "$pending"; then
+      mv -- "$pending" "$range_file"
+    else
+      rm -f -- "$pending"
+      echo "  NOTE: range snapshot unavailable or invalid for ${HOST[$n]}:${PORT[$n]}; using live per-height requests" >&2
+    fi
+  done
+  return 0
 }
 # The last-finalised endpoint answers with an *error string* rather than an object when there is no
 # finalised fringe yet (`"Finalized fringe is not available."`) — which is the state a diverged net is in,
@@ -430,15 +460,7 @@ MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null &
 # so the 3122-block chain this tool exists for would have taken most of a day. A block never changes
 # after it is created, so one fetch per node answers every height, and `blocks_at` filters locally with
 # the parsing it already had. `RECONCILE_NO_CACHE=1` restores the per-height path.
-if [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "$CACHE_DIR" ]; then
-  for n in "${NAMES[@]}"; do
-    range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
-    api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$MAXH" > "$range_file" 2>/dev/null
-    # A node that cannot serve the range is not cached, so its heights fall back to live single-height
-    # requests: the fallback costs time, never correctness.
-    [ -s "$range_file" ] || rm -f "$range_file"
-  done
-fi
+refresh_block_ranges "$MAXH"
 
 # --- 2. reported equivocation -------------------------------------------------
 # **A report, not a proof, and it decides nothing.** A sender is flagged when two *distinct* blocks by it
@@ -1120,6 +1142,7 @@ for i in $(seq 1 40); do
   sleep 15
   ok=1; line=""
   for n in "${NAMES[@]}"; do line="$line $n=$(height_of "${HOST[$n]}" "${PORT[$n]}")"; done
+  refresh_block_ranges "$MAXH"
   for (( h=MEET; h<=MAXH; h++ )); do
     # **A height nobody has produced is not a disagreement.** `MAXH` is `/api/status`'s
     # `latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest
@@ -1212,6 +1235,17 @@ for i in $(seq 1 "${RECONCILE_FINALITY_ROUNDS:-40}"); do
     done
   fi
   if [ "$adv_ok" = "1" ]; then
+    # Finality may now be above the original plan's MAXH. Read a fresh inventory through every
+    # height this round will check, rather than asking the pre-recovery snapshot about new blocks.
+    range_top="$MAXH"
+    for n in "${NAMES[@]}"; do
+      for candidate_height in "${FINH[$n]}" "${NOWH[$n]:-}"; do
+        if [[ "$candidate_height" =~ ^[0-9]+$ ]] && [ "$candidate_height" -gt "$range_top" ]; then
+          range_top="$candidate_height"
+        fi
+      done
+    done
+    refresh_block_ranges "$range_top"
     for n in "${NAMES[@]}"; do
       fh="${FINH[$n]}"; fb="${FINB[$n]}"
       for m in "${NAMES[@]}"; do
