@@ -173,6 +173,8 @@ Tracked as [#60](https://github.com/rhovision-org/rholo/issues/60), which carrie
 self-contained reproduction (a memory-capped `systemd-run` unit) and separates what is measured from what
 is still unattributed.
 
+The narrower metadata-index constructor has a [paired mature-history measurement](../../../spec/audit/evidence/n480-startup-metadata-20261029/README.md). It checks the complete reconstructed index and persisted metadata; it does not measure full-node replay or qualify host capacity.
+
 ### Resident memory is not only what the node holds — glibc's arenas
 
 glibc gives each thread its own malloc **arena**, and an arena keeps the high-water mark of what it has
