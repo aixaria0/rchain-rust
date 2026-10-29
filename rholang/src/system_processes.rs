@@ -1742,6 +1742,135 @@ impl SystemProcesses {
                     i64::from(bd.block_number)
                 };
                 match op {
+                    "voteSlash" => {
+                        let [deployer_id, target, in_favor, ret] = rest else {
+                            return Err(illegal_arg(
+                                "voteSlash expects deployerId, target public key, a boolean and a                                  return channel",
+                            ));
+                        };
+                        // Capability, not data: the caller is the deployer, as for `bond`/`trust`.
+                        let voter = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("voteSlash expects a deployerId"))?;
+                        let target = RhoByteArray::unapply(target)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("voteSlash expects a 65-byte validator public key")
+                            })?;
+                        let in_favor = RhoBoolean::unapply(in_favor)
+                            .ok_or_else(|| illegal_arg("voteSlash expects a boolean vote"))?;
+                        let out = match native
+                            .cast_vote(&voter, &target, in_favor)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                eprintln!("[pos] ok");
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "unvoteSlash" => {
+                        let [deployer_id, target, ret] = rest else {
+                            return Err(illegal_arg(
+                                "unvoteSlash expects deployerId, target public key and a return                                  channel",
+                            ));
+                        };
+                        let voter = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("unvoteSlash expects a deployerId"))?;
+                        let target = RhoByteArray::unapply(target)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("unvoteSlash expects a 65-byte validator public key")
+                            })?;
+                        let out = match native
+                            .retract_vote(&voter, &target)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                eprintln!("[pos] ok");
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "getLiveness" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("getLiveness expects a return channel"));
+                        };
+                        let records = native.liveness().await.map_err(|e| illegal_arg(&e))?;
+                        let kvs: Vec<(Par, Par)> = records
+                            .iter()
+                            .map(|(validator, record)| {
+                                (
+                                    RhoByteArray::apply(validator.as_bytes().to_vec()),
+                                    RhoTupleN::apply(vec![
+                                        RhoNumber::apply(record.absent_boundaries),
+                                        RhoNumber::apply(record.jail_remaining),
+                                    ]),
+                                )
+                            })
+                            .collect();
+                        cc.produce(&rand, &[RhoMap::apply(kvs)], ret, path).await
+                    }
+                    "getVotes" => {
+                        let [target, ret] = rest else {
+                            return Err(illegal_arg(
+                                "getVotes expects a target public key and a return channel",
+                            ));
+                        };
+                        let target = RhoByteArray::unapply(target)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("getVotes expects a 65-byte validator public key")
+                            })?;
+                        let window = native
+                            .vote_windows()
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                            .get(&target)
+                            .copied();
+                        let response = match window {
+                            None => RhoNil::apply(),
+                            Some(window) => {
+                                let ballots =
+                                    native.slash_votes().await.map_err(|e| illegal_arg(&e))?;
+                                let kvs: Vec<(Par, Par)> = ballots
+                                    .iter()
+                                    .filter(|(key, _)| key.target == target)
+                                    .map(|(key, in_favor)| {
+                                        (
+                                            RhoByteArray::apply(key.voter.as_bytes().to_vec()),
+                                            RhoBoolean::apply(*in_favor),
+                                        )
+                                    })
+                                    .collect();
+                                RhoTupleN::apply(vec![
+                                    RhoNumber::apply(window.opened_at),
+                                    RhoNumber::apply(window.remaining),
+                                    RhoMap::apply(kvs),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[response], ret, path).await
+                    }
                     "getBonds" => {
                         let [ret] = rest else {
                             return Err(illegal_arg("getBonds expects a return channel"));
@@ -3577,6 +3706,123 @@ mod tests {
         // the name at the consumer and make its send a no-op.
         let sent = &produced[1].1.pars[0];
         assert_eq!(sent.as_par(), &data, "lookup sends the stored value alone");
+    }
+
+    /// **The liveness slash vote is a deploy-authorised ballot, not a data message.** The caller is
+    /// the deployer id; a byte array is refused, an active validator's ballot is recorded, and the
+    /// read accessor reports the window and the ballots.
+    #[tokio::test]
+    async fn pos_vote_slash_is_authorised_by_the_deployer_id() {
+        use crate::native_state::{pos_liveness_key, PosParams};
+        use crate::pos_liveness::{AbsenceRecord, BallotKey, VoteWindow};
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let native = NativeSystemState::new(Arc::new(
+            rchain_rspace::native_store::InMemNativeStore::empty(),
+        ));
+        let v = |b: u8| rchain_models::validator::Validator::new([b; 65]);
+        let stake = |n: i64| NonNegI64::try_from(n).unwrap();
+        native.set_params(&PosParams {
+            epoch_length: 10,
+            quarantine_length: 50,
+            minimum_bond: stake(1),
+            maximum_bond: stake(1000),
+            liveness_absence_threshold: 10,
+            liveness_jail_after_boundaries: 2,
+            liveness_jail_epochs: 5,
+            liveness_vote_window: 3,
+            liveness_slash_severity: 2,
+            ..PosParams::default()
+        });
+        native.set_bonds(&BTreeMap::from([
+            (v(1), stake(10)),
+            (v(2), stake(10)),
+            (v(3), stake(10)),
+            (v(4), stake(10)),
+        ]));
+        native.set_active(&BTreeMap::from([
+            (v(1), stake(10)),
+            (v(2), stake(10)),
+            (v(3), stake(10)),
+        ]));
+        native
+            .set_liveness(&BTreeMap::from([(
+                v(4),
+                AbsenceRecord {
+                    absent_boundaries: 0,
+                    jail_remaining: 5,
+                },
+            )]))
+            .await
+            .unwrap();
+        native
+            .set_vote_windows(&BTreeMap::from([(
+                v(4),
+                VoteWindow {
+                    opened_at: 30,
+                    remaining: 3,
+                },
+            )]))
+            .await
+            .unwrap();
+        let _ = pos_liveness_key(); // the key is part of the state surface, used by the accessor
+        let charging = ChargingRSpace::new(
+            mock.clone(),
+            Arc::new(crate::accounting::CostAccounting::from_initial(
+                crate::accounting::Costs::unsafe_max(),
+            )),
+        );
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
+        let block_data = Arc::new(Mutex::new(BlockData::empty()));
+        let sp = SystemProcesses::new(charging, dispatcher, block_data, Arc::new(native.clone()));
+        let defs = sp.definitions();
+        let pos = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::POS)
+            .expect("pos definition");
+        let ret = FixedChannels::stdout();
+
+        // A deployer id is the capability; a byte array is refused.
+        let byte_call = vec![lpw(vec![
+            RhoString::apply("voteSlash".to_string()),
+            RhoList::apply(vec![
+                RhoByteArray::apply(vec![1; 65]),
+                RhoByteArray::apply(v(4).as_bytes().to_vec()),
+                RhoBoolean::apply(true),
+                ret.clone(),
+            ]),
+        ])];
+        assert!(
+            (pos.handler)(byte_call, DfsPath::root()).await.is_err(),
+            "a byte array is not a deployer id"
+        );
+
+        let call = vec![lpw(vec![
+            RhoString::apply("voteSlash".to_string()),
+            RhoList::apply(vec![
+                RhoDeployerId::apply(v(1).as_bytes().to_vec()),
+                RhoByteArray::apply(v(4).as_bytes().to_vec()),
+                RhoBoolean::apply(true),
+                ret.clone(),
+            ]),
+        ])];
+        (pos.handler)(call, DfsPath::root()).await.unwrap();
+        assert_eq!(
+            native.slash_votes().await.unwrap(),
+            BTreeMap::from([(
+                BallotKey {
+                    target: v(4),
+                    voter: v(1),
+                },
+                true
+            )])
+        );
+        let produced = mock.produced.lock().unpoison();
+        let verdict = RhoTupleN::unapply(produced[0].1.pars[0].as_par()).expect("a tuple");
+        assert_eq!(RhoBoolean::unapply(&verdict[0]), Some(true));
     }
 
     #[tokio::test]

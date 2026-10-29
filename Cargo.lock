@@ -2959,6 +2959,7 @@ dependencies = [
  "rchain-crypto",
  "rchain-models",
  "rchain-rspace",
+ "rchain-sdk",
  "rchain-shared",
  "tokio",
  "wasm-bindgen-futures",
