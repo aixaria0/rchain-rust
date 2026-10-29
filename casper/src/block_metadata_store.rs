@@ -25,9 +25,9 @@ impl BlockMetadataStore {
     pub async fn create(
         store: Arc<dyn KeyValueTypedStore<BlockHash, BlockMetadata>>,
     ) -> Result<Self, String> {
-        // Consume decoded metadata while projecting it into the DAG index:
-        // retaining the original map beside the index duplicates the startup
-        // working set until the rebuild finishes.
+        // Move justification sets out of owned records instead of cloning them.
+        // to_map() still materializes the full decoded history before this pass;
+        // only per-record duplication is reduced, not total startup or replay memory.
         let info_map: BTreeMap<BlockHash, BlockInfo> = store
             .to_map()
             .await?
