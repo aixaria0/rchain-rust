@@ -2814,7 +2814,7 @@ mod tests {
         use tower::ServiceExt;
         let mut s = state();
         let health = ShardHealth::new();
-        let reason = rchain_casper::interpreter_util::NoAdvance::Support {
+        let reason = rchain_block_storage::dag::finalizer::NoAdvance::Support {
             supporting: 0,
             total: 1,
             full_partitions: 0,

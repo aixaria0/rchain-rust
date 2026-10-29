@@ -2805,7 +2805,7 @@ fn check_store_format(dir: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rchain_casper::interpreter_util::NoAdvance;
+    use rchain_block_storage::dag::finalizer::NoAdvance;
     use rchain_models::block_metadata::SlashSeverity;
 
     #[test]
