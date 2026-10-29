@@ -383,6 +383,12 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | **Initial LFS solicitation waits for admitted reply, with bounded retries** (C335; comm_util.rs::request_initial_fringe and node_launch.rs) | The prior request loop stopped at transport send success and the first-target wait had no exit for a missing streamed response | Node-local startup/recovery change. Acknowledging the request does not deliver its reply. Only trusted nonempty admission stops re-solicitation; exhausting ten bounded send/response intervals returns an error, never restore success. Six Rust regressions and a reintroduced send-only fault detect the failure. No validity, quorum or finalized-state rule changes; real-node reactivation is an independent acceptance gate. |
 
+**Correction, 2026-10-28 — the decimal row.** Law 87 (87a–e) and the `decimal` corpus now cover
+canonicalisation, `scaledValue`'s injectivity and order, exact `+ - *`, division's exact-or-error
+condition and the `edecimal` payload. The wire's minimal bytes and tag 35, serde ingress, the
+literal surface, reducer dispatch and the cost model remain outside the law and Rust-tested;
+AC10 (operator/new-genesis acceptance) remains a release step.
+
 ## 7. Verification
 
 - `cargo check --workspace` — clean.

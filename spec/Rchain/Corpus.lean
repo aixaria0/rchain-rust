@@ -13,6 +13,7 @@ import Rchain.Parse
 import Rchain.Casper.Validate
 import Rchain.Casper.Rounds
 import Rchain.Admission
+import Rchain.Decimal
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1018,7 +1019,7 @@ def bigintExpr (n : Int) : Par := one (.ebigint n)
 
 /-- A decimal literal, as a `Par`: `decimalExpr 15 1` is `1.5d`. The payload is the value in
     units of `10^-38` (`MAX_SCALE`), exactly the node's `Decimal::scaled_value`. -/
-def decimalExpr (c : Int) (s : Nat) : Par := one (.edecimal (c * (10 : Int) ^ (38 - s)))
+def decimalExpr (c : Int) (s : Nat) : Par := one (.edecimal (Decimal.scaledValue ⟨c, s⟩))
 
 /-- A method call, as a `Par`. The name is a **code-point list**, the model's convention for strings
     (`charsOf`, as `Ground.str` does) — the node carries a `String` and compares it byte-wise, and
@@ -1837,6 +1838,213 @@ def admissionLine (c : AdmissionCase) : String :=
   String.intercalate "\t"
     ["admission", admissionCaseName c, if admissionHolds c then "true" else "false"]
 
+
+/-! ## Law 87 — the decimal value algebra -/
+
+open Rchain.Decimal in
+inductive DecimalOp where
+  | mk | parts | scaled | cmp | add | sub | mul | div
+  deriving DecidableEq, Repr
+
+open Rchain.Decimal in
+inductive DecimalOutcome where
+  | value (d : Decimal)
+  | scaled (n : Int)
+  | cmp (o : Ordering)
+  | error (e : DecimalError)
+  deriving DecidableEq, Repr
+
+structure DecimalCase where
+  name : String
+  op : DecimalOp
+  a : Decimal
+  b : Option Decimal
+  expected : DecimalOutcome
+  deriving DecidableEq, Repr
+
+open Rchain.Decimal in
+def decimalRun (c : DecimalCase) : DecimalOutcome :=
+  let b := c.b.getD ⟨0, 0⟩
+  match c.op with
+  | .mk =>
+      match Decimal.new c.a.coefficient c.a.scale with
+      | .ok d => .value d
+      | .error e => .error e
+  | .parts =>
+      match Decimal.fromParts c.a.coefficient c.a.scale with
+      | .ok d => .value d
+      | .error e => .error e
+  | .scaled => .scaled (Decimal.scaledValue c.a)
+  | .cmp => .cmp (Decimal.cmpNumeric c.a b)
+  | .add => .value (Decimal.add c.a b)
+  | .sub => .value (Decimal.sub c.a b)
+  | .mul =>
+      match Decimal.mul c.a b with
+      | .ok d => .value d
+      | .error e => .error e
+  | .div =>
+      match Decimal.div c.a b with
+      | .ok d => .value d
+      | .error e => .error e
+
+def decimalHolds (c : DecimalCase) : Bool := decide (decimalRun c = c.expected)
+
+def dec (c : Int) (s : Nat) : Decimal := ⟨c, s⟩
+
+open Rchain.Decimal in
+def decOk (c : Int) (s : Nat) : DecimalOutcome := .value (dec c s)
+
+open Rchain.Decimal in
+def decScaled (n : Int) : DecimalOutcome := .scaled n
+
+def decCmp (o : Ordering) : DecimalOutcome := .cmp o
+
+open Rchain.Decimal in
+def decErr (e : DecimalError) : DecimalOutcome := .error e
+
+def decimalCases : List DecimalCase :=
+  [ -- new: canonicalisation, zero, the bounds and the two constructor orderings
+    { name := "new_negative_strip", op := .mk, a := dec (-110) 2, b := none,
+      expected := decOk (-11) 1 },
+    { name := "new_strip", op := .mk, a := dec 110 2, b := none, expected := decOk 11 1 },
+    { name := "new_zero_scale", op := .mk, a := dec 0 5, b := none, expected := decOk 0 0 },
+    { name := "new_zero_above_bound", op := .mk, a := dec 0 39, b := none,
+      expected := decOk 0 0 },
+    { name := "new_scale_38", op := .mk, a := dec 1 38, b := none, expected := decOk 1 38 },
+    { name := "new_scale_39", op := .mk, a := dec 1 39, b := none,
+      expected := decErr (.scaleOutOfRange 39) },
+    { name := "new_huge_strip", op := .mk, a := dec ((10 : Int) ^ 39) 39, b := none,
+      expected := decOk 1 0 },
+    -- parts: the strict constructor and its two named refusals
+    { name := "parts_negative", op := .parts, a := dec (-11) 1, b := none,
+      expected := decOk (-11) 1 },
+    { name := "parts_zero", op := .parts, a := dec 0 0, b := none, expected := decOk 0 0 },
+    { name := "parts_zero_with_scale", op := .parts, a := dec 0 3, b := none,
+      expected := decErr (.zeroWithScale 3) },
+    { name := "parts_trailing_zero", op := .parts, a := dec 110 2, b := none,
+      expected := decErr (.trailingZero 2) },
+    { name := "parts_scale_39", op := .parts, a := dec 1 39, b := none,
+      expected := decErr (.scaleOutOfRange 39) },
+    -- scaled: the payload is the value in units of 10^-38
+    { name := "scaled_one", op := .scaled, a := dec 1 0, b := none,
+      expected := decScaled ((10 : Int) ^ 38) },
+    { name := "scaled_fifteen", op := .scaled, a := dec 15 1, b := none,
+      expected := decScaled (15 * (10 : Int) ^ 37) },
+    { name := "scaled_zero", op := .scaled, a := dec 0 0, b := none, expected := decScaled 0 },
+    { name := "scaled_negative", op := .scaled, a := dec (-11) 1, b := none,
+      expected := decScaled (-11 * (10 : Int) ^ 37) },
+    -- cmp: cross-scale, signs and the 38 boundary
+    { name := "cmp_lt_cross", op := .cmp, a := dec 15 1, b := some (dec 2 0),
+      expected := decCmp .lt },
+    { name := "cmp_gt_cross", op := .cmp, a := dec 2 0, b := some (dec 15 1),
+      expected := decCmp .gt },
+    { name := "cmp_eq", op := .cmp, a := dec 5 1, b := some (dec 5 1), expected := decCmp .eq },
+    { name := "cmp_negative", op := .cmp, a := dec (-15) 1, b := some (dec (-2) 0),
+      expected := decCmp .gt },
+    { name := "cmp_boundary", op := .cmp, a := dec 1 38, b := some (dec 2 38),
+      expected := decCmp .lt },
+    { name := "cmp_zero", op := .cmp, a := dec 0 0, b := some (dec 1 38),
+      expected := decCmp .lt },
+    -- add: alignment, carry/strip, cancellation and the 38 boundary
+    { name := "add_cross", op := .add, a := dec 15 1, b := some (dec 2 0),
+      expected := decOk 35 1 },
+    { name := "add_boundary_strip", op := .add, a := dec 9 38, b := some (dec 1 38),
+      expected := decOk 1 37 },
+    { name := "add_cancel", op := .add, a := dec 1 0, b := some (dec (-1) 0),
+      expected := decOk 0 0 },
+    { name := "add_negative", op := .add, a := dec (-15) 1, b := some (dec (-2) 0),
+      expected := decOk (-35) 1 },
+    { name := "add_carry", op := .add, a := dec 5 1, b := some (dec 5 1),
+      expected := decOk 1 0 },
+    -- sub
+    { name := "sub_cross", op := .sub, a := dec 2 0, b := some (dec 15 1), expected := decOk 5 1 },
+    { name := "sub_boundary", op := .sub, a := dec 9 38, b := some (dec 1 38),
+      expected := decOk 8 38 },
+    { name := "sub_negative", op := .sub, a := dec 0 0, b := some (dec 1 38),
+      expected := decOk (-1) 38 },
+    -- mul: exact products, the scale-2 strip and the scale-40 boundary
+    { name := "mul_cross", op := .mul, a := dec 15 1, b := some (dec 2 0),
+      expected := decOk 3 0 },
+    { name := "mul_square", op := .mul, a := dec 15 1, b := some (dec 15 1),
+      expected := decOk 225 2 },
+    { name := "mul_strip", op := .mul, a := dec 5 1, b := some (dec 2 1),
+      expected := decOk 1 1 },
+    { name := "mul_scale_40_error", op := .mul, a := dec 1 20, b := some (dec 1 20),
+      expected := decErr (.scaleOutOfRange 40) },
+    { name := "mul_scale_40_strip", op := .mul, a := dec 25 20, b := some (dec 4 20),
+      expected := decOk 1 38 },
+    { name := "mul_zero", op := .mul, a := dec 0 0, b := some (dec 1 38),
+      expected := decOk 0 0 },
+    -- div: the exact-or-error criterion, including 2^38 and 2^39
+    { name := "div_half", op := .div, a := dec 1 0, b := some (dec 2 0), expected := decOk 5 1 },
+    { name := "div_third_inexact", op := .div, a := dec 1 0, b := some (dec 3 0),
+      expected := decErr .inexactDivision },
+    { name := "div_two_pow_38", op := .div, a := dec 1 0,
+      b := some (dec 274877906944 0),
+      expected := decOk 363797880709171295166015625 38 },
+    { name := "div_two_pow_39_inexact", op := .div, a := dec 1 0,
+      b := some (dec 549755813888 0), expected := decErr .inexactDivision },
+    { name := "div_zero", op := .div, a := dec 1 0, b := some (dec 0 0),
+      expected := decErr .divisionByZero },
+    { name := "div_negative", op := .div, a := dec (-1) 0, b := some (dec 2 0),
+      expected := decOk (-5) 1 } ]
+
+def decimalCaseCount : Nat := 42
+
+theorem decimalCases_decide : decimalCases.all decimalHolds = true := by decide
+
+theorem decimalCases_length : decimalCases.length = decimalCaseCount := by decide
+
+theorem decimalCases_ops :
+    (decimalCases.map (fun c => c.op)).eraseDups.length = 8 := by decide
+
+theorem decimalCases_verdicts :
+    (decimalCases.filterMap (fun c =>
+      match c.expected with
+      | .cmp o => some o
+      | _ => none)).eraseDups.length = 3 := by decide
+
+def decimalOpName : DecimalOp → String
+  | .mk => "new"
+  | .parts => "parts"
+  | .scaled => "scaled"
+  | .cmp => "cmp"
+  | .add => "add"
+  | .sub => "sub"
+  | .mul => "mul"
+  | .div => "div"
+
+def decimalRender (d : Decimal) : String :=
+  toString d.coefficient ++ ":" ++ toString d.scale
+
+open Rchain.Decimal in
+def decimalErrorName : DecimalError → String
+  | .scaleOutOfRange s => "scale_out_of_range:" ++ toString s
+  | .zeroWithScale s => "zero_with_scale:" ++ toString s
+  | .trailingZero s => "trailing_zero:" ++ toString s
+  | .divisionByZero => "division_by_zero"
+  | .inexactDivision => "inexact_division"
+
+def decimalOutcomeKind : DecimalOutcome → String
+  | .value _ => "ok"
+  | .scaled _ => "scaled"
+  | .cmp _ => "cmp"
+  | .error _ => "error"
+
+def decimalOutcomePayload : DecimalOutcome → String
+  | .value d => decimalRender d
+  | .scaled n => toString n
+  | .cmp .lt => "lt"
+  | .cmp .eq => "eq"
+  | .cmp .gt => "gt"
+  | .error e => decimalErrorName e
+
+def decimalLine (c : DecimalCase) : String :=
+  String.intercalate "\t"
+    ["decimal", c.name, decimalOpName c.op, decimalRender c.a,
+     match c.b with | some b => decimalRender b | none => "-",
+     decimalOutcomeKind c.expected, decimalOutcomePayload c.expected]
+
 end Corpus
 end Rchain
 
@@ -1848,7 +2056,8 @@ def main (args : List String) : IO UInt32 := do
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
       || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
-      || a == "stake" || a == "block" || a == "liveness" || a == "admission")).getD "flags"
+      || a == "stake" || a == "block" || a == "liveness" || a == "admission"
+      || a == "decimal")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1882,6 +2091,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.livenessCases.map Corpus.livenessLine, Corpus.livenessCaseCount)
     else if want == "admission" then
       (Corpus.admissionCases.map Corpus.admissionLine, Corpus.admissionCaseCount)
+    else if want == "decimal" then
+      (Corpus.decimalCases.map Corpus.decimalLine, Corpus.decimalCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

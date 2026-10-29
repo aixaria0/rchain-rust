@@ -71,6 +71,7 @@ import Rchain.Casper.Lifecycle
 import Rchain.Casper.FringeState
 import Rchain.Bounded
 import Rchain.Admission
+import Rchain.Decimal
 import Rchain.Namespace
 import Rchain.Charging
 import Rchain.Crypto.Random
