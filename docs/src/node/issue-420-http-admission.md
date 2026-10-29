@@ -74,7 +74,9 @@ RNODE_HTTP_MAX_INFLIGHT_EXPLORE=2 RNODE_HTTP_MAX_INFLIGHT_DEPLOY=4 rnode run ...
 ## The pending-work relay (opt-in)
 
 `RNODE_DEPLOY_RELAY=1` offers each admitted deploy to the connected peers' external deploy service
-(`RNODE_DEPLOY_RELAY_PORT`, default 40401; `RNODE_DEPLOY_RELAY_FANOUT` to cap the peers). The receiver
+(`RNODE_DEPLOY_RELAY_PORT` overrides the destination port; by default the port is
+derived per peer as its advertised protocol port + 1, e.g. 40400 → 40401 and 41400 → 41401;
+`RNODE_DEPLOY_RELAY_FANOUT` caps the peers). The receiver
 runs the **same** ingress validation as a direct submission and pools the deploy; the sender keeps its
 own row. A bounded seen set stops a deploy circulating. The relay is off by default: a network whose
 peers do not expose the API port would spend a dial per deploy for nothing. It is the answer to a
