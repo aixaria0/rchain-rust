@@ -725,10 +725,29 @@ pub const ORPHAN_AUDIT_SAMPLES: u32 = 3;
 static ORPHAN_BODIES: AtomicU64 = AtomicU64::new(0);
 static ORPHAN_DETECTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// The currently confirmed orphan count: **zero unless a gap has been sustained**. A transient
-/// in-flight body is not counted.
+// A boot-time store/DAG mismatch is known before readiness is exposed. The
+// periodic three-sample rule only protects against transient *runtime* writes;
+// it must not erase an already observed startup discrepancy.
+pub fn observe_boot_orphan_gap(stored: usize, in_dag: usize) -> u64 {
+    let gap = u64::try_from(stored.saturating_sub(in_dag)).unwrap_or(u64::MAX);
+    if gap > 0 {
+        let previous = ORPHAN_BODIES.swap(gap, Ordering::Relaxed);
+        if previous == 0 {
+            ORPHAN_DETECTIONS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    gap
+}
+
+/// The currently observed orphan count. A mismatch already known at boot blocks readiness
+/// immediately; a transient runtime write counts only after three consecutive audit samples.
 pub fn orphan_bodies() -> u64 {
     ORPHAN_BODIES.load(Ordering::Relaxed)
+}
+
+/// Clear the readiness blocker only when the store/DAG discrepancy is actually gone.
+fn clear_orphan_gate_if_resolved(gap: u64) -> bool {
+    gap == 0 && ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0
 }
 
 /// How many distinct sustained orphan episodes this process has seen. Monotone, so an operator can
@@ -808,7 +827,9 @@ pub async fn audit_stored_bodies(
                 }
             }
             None => {
-                if ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0 {
+                // An already confirmed boot gap remains a readiness blocker
+                // until an observation proves the discrepancy has vanished.
+                if clear_orphan_gate_if_resolved(gap) {
                     log.info(
                         source,
                         &format!(
@@ -884,6 +905,23 @@ mod tests {
         // A zero sample is evidence the normal case returned; the count starts again.
         assert_eq!(streak.observe(0), None);
         assert_eq!(streak.observe(1), None);
+    }
+
+    #[test]
+    fn a_known_boot_gap_is_not_hidden_behind_the_periodic_sampling_window() {
+        ORPHAN_BODIES.store(0, Ordering::Relaxed);
+        // This exact shape occurred in the isolated legacy testnet snapshot.
+        assert_eq!(observe_boot_orphan_gap(1947, 21), 1926);
+        assert_eq!(orphan_bodies(), 1926);
+        // One transient sample cannot clear a mismatch already found at boot.
+        let mut streak = OrphanStreak::default();
+        assert_eq!(streak.observe(1926), None);
+        assert!(!clear_orphan_gate_if_resolved(1926));
+        assert_eq!(orphan_bodies(), 1926);
+        assert!(clear_orphan_gate_if_resolved(0));
+        assert_eq!(orphan_bodies(), 0);
+        assert_eq!(observe_boot_orphan_gap(21, 1947), 0);
+        assert_eq!(orphan_bodies(), 0);
     }
 
     #[test]
