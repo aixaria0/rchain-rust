@@ -4811,6 +4811,83 @@ def lawsC : List Law := [
       sorter corpus and `models/src/sorter.rs`'s DECIMAL score. Law 1a's note is updated to point \
       here; its statement, status and declarations are not widened." },
 
+  { number := 88, clause := "a", layer := "Disposition",
+    statement := "**A stored body is accounted for or visible.** A body in the block store is \
+      either a DAG block (its metadata is the durable verdict) or carries an unsettled \
+      `Pending`/`Faulted` row; the start-up audit adopts every unaccounted body before the phase \
+      becomes `Running`, so that transition cannot skip a stored body. The law says **visible**, \
+      not **settled**: a body whose justifications are not in the DAG stays `Pending` and visible, \
+      and the bounded start-up drain does not wait for it",
+    status := .provedModel,
+    declarations := [`Rchain.Disposition.State,
+      `Rchain.Disposition.Disposition, `Rchain.Disposition.audit,
+      `Rchain.Disposition.adoptBody, `Rchain.Disposition.startup,
+      `Rchain.Disposition.audit_covers,
+      `Rchain.Disposition.audit_makes_an_unbacked_body_visible,
+      `Rchain.Disposition.audit_does_not_change_dag,
+      `Rchain.Disposition.startup_clean,
+      `Rchain.Disposition.startup_without_audit_leaves_an_orphan,
+      `Rchain.Disposition.a_dropped_row_is_an_orphan],
+    axioms := [],
+    rust := ["casper/src/block_disposition.rs", "casper/src/engine/node_launch.rs",
+      "node/src/runtime/node_runtime.rs", "casper/src/dag.rs", "shared/src/typed_store.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Disposition.audit_covers,
+      `Rchain.Disposition.audit_makes_an_unbacked_body_visible,
+      `Rchain.Disposition.audit_does_not_change_dag,
+      `Rchain.Disposition.startup_clean,
+      `Rchain.Disposition.startup_without_audit_leaves_an_orphan,
+      `Rchain.Disposition.a_dropped_row_is_an_orphan],
+    falsifiable := "`skipAudit` flips the phase without adopting: \
+      `startup_without_audit_leaves_an_orphan` exhibits the stored body 7 with no DAG entry and no \
+      row, which is the live incident's shape. Deleting a row without a DAG record \
+      (`a_dropped_row_is_an_orphan`) is the other defect shape; an audit that removed rows instead \
+      of adding them fails `audit_covers`.",
+    note := "Node-local durable ingestion, not consensus state, so `proved-model` rather than a \
+      corpus-tied row: there is no wire or derived value to tie. This row promotes C343's \
+      `candidate:block-disposition-and-isolation`. The model assumes readable bodies; the Rust scan \
+      skips a body whose bytes do not decode, that body remains an orphan, and the periodic \
+      stored-body count audit (`orphanBodies`) withholds readiness. The bounded drain is a \
+      liveness policy, not a state predicate: `Running` follows an audit attempt, and a \
+      missing-parent row stays `Pending` by design." },
+
+  { number := 88, clause := "b", layer := "Disposition",
+    statement := "**A proposal is admitted only in `Running` and within the finality bound.** The \
+      gate refuses outside the running phase and one height beyond `MAX_PROPOSAL_FINALITY_LAG`, \
+      which is what bounds a private chain when no peer accepts it",
+    status := .provedModel,
+    declarations := [`Rchain.Disposition.Phase,
+      `Rchain.Disposition.MAX_PROPOSAL_FINALITY_LAG,
+      `Rchain.Disposition.withinProposalFinalityBound,
+      `Rchain.Disposition.gate, `Rchain.Disposition.Refusal,
+      `Rchain.Disposition.GateResult,
+      `Rchain.Disposition.gate_admits_only_in_running_and_within_bound,
+      `Rchain.Disposition.gate_admits_at_the_bound,
+      `Rchain.Disposition.gate_refuses_beyond_the_bound,
+      `Rchain.Disposition.gate_refuses_outside_running,
+      `Rchain.Disposition.a_gate_without_the_phase_admits_a_syncing_node,
+      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain],
+    axioms := [],
+    rust := ["casper/src/blocks/proposer/proposer.rs",
+      "node/src/instances/proposer_instance.rs", "casper/src/engine/node_phase.rs",
+      "node/src/web/http.rs"],
+    rustWitness := [],
+    witness := [`Rchain.Disposition.gate_admits_only_in_running_and_within_bound,
+      `Rchain.Disposition.gate_admits_at_the_bound,
+      `Rchain.Disposition.gate_refuses_beyond_the_bound,
+      `Rchain.Disposition.gate_refuses_outside_running,
+      `Rchain.Disposition.a_gate_without_the_phase_admits_a_syncing_node,
+      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain],
+    falsifiable := "`legacyGate` admits a syncing node \
+      (`a_gate_without_the_phase_admits_a_syncing_node`) and `unboundedGate` admits a tip beyond \
+      the bound (`a_gate_without_the_bound_admits_a_private_chain`). A gate that reads the wrong \
+      phase, or drops the bound, fails those rows.",
+    note := "The bound is policy (`32`), not a measured optimum, and the Rust split is: the phase \
+      gate in `proposer_instance`, the height gate in `proposer.rs`. This row promotes C343's \
+      `candidate:block-disposition-and-isolation`. The model does not prove a peer accepted the \
+      chain — it bounds the private chain a node can build; the finality algorithm and slashing \
+      are outside it." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
