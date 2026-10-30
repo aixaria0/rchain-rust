@@ -27,7 +27,7 @@ class QuietFinalityControls(unittest.TestCase):
         self.assertTrue(quiet.agreed_finality({i: rows[i] for i in range(7)}, list(range(7)), 27, True))
 
     def test_equal_heights_with_different_hash_fail(self):
-        rows = self.rows()
+        rows = {i: self.rows()[i] for i in range(7)}
         rows[6]["hash"] = "cd" * 32
         self.assertFalse(quiet.agreed_finality(rows, list(range(7)), 27, True))
 
