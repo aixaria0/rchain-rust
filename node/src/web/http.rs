@@ -1065,7 +1065,17 @@ async fn api_deploy_settlement(
         crate::api::dto::DeployExecStatus::NotProcessed { .. } => None,
         crate::api::dto::DeployExecStatus::ProcessedWithSuccess { block, .. }
         | crate::api::dto::DeployExecStatus::ProcessedWithError { block, .. } => {
-            state.web_api.is_finalized(&block.block_hash).await.ok()
+            match state.web_api.is_finalized(&block.block_hash).await {
+                Ok(is_finalized) => Some(is_finalized),
+                Err(error) => {
+                    tracing::warn!(
+                        block_hash = %block.block_hash,
+                        ?error,
+                        "inclusion-block finality lookup failed; settlement is unknown"
+                    );
+                    None
+                }
+            }
         }
     };
     Json(deploy_settlement_observation(
@@ -2743,7 +2753,7 @@ mod tests {
         assert_eq!(reading["observedFinalityLag"], 35);
         assert_eq!(reading["availability"], "unknown");
         assert_eq!(reading["scope"], "nodeLocal");
-        assert_eq!(status.accepts_deploys, true);
+        assert!(status.accepts_deploys);
         let missing = finality_observation(Some(&status), None, 128);
         assert!(missing["observedFinalityLag"].is_null());
         assert!(missing["finalizedBlockHash"].is_null());
