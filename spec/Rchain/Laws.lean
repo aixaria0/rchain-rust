@@ -4891,7 +4891,9 @@ def lawsC : List Law := [
   { number := 88, clause := "b", layer := "Disposition",
     statement := "**A proposal is admitted only in `Running` and within the finality bound.** The \
       gate refuses outside the running phase and one height beyond `MAX_PROPOSAL_FINALITY_LAG`, \
-      which is what bounds a private chain when no peer accepts it",
+      which is what bounds a private chain when no peer accepts it. The gate is **total in the \
+      anchor**: a view with no finalised block measures from genesis, so `no anchor` is not `no \
+      bound`",
     status := .provedModel,
     declarations := [`Rchain.Disposition.Phase,
       `Rchain.Disposition.MAX_PROPOSAL_FINALITY_LAG,
@@ -4903,12 +4905,19 @@ def lawsC : List Law := [
       `Rchain.Disposition.gate_refuses_beyond_the_bound,
       `Rchain.Disposition.gate_refuses_outside_running,
       `Rchain.Disposition.a_gate_without_the_phase_admits_a_syncing_node,
-      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain],
+      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain,
+      `Rchain.Disposition.finalizedFloor, `Rchain.Disposition.totalGate,
+      `Rchain.Disposition.floor_never_exceeds_the_anchor,
+      `Rchain.Disposition.skipWithoutAnchor,
+      `Rchain.Disposition.a_gate_that_skips_the_bound_without_an_anchor_admits_a_private_chain,
+      `Rchain.Disposition.a_view_without_a_finalized_block_is_still_bounded,
+      `Rchain.Disposition.the_anchor_is_passed_through],
     axioms := [],
     rust := ["casper/src/blocks/proposer/proposer.rs",
       "node/src/instances/proposer_instance.rs", "casper/src/engine/node_phase.rs",
       "node/src/web/http.rs"],
     rustWitness := ["casper/src/blocks/proposer/proposer.rs:the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it",
+      "casper/src/blocks/proposer/proposer.rs:a_view_without_a_finalized_block_still_trips_the_bound",
       "casper/src/engine/node_phase.rs:two_cells_hold_independent_phases",
       "node/src/instances/proposer_instance.rs:a_syncing_cell_does_not_propose",
       "node/src/web/http.rs:health_is_ready_only_when_every_shard_runs"],
@@ -4917,16 +4926,27 @@ def lawsC : List Law := [
       `Rchain.Disposition.gate_refuses_beyond_the_bound,
       `Rchain.Disposition.gate_refuses_outside_running,
       `Rchain.Disposition.a_gate_without_the_phase_admits_a_syncing_node,
-      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain],
+      `Rchain.Disposition.a_gate_without_the_bound_admits_a_private_chain,
+      `Rchain.Disposition.a_gate_that_skips_the_bound_without_an_anchor_admits_a_private_chain,
+      `Rchain.Disposition.a_view_without_a_finalized_block_is_still_bounded],
     falsifiable := "`legacyGate` admits a syncing node \
       (`a_gate_without_the_phase_admits_a_syncing_node`) and `unboundedGate` admits a tip beyond \
       the bound (`a_gate_without_the_bound_admits_a_private_chain`). A gate that reads the wrong \
-      phase, or drops the bound, fails those rows.",
+      phase, or drops the bound, fails those rows. **And the third shape, which the Rust had** \
+      (C351): `skipWithoutAnchor` answers `.allow` for every tip when the view has no fringe, which \
+      `a_gate_that_skips_the_bound_without_an_anchor_admits_a_private_chain` exhibits; \
+      `a_view_without_a_finalized_block_is_still_bounded` is total, and \
+      `a_view_without_a_finalized_block_still_trips_the_bound` pins that the Rust now answers it \
+      the same way.",
     note := "The bound is policy (`32`), not a measured optimum, and the Rust split is: the phase \
       gate in `proposer_instance`, the height gate in `proposer.rs`. This row promotes C343's \
-      `candidate:block-disposition-and-isolation`. The model does not prove a peer accepted the \
-      chain — it bounds the private chain a node can build; the finality algorithm and slashing \
-      are outside it." },
+      `candidate:block-disposition-and-isolation`. **The anchor is total since C351**: the gate was \
+      wrapped in `if let Some(finalized)`, so a view with no finalised block skipped both the bound \
+      and the isolation latch. Genesis is the floor (`finalized_floor`), which is the answer \
+      `RewindPlan` already gives and the one `finalizedFloor` states; the model took a plain `Nat` \
+      all along, so the Rust was the outlier. Normal operation is unchanged (at genesis the gap is \
+      1 of 32). The model does not prove a peer accepted the chain — it bounds the private chain a \
+      node can build; the finality algorithm and slashing are outside it." },
 
   { number := 88, clause := "c", layer := "Disposition",
     statement := "**An overflow refusal is a deferral, not an orphan.** The receiver stores the \
