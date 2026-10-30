@@ -13,8 +13,9 @@ its authority cannot be forged — there is no syntax that writes a private name
 > [validator risk, hardware and participation](docs/src/node/operator-risk.md) before bonding.
 
 **Whole classes of defect are absent by construction**: no `unsafe` in any of the fourteen crates, so
-memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
-Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
+memory-safety bugs are unwritable rather than mitigated. The October 2026 adversarial audit read this node and
+Agave (Solana), Sui and Bitcoin SV at pinned revisions: no chain split, no fund loss, no remote code
+execution here.
 
 **A small artifact, deliberately**: recounted <!-- recount:date -->2026-10-30<!-- recount:end -->,
 <!-- recount:rs-lines -->226,974<!-- recount:end --> lines of Rust across
@@ -153,11 +154,12 @@ through the node by a Rust consumer, so a definition cannot drift from its corpu
 noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
 
 **Reviewed, adversarially, repeatedly.** The pass record is
-[`spec/audit/passes.md`](spec/audit/passes.md) — 147 sections of findings, refutations and remediations,
+[`spec/audit/passes.md`](spec/audit/passes.md) — 148 sections of findings, refutations and remediations,
 from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
 full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
 and closes by construction — a row is `done` only when the bad state is no longer representable, with
-the citation that forbids it, or as a recorded decision. It reads **TODO 0**, with four rows in progress.
+the citation that forbids it, or as a recorded decision. Read the file for the current figures; it is
+the only place they are stated.
 
 **HAZOP, and a tabletop wargame.** A failure-mode HAZOP dispositions all eleven IEC guide words across
 21 study nodes and 96 deviations, with six bow-tie top events
@@ -178,38 +180,33 @@ under an 87 % line-coverage floor
 
 ### Comparison with other chains
 
-The September 2026 pass read this node and three live mainnets — Solana, Sui and Bitcoin SV — from
-their own source at pinned revisions. It found **no chain split, no fund loss and no remote code
-execution** here, and probed all four with the same adversarial question: is there an operation
-reachable by an unauthenticated remote attacker whose cost to the node is superlinear in attacker input
-while the charge is flat? Every one of the four has such an operation — a defect class in VM cost
-models, not one chain's weakness — so the table is what separates them, and on the structural axes the
-pre-testnet node leads.
+**Comparison with three live mainnets.** The October 2026 pass read this node and Agave (Solana), Sui
+and Bitcoin SV at pinned revisions — `v4.4.0`, `testnet-v1.83.0`, `v1.2.3` — with one question: *is
+there an operation reachable by an unauthenticated remote attacker whose cost is superlinear in
+attacker input while the charge is flat?* **Every one of the four has such an operation**; the table is
+what separates them, and on the structural axes the pre-testnet node leads.
 
-| | **This node** (pre-testnet) | **Solana** (~$70bn) | **Sui** (~$5bn) | **Bitcoin SV** (~$400m) |
+| | **This node** (pre-testnet) | **Agave** (Solana) | **Sui** | **Bitcoin SV** |
 |---|---|---|---|---|
 | **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all fourteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
-| **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name; a name exists only to be received | Checked — a program-derived address has no key, but granting the privilege is a runtime check | **Unrepresentable** — a linear `UID`, minted from the transaction digest | Absent as a concept — authority is a private key |
-| **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls to capture through |
-| **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->90 laws<!-- counts:end -->; every registered witness runs by name; no registered witness is `#[ignore]`d; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
-| **Peer identity** | Mutual TLS — the certificate's key is **bound to the identity the peer claims in the message**, so a peer cannot speak as another. **Which keys are admitted is unconstrained**: any valid certificate is a peer. That is a recorded decision, not an oversight — block validation, not the transport, is the authorization boundary. Of the ten findings under this precondition, six are closed at the layer where the harm was real, one is refuted, and three are deliberately open with their arguments stated ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
+| **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name | Checked at runtime — a program-derived address has no key, but granting the privilege is a check | **Unrepresentable** — a linear `UID` minted from the transaction digest | Absent as a concept |
+| **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls |
+| **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->90 laws<!-- counts:end -->; every registered witness runs by name; `sorry`/`admit`/`opaque` refused | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
+| **Peer identity** | Mutual TLS; the certificate key is bound to the identity the peer claims. Which keys are admitted is unconstrained — a recorded decision, not an oversight ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ✅ a per-block phlo cap, and the operations that were charged less than their work now charge for it (four of the five planned fixes; the fifth was reverted because the finding did not survive implementation) | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
+| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the collection conversions still sort for a flat 18 phlo (C345), and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
-**The last row is the one this node did not lead, and it is the one it closed in this tree** — a defect
-class **all four nodes share**, and the close-out is not claimed to be more than it is: those charges
-were found by reading the cost table, so the claim is "these charges" rather than "the cost model is now
-sound".
+The cost row is the one this node does not lead. September closed its specific instances (the union
+dedup and the governance folds); the October pass found the class live again in the collection
+conversions, which sort for a flat 18 phlo, and opened C345.
 
-Two limits bind the table, and both are part of the result: two of the four trees could not be read in
-full — unvendored dependencies — so those columns are marked traced rather than cleared; and this node's
-assurance ends where the review says it does — the language and calculus are safe-by-structure and
-partly proved, the chain layer's authority distribution is access control by another name, and
-unforgeability is axiomatised at the crypto boundary (law 19) rather than proved.
+Two limits: Sui's crypto/P2P and Agave's VM are unvendored, so those cells are **could not trace**, not
+cleared; and this node's assurance ends where the review says — the chain layer's authority is access
+control by another name, and unforgeability is axiomatised at the crypto boundary (law 19), not proved.
 
-**The October 2026 re-audit in full — the cost-model class found live again, the new ingress surface,
-the referee verdicts, and the three-chain comparison at pinned revisions; the September 2026 pass is
-kept at §9: [`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
+**The October 2026 re-audit in full — the cost-model class, the new ingress surface, the referee
+verdicts, and the comparison at pinned revisions; September 2026 is kept at §9:
+[`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
 **How the apparatus was built is written up too, because the method is the part that is unusual here.**
 Two draft papers in the book state it and its own limits:

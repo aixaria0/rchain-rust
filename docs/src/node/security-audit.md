@@ -263,43 +263,26 @@ corpus or named witnesses; none of them makes a cost charge proportional or a ga
 
 ## 7. Comparison with other chains
 
-**Context first.** Solana, Sui and Bitcoin SV have operated public mainnets for years; this node is
-pre-testnet. A comparison that omits that asymmetry flatters the incumbents.
-
 The question is the same for all four: *is there an operation reachable by an unauthenticated remote
-attacker whose cost to the node is superlinear in attacker input while the charge is flat or
-sublinear?* **Every one of the four has such an operation**; it is a defect class in VM cost models
-generally.
+attacker whose cost to the node is superlinear in attacker input while the charge is flat?* **Every
+one has one** — a defect class in VM cost models, not one chain's weakness.
 
-**Pinned revisions (read 2026-10-30).** Agave `v4.4.0` / `9ef63128`; Sui `testnet-v1.83.0` /
-`16d2dc1e` (sparse checkout); Bitcoin SV `v1.2.3` / `6504a3af`.
+Pinned and read 2026-10-30: Agave `v4.4.0` / `9ef63128`; Sui `testnet-v1.83.0` / `16d2dc1e`; Bitcoin SV
+`v1.2.3` / `6504a3af`.
 
-| | Worst instance found at the pin | What the attacker pays | Containment |
+| chain | worst instance at the pin | attacker pays | containment |
 |---|---|---|---|
-| **This node** | Collection conversions sort for a flat 18 phlo; `set`/`keys` flat; `censure` N² for Θ(U³); asymmetric `++` charges 3 | 18–22 phlo, or N² | **per-block phlo cap (25.5e9), 255-deploy cap, 600 s deadline that bounds the waiter, not the work** |
-| **Agave** | The bignum cost is now a **complexity formula** (base 422, divisor 189), not the flat 8 042 the September read found; account data is copied under a 64 MiB **cap** with no per-byte compute charge in the files read | flat 5 000 lamports, identical to a transaction that loads nothing | block compute-unit budget; 64 MiB loaded-data cap |
-| **Sui** | The gas model charges **bytes proportionally** (`charge_bytes`, stack-size tier multiplier); the September zkLogin cell **could not be re-established at this pin** from the sparse tree | gas; transactions bounded | instruction tiers; transaction-size bound; per-package verifier meter |
-| **Bitcoin SV** | `OP_CAT` doubles the top stack element; the 520-byte guard is **pre-Genesis only** (`interpreter.cpp:1687-1706`), so a post-Genesis doubling chain is bounded by the script/memory limits, not an element cap | byte-shaped fees on a *failing* transaction collect nothing | opcode cap is a parameter (`IsValidMaxOpsPerScript`), not a fixed consensus constant |
+| **This node** | conversions sort for a flat 18 phlo; `set`/`keys` flat; `censure` N² for Θ(U³); asymmetric `++` 3 phlo | 18–22 phlo, or N² | per-block phlo cap (25.5e9), 255-deploy cap, 600 s deadline that bounds the waiter, not the work |
+| **Agave** | bignum is a complexity formula (base 422 / divisor 189), not September's flat 8 042; account data copied under a 64 MiB cap with no per-byte charge in the files read | 5 000 lamports whether it loads anything or not | compute-unit budget; 64 MiB cap |
+| **Sui** | gas charges bytes proportionally; September's zkLogin cell could not be re-established at this pin | gas; transactions bounded | instruction tiers; size bound; verifier meter |
+| **Bitcoin SV** | `OP_CAT` doubling with the 520-byte guard **pre-Genesis only** | fees on a failing transaction collect nothing | opcode cap is a parameter, not a consensus constant |
 
-**Where this node sits:** mid-pack on amplification and **second-worst on containment** only in the
-sense that its caps bound declared phlo and counts rather than CPU; unlike September, it now has a
-per-block cap, a deploy cap and a validation deadline, and the deadline's abort-not-clean caveat is
-recorded rather than implied. The September union instance is repaired; the conversion family is not.
-
-On the inherent-safety axis the ordering is different, and more favourable:
-
-| | Unforgeable authority | No ambient authority | Encapsulation | Reentrancy / confused deputy | Machine-checked |
-|---|---|---|---|---|---|
-| **This node** | **unrepresentable** (soundness axiomatised) | none in the language; **ambient system channels** plus the **OCapN bridge** in the chain layer | n/a — capabilities are copyable references | **unrepresentable** | **Lean 4 + Coq; closedness proved** |
-| **Sui** | **unrepresentable** — linear `UID` minted from the transaction digest | banned at the bytecode level | **unrepresentable** — linear resources | **unrepresentable** — no dynamic dispatch | static verifier; **Move Prover absent from the release read** |
-| **Agave** | checked — a program-derived address has no key, but granting the privilege is a runtime check | present — any program may invoke any executable program | absent — accounts are flat cloneable buffers | checked at runtime | ABI digests, which are checksums |
-| **Bitcoin SV** | absent as a concept | fewest surfaces, by having almost no semantics | linear by consensus validation | moot — no calls exist | nothing |
-
-**Caveats that limit this table.** Agave's VM and bignum library are unvendored registry pins; Sui's
-crypto and P2P layers are git dependencies, and the gas-model cells that could not be read at the pin
-are recorded as **could not trace**, not as a clean bill. The Bitcoin SV read is the `v1.2.3` interpreter
-only. The September market-cap figures are dropped: they have no gate, age fastest, and the structural
-statement above carries the point without them.
+This node is mid-pack on amplification. Its containment now includes the caps and the deadline, but the
+deadline bounds the waiter, not a synchronous builtin, and the conversion family is still unpriced. The
+structural axes — authority, encapsulation, machine-checking — are unchanged from September; the
+[README's table](../../../README.md) carries them. Sui's crypto/P2P and Agave's VM are unvendored, so
+those cells are **could not trace**, not cleared. Market-cap figures are dropped: they age fastest and
+have no gate.
 
 ## 8. Open questions
 
