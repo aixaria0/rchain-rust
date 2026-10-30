@@ -24,7 +24,7 @@ class QuietFinalityControls(unittest.TestCase):
     def test_exact_quorum_finality_witness(self):
         rows = self.rows()
         self.assertTrue(quiet.agreed_finality(rows, list(range(8)), 27, True))
-        self.assertTrue(quiet.agreed_finality(rows, list(range(7)), 27, True))
+        self.assertTrue(quiet.agreed_finality({i: rows[i] for i in range(7)}, list(range(7)), 27, True))
 
     def test_equal_heights_with_different_hash_fail(self):
         rows = self.rows()
