@@ -564,6 +564,7 @@ mod tests {
                 manual_propose: true,
                 admin_http: false,
                 dev_mode: false,
+                proposer: true,
             }
         }
         async fn create_block(&self, _: bool) -> ApiErr<String> {

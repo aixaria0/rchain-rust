@@ -51,6 +51,9 @@ pub struct WebApiImpl {
     recovering_faucet_drips: Mutex<HashSet<String>>,
     /// The sampled host-resource snapshot, shared with the admin surface (A1).
     resources: Arc<ResourceGuard>,
+    /// `GET /api/v1/nodes` is mounted (`api-server.publish-node-list`). A capability fact, so a
+    /// client can tell "this node does not publish a hostlist" from "the route failed".
+    node_list: bool,
 }
 
 impl WebApiImpl {
@@ -70,7 +73,16 @@ impl WebApiImpl {
             faucet_ledger_path: None,
             recovering_faucet_drips: Mutex::new(HashSet::new()),
             resources,
+            node_list: false,
         }
+    }
+
+    /// Record that `GET /api/v1/nodes` is mounted, so `/api/v1/capabilities` can say so. A builder
+    /// rather than a `new` argument because every existing test constructor would have to pass a
+    /// value it does not care about.
+    pub fn with_node_list(mut self, enabled: bool) -> Self {
+        self.node_list = enabled;
+        self
     }
 
     /// Production ledger lives alongside the node's other data. A missing or corrupt ledger
@@ -253,6 +265,7 @@ mod tests {
                     manual_propose: true,
                     admin_http: false,
                     dev_mode: true,
+                    proposer: true,
                 },
                 pooled: Vec::new(),
                 deploy_status: Arc::new(StdMutex::new(Ok(DomainExecStatus::NotProcessed {
@@ -1163,7 +1176,12 @@ impl WebApi for WebApiImpl {
         // A dry faucet is not advertised: r-wallet can stop offering it without probing a write.
         let faucet =
             caps.dev_mode && self.deployer_key.is_some() && remaining >= faucet::FAUCET_AMOUNT;
-        Ok(to_node_capabilities(&caps, faucet, remaining))
+        Ok(to_node_capabilities(
+            &caps,
+            faucet,
+            remaining,
+            self.node_list,
+        ))
     }
 
     async fn deploy_status(&self, deploy_id: &str) -> Result<DeployExecStatus, BlockApiException> {

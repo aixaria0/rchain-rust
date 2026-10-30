@@ -462,6 +462,23 @@ pub struct Run {
     #[arg(long = "api-enable-reporting")]
     pub api_enable_reporting: bool,
 
+    /// Publish `GET /api/v1/nodes`, the live deploy-capable peer hostlist. Off by default because
+    /// it discloses peer addresses; every served entry has answered a probe and can propose.
+    #[arg(long = "api-publish-node-list")]
+    pub api_publish_node_list: bool,
+
+    /// How often the node-list hostlist is re-probed.
+    #[arg(long = "api-node-list-probe-interval", value_parser = parse_duration_arg)]
+    pub api_node_list_probe_interval: Option<Duration>,
+
+    /// Per-peer probe timeout for the node-list hostlist.
+    #[arg(long = "api-node-list-probe-timeout", value_parser = parse_duration_arg)]
+    pub api_node_list_probe_timeout: Option<Duration>,
+
+    /// The most entries the node-list hostlist may publish, self included (1–128).
+    #[arg(long = "api-node-list-max-entries")]
+    pub api_node_list_max_entries: Option<usize>,
+
     /// Relax CORS on the admin HTTP API (devnet / browser-wallet access only).
     #[arg(long = "api-enable-devnet-cors")]
     pub api_enable_devnet_cors: bool,

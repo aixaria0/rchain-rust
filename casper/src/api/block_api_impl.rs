@@ -468,6 +468,31 @@ impl BlockApiImpl {
     }
 }
 
+/// **The capability answer, split from the node so the one identity field can be tested without a
+/// DAG, a store and a runtime.**
+///
+/// `proposer` is the only field here that is *identity* rather than *mode*: the other three are
+/// configuration flags, and `manual_propose` is exactly `!autopropose && !proposeOnDeploy` — so an
+/// unkeyed observer reports it `true`, the same as a manual-mode validator. Anything that needs to
+/// know whether a node can include a deploy reads `proposer`; the test below is what keeps that
+/// distinction from drifting back into the mode flags.
+fn capability_answer(
+    auto_propose: bool,
+    propose_on_deploy: bool,
+    admin_http: bool,
+    dev_mode: bool,
+    holds_validator_key: bool,
+) -> Capabilities {
+    Capabilities {
+        autopropose: auto_propose,
+        propose_on_deploy,
+        manual_propose: !auto_propose && !propose_on_deploy,
+        admin_http,
+        dev_mode,
+        proposer: holds_validator_key,
+    }
+}
+
 #[async_trait]
 impl BlockApi for BlockApiImpl {
     async fn status(&self) -> Status {
@@ -506,13 +531,13 @@ impl BlockApi for BlockApiImpl {
     }
 
     async fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            autopropose: self.auto_propose,
-            propose_on_deploy: self.propose_on_deploy,
-            manual_propose: !self.auto_propose && !self.propose_on_deploy,
-            admin_http: self.admin_http,
-            dev_mode: self.dev_mode,
-        }
+        capability_answer(
+            self.auto_propose,
+            self.propose_on_deploy,
+            self.admin_http,
+            self.dev_mode,
+            self.validator_opt.is_some(),
+        )
     }
 
     async fn proposer_health(&self) -> ProposerHealth {
@@ -1162,6 +1187,32 @@ fn deploy_error_text(
 mod tests {
     use super::*;
     use rchain_models::casper::protocol::casper_message::RholangState;
+
+    /// **The discriminator is identity, not mode.**
+    ///
+    /// Both arms are the same configuration (`--autopropose` off), so `manualPropose` is `true` for
+    /// both — which is the whole reason it cannot be the field a hostlist filters on. Only the
+    /// validator key separates a manual-mode validator from an observer. Falsified by computing
+    /// `proposer` from any of the mode flags: one of the two assertions then flips.
+    #[test]
+    fn proposer_is_the_validator_identity_not_the_mode() {
+        let validator = capability_answer(false, false, false, false, true);
+        let observer = capability_answer(false, false, false, false, false);
+        assert_eq!(
+            (validator.manual_propose, observer.manual_propose),
+            (true, true),
+            "the mode flag cannot tell them apart — that is the trap this field exists to remove"
+        );
+        assert!(validator.proposer, "a keyed manual validator can propose");
+        assert!(
+            !observer.proposer,
+            "an unkeyed observer cannot propose, whatever its mode"
+        );
+
+        // Autopropose does not change the identity answer either.
+        assert!(capability_answer(true, true, false, false, true).proposer);
+        assert!(!capability_answer(true, true, false, false, false).proposer);
+    }
 
     fn block() -> BlockMessage {
         BlockMessage {

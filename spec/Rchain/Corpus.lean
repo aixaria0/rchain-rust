@@ -13,6 +13,7 @@ import Rchain.Parse
 import Rchain.Casper.Validate
 import Rchain.Casper.Rounds
 import Rchain.Admission
+import Rchain.HostList
 import Rchain.Decimal
 
 /-!
@@ -1839,6 +1840,84 @@ def admissionLine (c : AdmissionCase) : String :=
     ["admission", admissionCaseName c, if admissionHolds c then "true" else "false"]
 
 
+/-! ## Law 90 — the publishable hostlist -/
+
+def hostPeer (id : Nat) : Rchain.HostList.Peer :=
+  { id := id, host := "h", protocolPort := 40400 }
+
+def hostCtx (selfId : Nat) (selfProposer : Bool) (maxEntries : Nat) : Rchain.HostList.Ctx :=
+  { networkId := "testnet", shardIds := ["/root"], maxEntries := maxEntries,
+    self := hostPeer selfId, selfProposer := selfProposer }
+
+def hostAnswer (id : Nat) : Option Rchain.HostList.Answer :=
+  some { address := id, networkId := "testnet", shardId := "/root", proposer := true }
+
+def hostObserver (id : Nat) : Option Rchain.HostList.Answer :=
+  some { address := id, networkId := "testnet", shardId := "/root", proposer := false }
+
+def hostForeignNetwork (id : Nat) : Option Rchain.HostList.Answer :=
+  some { address := id, networkId := "othernet", shardId := "/root", proposer := true }
+
+def hostCase (name : String) (ctx : Rchain.HostList.Ctx)
+    (os : List Rchain.HostList.Outcome) (expected : List Nat) : Rchain.HostList.Case :=
+  { name := name, ctx := ctx, outcomes := os, expected := expected }
+
+/-- **The hostlist cases.** Each is a shape both sides run: the Lean `servedIds` above and the Rust
+    `derive_hostlist`. The corpus line carries the **ids the derivation must produce**, so a drift in
+    the filter, the ordering, dedupe, the bound or self's presence fails the tie on one side or the
+    other — there is no expected value duplicated in prose. -/
+def hostListCases : List Rchain.HostList.Case :=
+  [ hostCase "self_only" (hostCtx 0 true 8) []
+      [0]
+  , hostCase "observer_excluded" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := hostObserver 1 }]
+      [0]
+  , hostCase "wrong_network" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := hostForeignNetwork 1 }]
+      [0]
+  , hostCase "wrong_shard" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := some { address := 1, networkId := "testnet", shardId := "/child", proposer := true } }]
+      [0]
+  , hostCase "unreachable" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := none }]
+      [0]
+  , hostCase "address_mismatch" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := some { address := 2, networkId := "testnet", shardId := "/root", proposer := true } }]
+      [0]
+  , hostCase "three_valid_sorted" (hostCtx 0 true 8)
+      [{ peer := hostPeer 5, answer := hostAnswer 5 },
+       { peer := hostPeer 3, answer := hostAnswer 3 },
+       { peer := hostPeer 1, answer := hostAnswer 1 }]
+      [0, 1, 3, 5]
+  , hostCase "truncation_self_first" (hostCtx 0 true 2)
+      [{ peer := hostPeer 1, answer := hostAnswer 1 },
+       { peer := hostPeer 2, answer := hostAnswer 2 },
+       { peer := hostPeer 3, answer := hostAnswer 3 }]
+      [0, 1]
+  , hostCase "duplicate_ids" (hostCtx 0 true 8)
+      [{ peer := hostPeer 1, answer := hostAnswer 1 },
+       { peer := hostPeer 1, answer := hostAnswer 1 }]
+      [0, 1]
+  , hostCase "self_not_a_proposer" (hostCtx 0 false 8)
+      [{ peer := hostPeer 7, answer := hostAnswer 7 }]
+      [7]
+  ]
+
+def hostListCaseCount : Nat := 10
+
+def hostListHolds (c : Rchain.HostList.Case) : Bool :=
+  Rchain.HostList.servedIds c.ctx c.outcomes == c.expected
+
+theorem hostListCases_decide : hostListCases.all hostListHolds = true := by decide
+
+theorem hostListCases_length : hostListCases.length = hostListCaseCount := by decide
+
+def hostListLine (c : Rchain.HostList.Case) : String :=
+  String.intercalate "\t"
+    ["hostlist", c.name,
+      if c.expected.isEmpty then "-" else String.intercalate "," (c.expected.map toString)]
+
+
 /-! ## Law 87 — the decimal value algebra -/
 
 open Rchain.Decimal in
@@ -2057,7 +2136,7 @@ def main (args : List String) : IO UInt32 := do
       || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
       || a == "stake" || a == "block" || a == "liveness" || a == "admission"
-      || a == "decimal")).getD "flags"
+      || a == "decimal" || a == "hostlist")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -2093,6 +2172,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.admissionCases.map Corpus.admissionLine, Corpus.admissionCaseCount)
     else if want == "decimal" then
       (Corpus.decimalCases.map Corpus.decimalLine, Corpus.decimalCaseCount)
+    else if want == "hostlist" then
+      (Corpus.hostListCases.map Corpus.hostListLine, Corpus.hostListCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
