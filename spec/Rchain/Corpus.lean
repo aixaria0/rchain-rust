@@ -12,9 +12,11 @@ import Rchain.Lex
 import Rchain.Parse
 import Rchain.Casper.Validate
 import Rchain.Casper.Rounds
+import Rchain.Progress
 import Rchain.Admission
 import Rchain.HostList
 import Rchain.Decimal
+import Rchain.Disposition
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1918,6 +1920,74 @@ def hostListLine (c : Rchain.HostList.Case) : String :=
       if c.expected.isEmpty then "-" else String.intercalate "," (c.expected.map toString)]
 
 
+/-! ## Law 51d — the paced gate (the `recovery` layer) -/
+
+/-- One `recovery` case. `pace` is Law 51d's gate (first sighting, tick, expected
+    `(escape?, new sighting)`); `eligible` is Law 88c's sweep predicate (stage, since, now,
+    expected). The Rust consumer dispatches on the kind and calls the same predicate. -/
+inductive RecoveryCase where
+  | pace (first : Option Nat) (now : Nat) (expected : Bool × Option Nat)
+  | eligible (stage : Rchain.Disposition.Recovery.Stage) (since : Nat) (now : Nat)
+      (expected : Bool)
+  | classify (inMap regression : Bool) (expected : String)
+  deriving Repr
+
+def recoveryHolds : RecoveryCase → Bool
+  | .pace first now expected =>
+      decide (Rchain.Pacing.take ⟨first⟩ now = (expected.1, { since := expected.2 }))
+  | .eligible stage since now expected =>
+      decide (Rchain.Disposition.Recovery.eligible ⟨stage, since⟩ now = expected)
+  | .classify inMap regression expected =>
+      decide (Rchain.Disposition.Recovery.outcomeName
+        (Rchain.Disposition.Recovery.classify inMap regression) = expected)
+
+def recoveryCases : List RecoveryCase :=
+  [ .pace none 0 (false, some 0)
+  , .pace (some 0) 14999 (false, some 0)
+  , .pace (some 0) 15000 (true, some 15000)
+  , .pace (some 0) 15001 (true, some 15001)
+  , .pace (some 0) 30000 (true, some 30000)
+  , .pace (some 15000) 15001 (false, some 15000)
+  , .pace (some 15000) 30000 (true, some 30000)
+  , .eligible .stored 0 59999 false
+  , .eligible .stored 0 60000 true
+  , .eligible .validating 0 60000 false
+  , .eligible .retry 0 60000 false
+  , .classify true true "regression"
+  , .classify true false "pass"
+  , .classify false true "unresolved"
+  , .classify false false "unresolved"
+  ]
+
+def recoveryCaseCount : Nat := 15
+
+theorem recoveryCases_decide : recoveryCases.all recoveryHolds = true := by decide
+
+theorem recoveryCases_length : recoveryCases.length = recoveryCaseCount := by decide
+
+def recoveryStageName : Rchain.Disposition.Recovery.Stage → String
+  | .stored => "stored"
+  | .validating => "validating"
+  | .retry => "retry"
+
+def recoveryLine : RecoveryCase → String
+  | .pace first now expected =>
+      String.intercalate "\t"
+        ["recovery", "pace",
+          match first with | none => "-" | some n => toString n,
+          toString now,
+          if expected.1 then "true" else "false",
+          match expected.2 with | none => "-" | some n => toString n]
+  | .eligible stage since now expected =>
+      String.intercalate "\t"
+        ["recovery", "eligible", recoveryStageName stage,
+          toString since, toString now, if expected then "true" else "false"]
+  | .classify inMap regression expected =>
+      String.intercalate "\t"
+        ["recovery", "classify", if inMap then "true" else "false",
+          if regression then "true" else "false", expected]
+
+
 /-! ## Law 87 — the decimal value algebra -/
 
 open Rchain.Decimal in
@@ -2136,7 +2206,7 @@ def main (args : List String) : IO UInt32 := do
       || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
       || a == "stake" || a == "block" || a == "liveness" || a == "admission"
-      || a == "decimal" || a == "hostlist")).getD "flags"
+      || a == "decimal" || a == "hostlist" || a == "recovery")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -2174,6 +2244,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.decimalCases.map Corpus.decimalLine, Corpus.decimalCaseCount)
     else if want == "hostlist" then
       (Corpus.hostListCases.map Corpus.hostListLine, Corpus.hostListCaseCount)
+    else if want == "recovery" then
+      (Corpus.recoveryCases.map Corpus.recoveryLine, Corpus.recoveryCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

@@ -10,6 +10,7 @@ cargo test --release --locked -p rchain-casper --lib engine::node_phase
 cargo test --release --locked -p rchain-rholang --lib liveness_tests
 cargo test --release --locked -p rchain-node --lib web::node_list
 cargo test --release --locked -p rchain-node --test lean_hostlist_corpus
+cargo test --release --locked -p rchain-casper --test lean_recovery_corpus
 cargo test --release --locked -p rchain-casper --test finalization
 # Counterfactual control inside this disposable test container only.
 source_file=casper/src/blocks/proposer/proposer.rs

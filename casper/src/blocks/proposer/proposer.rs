@@ -954,6 +954,21 @@ fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
+/// **The pacing rule as a pure function** (Law 51d), so the conformance corpus can tie the model
+/// to the node. Given the first blocked sighting (if any) and `now`, returns `(escape?, new
+/// sighting)`: `None` starts the clock; a full interval returns `true` and **consumes** the permit
+/// by moving the sighting to `now`; anything else returns `false` and leaves the sighting alone.
+/// The mutex form below is this function's one implementation — a banked permit would make a
+/// still-open round escape on every tick after the first interval.
+pub fn take_escape_permit(first_ms: Option<u64>, now_ms: u64) -> (bool, Option<u64>) {
+    let bound = ROUND_STALL_ESCAPE.as_millis() as u64;
+    match first_ms {
+        None => (false, Some(now_ms)),
+        Some(first) if now_ms.saturating_sub(first) >= bound => (true, Some(now_ms)),
+        Some(first) => (false, Some(first)),
+    }
+}
+
 /// Consume one escape permit after a full monotonic stall interval.
 /// A still-open round must wait another interval before escaping again;
 /// otherwise a fast producer can exhaust the finality-lag bound while its

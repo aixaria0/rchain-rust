@@ -976,6 +976,9 @@ fn wire_block_processing_observed(
             }
         }
     });
+    // A second handle for the stored-pending sweep: it claims the receiver's in-memory state
+    // under the same lock, so it cannot race a release.
+    let reoffer_state = receiver_state.clone();
     let validation_rx = block_receiver::apply_with_queue_observer(
         receiver_state,
         incoming_blocks_rx,
@@ -1073,14 +1076,15 @@ fn wire_block_processing_observed(
     // **The retry loop and the periodic audit** run for the life of the shard. The start-up
     // re-offer is *not* spawned here: launch runs it before the shard reaches `Running` (unit 3),
     // so a restarted node cannot report running with the ledger unsettled.
-    // Re-offer aged stored pending blocks after parents enter the live DAG.
-    // The per-shard phase gate preserves the launch/recovery ordering.
+    // Stored bodies skipped at boot or refused for receiver capacity must be re-offered when
+    // their parents arrive; faulted rows continue through the separate backoff loop (Law 88c).
     tokio::spawn(
         rchain_casper::block_disposition::retry_ready_stored_pending(
             parts.phase.clone(),
             parts.block_disposition.clone(),
             parts.block_store.clone(),
             parts.dag.clone(),
+            reoffer_state,
             processor_input_tx_disposition.clone(),
             disposition_log.clone(),
         ),

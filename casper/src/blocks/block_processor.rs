@@ -106,6 +106,18 @@ async fn validation_within_deadline<T: Send + 'static>(
 /// what the retry loop reads; the cell is what `/health` and the propose/deploy gates read now. A
 /// ledger write that fails is itself logged as a fault, because the alternative is a stored body
 /// with no record — the orphan state U19 exists to forbid.
+/// **The stage a validation `Internal` failure is recorded under** (Law 88d). The height and
+/// sequence checks produce `missing justification <hex>` for a justification the node cannot
+/// resolve; that failure is named, so an operator (and the retry sweep) can tell it from a store or
+/// runtime fault. The verdict is unchanged — the block still fails and is still retried.
+fn internal_fault_stage(reason: &str) -> &'static str {
+    if reason.starts_with("missing justification") {
+        "missing justification"
+    } else {
+        "validation internal"
+    }
+}
+
 async fn record_block_fault(
     disposition: &BlockDispositionStore,
     block: &BlockMessage,
@@ -458,14 +470,16 @@ pub async fn apply<F, Fut>(
                     continue;
                 }
                 Err(ValidateError::Internal(e)) => {
-                    // An `Internal` failure is a store or runtime failure: retryable by the
-                    // disposition ledger's schedule, not droppable. **A `missing justification`
-                    // cannot arrive here** — see the note on `apply` — so the retry is for the
-                    // store/runtime fault, not for a dependency that was never released.
+                    // An `Internal` failure is retryable by the disposition ledger's schedule, not
+                    // droppable. **A `missing justification` should not arrive here** — the
+                    // receiver releases a block only when every parent is in the DAG — but if one
+                    // does, it is named for what it is rather than folded into "validation
+                    // internal", where it is indistinguishable from a store or runtime fault
+                    // (Law 88d).
                     record_block_fault(
                         &disposition,
                         &block,
-                        "validation internal",
+                        internal_fault_stage(&e),
                         &e,
                         &log,
                         source,
@@ -531,6 +545,20 @@ pub async fn apply<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A missing justification is recorded under its own stage** (Law 88d): not "validation
+    /// internal", where it would be indistinguishable from a store or runtime fault.
+    #[test]
+    fn a_missing_justification_is_recorded_under_its_own_stage() {
+        assert_eq!(
+            internal_fault_stage("missing justification abcd"),
+            "missing justification"
+        );
+        assert_eq!(
+            internal_fault_stage("block summary failed: store read"),
+            "validation internal"
+        );
+    }
 
     /// A minimal block for the fault/deadline tests. `block-storage`'s shared fixture is
     /// `#[cfg(test)]` inside that crate, so it is not reachable from here (CI caught exactly that).
