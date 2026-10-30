@@ -5171,6 +5171,68 @@ def lawsC : List Law := [
       runs, bounded by one probe interval and documented. The provider's snapshot is swapped whole; \
       no lock is held across a probe, and the route takes no caller input." },
 
+  { number := 91, clause := "a", layer := "Rholang",
+    statement := "**A canonicalisation or a union charges the elements it canonicalises.** A \
+      collection the reducer builds (`toSet`, `toMap`, `set`, `keys`) charges three phlo per element \
+      of the output it is about to build, charged from the operand size before the work; a set or \
+      map union charges both operands, so the charge is a function of the total element count and \
+      does not depend on which operand is which",
+    status := .provedModel,
+    declarations := [`Rchain.canonicalizationCost, `Rchain.unionCost,
+      `Rchain.canonicalizationCost_covers_the_operand, `Rchain.unionCost_is_the_sum_of_its_operands,
+      `Rchain.unionCost_symmetric, `Rchain.rightOnlyUnionCost,
+      `Rchain.rightOnlyUnionCost_is_not_symmetric],
+    axioms := [],
+    rust := ["rholang/src/reduce.rs", "rholang/src/accounting.rs"],
+    rustWitness := ["rholang/src/reduce.rs:to_set_charges_its_elements",
+      "rholang/src/reduce.rs:to_map_charges_its_elements",
+      "rholang/src/reduce.rs:keys_charges_its_output",
+      "rholang/src/reduce.rs:set_charges_the_map_it_rebuilds",
+      "rholang/src/reduce.rs:a_union_charges_both_operands_alike",
+      "rholang/src/accounting.rs:collection_and_censure_charges_are_the_models"],
+    witness := [`Rchain.canonicalizationCost_covers_the_operand, `Rchain.unionCost_symmetric],
+    falsifiable := "The charge this replaced was flat — 18 phlo for a `toSet` of 500 elements and \
+      of 40 000, while the sort's wall time grew from 7 ms to 724 ms — and the union charged the \
+      right operand only, which `rightOnlyUnionCost_is_not_symmetric` exhibits as asymmetric at one \
+      pair. Reverting either makes the corresponding witness test fail: `to_set_charges_its_elements` \
+      sees a zero marginal charge, and `a_union_charges_both_operands_alike` sees the two arms \
+      differ.",
+    note := "**The log factor is named rather than hidden.** A canonicalisation sorts, so the work \
+      is `O(n log n)` and the charge is linear: a phlo buys work bounded by `charge · log charge`, \
+      which is bounded — the defect C345 names is *unbounded* work for a flat charge — but it is not \
+      an exact comparison count, and this row does not claim one. **Not charged, and deliberately \
+      so**: a collection literal the evaluator builds stays uncharged, because its bytes were \
+      charged at parse and the create path is not attacker-sized. The tie is prose plus the Rust \
+      witness, not a corpus: the cost is a closed form, so a corpus of the same numbers would \
+      restate the witness. Consensus-visible (#51 category A): the charge moves refund and burned \
+      amounts, hence every post-state hash." },
+
+  { number := 91, clause := "b", layer := "Rholang",
+    statement := "**The censure charge bounds the cubic fold.** `rho:gov:censure` charges `(U+1)³` \
+      phlo for a member universe of `U` — a charge that covers every member and grows with the \
+      universe — where the fold's fixed point runs at most `U+1` rounds over `U` members",
+    status := .provedModel,
+    declarations := [`Rchain.censureCost, `Rchain.censureCost_exceeds_the_universe,
+      `Rchain.censureCost_monotone, `Rchain.censureCost_is_not_the_square],
+    axioms := [],
+    rust := ["rholang/src/system_processes.rs", "rholang/src/accounting.rs"],
+    rustWitness := ["rholang/src/system_processes.rs:censure_is_charged_the_cube_of_its_universe",
+      "rholang/src/accounting.rs:collection_and_censure_charges_are_the_models"],
+    witness := [`Rchain.censureCost_exceeds_the_universe, `Rchain.censureCost_monotone],
+    falsifiable := "The charge this replaced was `U²` for a `Θ(U³)` fixed point; \
+      `censureCost_is_not_the_square` exhibits a universe at which the two differ, and \
+      `censure_is_charged_the_cube_of_its_universe` reads the handler's own cost cell at two \
+      universes, so a revert to the quadratic table fails there rather than in an estimate.",
+    note := "**The bound is measured, not chosen.** `MAX_GOV_UNIVERSE` is 512, and the cubic path at \
+      it was timed in release (`rholang/tests/gas_amplification.rs`): 33 ms for a 512-member levels \
+      map, 1–5 ms for the three mixed shapes — so the constant stays and the `(512+1)³` = 1.35e8 phlo \
+      it charges is the same order as the time it buys under the table's one-phlo-per-operation \
+      calibration. The bound is on the **sum** of censures, levels and vouchers, which is what stops \
+      a deep cascade: a discredit needs a quorum of about two thirds of the eligible set, and the \
+      universe counts the censure pairs that must supply it. **The other three `rho:gov:*` folds \
+      keep the squared charge** — their work shape is unmeasured, and that is a residual of this row \
+      rather than a claim that they are quadratic." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC
