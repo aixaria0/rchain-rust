@@ -291,6 +291,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       liveness) test_name="lean_liveness_corpus";  crate="rchain-node" ;;
       admission) test_name="lean_admission_corpus"; crate="rchain-casper" ;;
       decimal)  test_name="lean_decimal_corpus";   crate="rchain-models" ;;
+      hostlist) test_name="lean_hostlist_corpus";  crate="rchain-node" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;

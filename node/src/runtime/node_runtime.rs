@@ -112,6 +112,7 @@ use crate::runtime::shutdown::{stop_requested, SHUTDOWN_DRAIN_TIMEOUT};
 use crate::web::http::{
     acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
 };
+use crate::web::node_list::{NodeListConfig, NodeListProvider};
 use crate::web::pos_read::{PosReadApi, ShardPosRead};
 use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::block_disposition::{
@@ -461,6 +462,8 @@ pub struct NodeProgram {
     admin_web_api: Arc<dyn AdminWebApi>,
     /// The shards this node validates for, for the `GET /api/v1/shards` route.
     shards: Arc<ShardRegistry>,
+    /// The deploy hostlist (`GET /api/v1/nodes`), when `api-server.publish-node-list` is on.
+    node_list: Option<Arc<NodeListProvider>>,
     /// The on-node cross-shard 2PC coordinator, when this node is a multi-shard gateway.
     gateway: Option<Arc<GatewayTxn>>,
     block_report_api: Arc<BlockReportApi>,
@@ -536,6 +539,7 @@ impl NodeProgram {
             admin_web_api,
             faucet_enabled,
             shards,
+            node_list,
             block_report_api,
             reporter,
             metrics,
@@ -626,6 +630,7 @@ impl NodeProgram {
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
+                    node_list,
                     stop,
                 )
                 .await
@@ -1506,7 +1511,8 @@ pub async fn setup_node_program(
             primary_id.to_string(),
             resources.clone(),
         )
-        .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?,
+        .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?
+        .with_node_list(conf.api_server.publish_node_list),
     );
     // The PoS read (AUDIT C148): the primary shard's live native state through the runtime manager
     // that owns it, plus the status API for the head's height — one definition of "latest block".
@@ -1536,6 +1542,29 @@ pub async fn setup_node_program(
             .collect(),
     });
 
+    // The deploy hostlist (Law 90). Built only when the operator opted in: the route publishes peer
+    // addresses, and a disabled node must answer 404 rather than an empty list.
+    let node_list = if conf.api_server.publish_node_list {
+        let shard_ids: Vec<String> = shards.keys().map(ToString::to_string).collect();
+        Some(NodeListProvider::new(
+            NodeListConfig {
+                probe_interval: conf.api_server.node_list_probe_interval,
+                probe_timeout: conf.api_server.node_list_probe_timeout,
+                max_entries: conf.api_server.node_list_max_entries,
+            },
+            comm_state.connections.clone(),
+            comm_state.rp_conf.clone(),
+            primary_parts.block_api.clone(),
+            shard_ids,
+            primary_id.to_string(),
+            u16::try_from(conf.api_server.port_http)
+                .map_err(|_| "api-server.port-http is not a valid port".to_string())?,
+            log.clone(),
+        )?)
+    } else {
+        None
+    };
+
     // The 2PC gateway (Laws 26–29): a node that is a member of several shards can drive a
     // cross-shard transaction itself. It exists only where it can act — more than one membership
     // and a signing key — so a single-shard or key-less node is untouched.
@@ -1547,6 +1576,7 @@ pub async fn setup_node_program(
         pos_read,
         admin_web_api,
         shards: registry,
+        node_list,
         block_report_api: primary_parts.block_report_api.clone(),
         reporter: Arc::new(NewPrometheusReporter::new(prometheus_scrape_config())),
         metrics,

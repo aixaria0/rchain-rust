@@ -50,6 +50,7 @@ use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::resources::{CapacityBudget, ResourceGuard};
 use crate::runtime::shutdown::stop_requested;
+use crate::web::node_list::NodeListProvider;
 use crate::web::pos_read::PosReadApi;
 use crate::web::reporting::transform_result;
 use crate::web::status_info;
@@ -58,6 +59,10 @@ use crate::web::version_info;
 /// Rate limit for the devnet faucet endpoint. Much stricter than the deploy route because each
 /// request transfers real (dev) REV.
 const FAUCET_RATE_LIMIT_PER_SEC: u64 = 1;
+
+/// `GET /api/v1/nodes` reads a cached snapshot, so this is a courtesy bound rather than a cost
+/// bound: enough for a wallet's discovery sweep, not enough to be a scraping surface.
+const NODE_LIST_RATE_LIMIT_PER_SEC: u64 = 10;
 
 /// The most legs one cross-shard transaction may name (AUDIT C121).
 ///
@@ -246,6 +251,12 @@ pub struct HttpState {
     /// handler's own condition, carried here so the mount and the handler cannot disagree (AUDIT
     /// R34). When false the routes do not exist and the documented **404** is what a caller gets.
     pub faucet_enabled: bool,
+    /// **The deploy hostlist** (`GET /api/v1/nodes`), when `api-server.publish-node-list` is on.
+    /// `None` means the route is not mounted at all, so a disabled node answers 404 exactly like one
+    /// built before the route existed.
+    pub node_list: Option<Arc<NodeListProvider>>,
+    /// Rate limiter for the hostlist route. See [`NODE_LIST_RATE_LIMIT_PER_SEC`].
+    pub node_list_rate_limiter: Arc<KeyedRateLimiter>,
 }
 
 /// State shared by the admin HTTP server (port of the `adminWebApiRoutes` argument of
@@ -370,6 +381,22 @@ async fn api_deploys(State(state): State<HttpState>) -> Response {
 
 async fn api_capabilities(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.capabilities().await)
+}
+
+/// `GET /api/v1/nodes` — the deploy hostlist (Law 90).
+///
+/// The route is only mounted when `api-server.publish-node-list` is on, so the `None` arm is what a
+/// caller sees on a node that does not publish it — and it is the same 404 an older node answers.
+/// The handler reads a snapshot the probe loop swapped whole; it holds no lock across I/O and takes
+/// no caller input, which is why the probe target set cannot be steered by a request.
+async fn api_node_list(State(state): State<HttpState>) -> Response {
+    match &state.node_list {
+        Some(provider) => {
+            let snapshot = provider.snapshot();
+            Json(snapshot.as_ref()).into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// `GET /api/v1/shards` — the shards this node is a member of (a gateway is a member of several),
@@ -979,6 +1006,16 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/nodes": {
+      "get": {
+        "summary": "Deploy-capable nodes a wallet can send deploys to",
+        "description": "The live peers whose derived `protocol + 3` HTTP port answered /api/v1/status with this network and shard and reported `proposer: true`. Advisory: peers report their own state, so a client re-verifies. Present only when `api-server.publish-node-list` is on; answers 404 otherwise.",
+        "responses": {
+          "200": { "description": "The hostlist", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeListResponse" } } } },
+          "404": { "description": "The node does not publish a hostlist" }
+        }
+      }
+    },
     "/txn": {
       "post": {
         "summary": "Open or resume a cross-shard transaction",
@@ -1188,6 +1225,30 @@ pub const OPENAPI_JSON: &str = r##"{
           }
         }
       },
+      "NodeListResponse": {
+        "type": "object",
+        "properties": {
+          "networkId": { "type": "string" },
+          "primaryShard": { "type": "string" },
+          "generatedAt": { "type": "integer", "format": "int64", "description": "When the probe cycle that produced this list completed, in unix milliseconds" },
+          "ownLatestBlockNumber": { "type": "integer", "format": "int64", "description": "The serving node's own height, to rank a peer's latestBlockNumber against" },
+          "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/NodeListEntry" } }
+        }
+      },
+      "NodeListEntry": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string", "description": "The peer's TLS identity (hex), not its validator key" },
+          "httpUrl": { "type": "string", "description": "The URL this node probed and that answered; the only client endpoint served" },
+          "networkId": { "type": "string" },
+          "shardId": { "type": "string" },
+          "nodeVersion": { "type": "string" },
+          "latestBlockNumber": { "type": "integer", "format": "int64", "description": "Peer-reported at probe time; advisory, not a membership condition" },
+          "proposer": { "type": "boolean", "description": "Peer-reported; always true for a served entry" },
+          "acceptsDeploys": { "type": "boolean", "description": "Peer-reported pool capacity at probe time; advisory, and a client must still handle a 429" },
+          "self": { "type": "boolean", "description": "The serving node itself" }
+        }
+      },
       "ApiStatus": {
         "type": "object",
         "description": "**The chain-public half of the node's status** (W-N3-01). The operator half — divergence records, the safety halt, the report counters, the sync task's state, the durable reset marker — is `OperatorStatus`, served on the admin listener at /api/v1/status/operator and never here.",
@@ -1204,6 +1265,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all. Unlike manualPropose (a mode), an unkeyed observer reports false" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable (a stale or unreadable sample reports unavailable). A word, not a number; the numbers are on the operator surface" },
           "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
           "pool": { "type": "object", "properties": {
@@ -1230,6 +1292,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all. Unlike manualPropose (a mode), an unkeyed observer reports false" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable. A word, not a number; the numbers are on the operator surface" },
           "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
           "pool": { "type": "object", "properties": {
@@ -1499,6 +1562,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean" },
           "adminHttp": { "type": "boolean" },
           "devMode": { "type": "boolean" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all; an unkeyed observer reports false" },
+          "nodeList": { "type": "boolean", "description": "GET /api/v1/nodes is mounted (api-server.publish-node-list)" },
           "faucet": { "type": "boolean" },
         "faucetRemaining": { "type": "integer", "format": "int64" }
         }
@@ -1891,6 +1956,23 @@ pub fn router(state: HttpState) -> Router {
         );
     }
 
+    // The deploy hostlist. Mounted only when the operator opted in: it publishes peer addresses,
+    // and a node that has not opted in must answer 404 rather than an empty list, so a client can
+    // tell "not published" from "no peers".
+    if state.node_list.is_some() {
+        routes = routes.merge(
+            Router::new()
+                .route("/api/v1/nodes", get(api_node_list))
+                .route_layer(middleware::from_fn_with_state(
+                    (
+                        state.node_list_rate_limiter.clone(),
+                        "node list rate limit exceeded",
+                    ),
+                    peer_rate_limit,
+                )),
+        );
+    }
+
     routes.layer(CorsLayer::permissive()).with_state(state)
 }
 
@@ -2089,6 +2171,9 @@ pub async fn acquire_http_server(
     // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
     // the caller because that is where both are known.
     faucet_enabled: bool,
+    // The deploy hostlist, when `api-server.publish-node-list` is on. Built by the caller, which is
+    // where the shard registry and the comm state are known.
+    node_list: Option<Arc<NodeListProvider>>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
@@ -2166,11 +2251,21 @@ pub async fn acquire_http_server(
             MAX_TRACKED_PEERS,
         )),
         faucet_enabled,
+        node_list: node_list.clone(),
+        node_list_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            NODE_LIST_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
         max_connection_idle,
     ));
+    // The hostlist's probe loop follows the same stop signal as the server, so a node stop does not
+    // leave a task probing peers after the listener has gone.
+    if let Some(provider) = &node_list {
+        provider.spawn(stop.clone());
+    }
     // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the
     // connections already in flight finish, so a stop is not a truncation of somebody's request.
     //
@@ -2260,6 +2355,7 @@ mod tests {
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
     use crate::resources::{ResourceGuard, ResourceSnapshot, ResourceState};
+    use crate::web::node_list::NodeListConfig;
     use crate::web::transaction::TransactionResponse;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -2337,6 +2433,7 @@ mod tests {
             propose_on_deploy: true,
             manual_propose: false,
             dev_mode: true,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: crate::api::dto::DeployPoolStatus {
@@ -2520,6 +2617,11 @@ mod tests {
                 FAUCET_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
+            node_list: None,
+            node_list_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                NODE_LIST_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
             deploy_admission: None,
             explore_admission: None,
             budget: Arc::new(CapacityBudget::new(ResourceGuard::inert(
@@ -2538,6 +2640,98 @@ mod tests {
             // off case is pinned by its own test below.
             faucet_enabled: true,
         }
+    }
+
+    /// The `state()` fixture with the hostlist mounted (or not), against the transaction stub — a
+    /// keyed, manual-mode node, so the route's `self` entry is a *proposer* and not just a node.
+    fn node_list_state(enabled: bool) -> HttpState {
+        let mut s = state();
+        if enabled {
+            let shard = "/root";
+            s.node_list = Some(
+                NodeListProvider::new(
+                    NodeListConfig {
+                        probe_interval: Duration::from_secs(60),
+                        probe_timeout: Duration::from_secs(1),
+                        max_entries: 8,
+                    },
+                    Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                    RPConf {
+                        local: PeerNode::from(
+                            NodeIdentifier::new(vec![1u8; 32]),
+                            "127.0.0.1".to_string(),
+                            rchain_shared::refined::Port::new(40400),
+                            rchain_shared::refined::Port::new(40404),
+                        ),
+                        network_id: "testnet".to_string(),
+                        bootstrap: None,
+                        default_timeout: Duration::from_secs(1),
+                        max_num_of_connections: 10,
+                        clear_connections: ClearConnectionsConf {
+                            num_of_connections_pinged: 1,
+                        },
+                    },
+                    Arc::new(TxnStubApi {
+                        shard_id: shard.to_string(),
+                    }),
+                    vec![shard.to_string()],
+                    shard.to_string(),
+                    40403,
+                    Arc::new(rchain_shared::log::NopLog),
+                )
+                .expect("a node-list provider"),
+            );
+        }
+        s
+    }
+
+    /// **A node that has not opted in does not have the route.** The empty list is the wrong answer:
+    /// a client could not tell "not published" from "no deploy-capable peers", and an older node
+    /// answers 404 too.
+    #[tokio::test]
+    async fn the_node_list_route_is_absent_when_disabled() {
+        use tower::ServiceExt;
+        let response = router(state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/nodes")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The enabled route serves the documented shape, and the serving node — a proposer — is the
+    /// first entry, flagged `self`, at the URL derived from its advertised host and its real port.
+    #[tokio::test]
+    async fn the_node_list_route_serves_self_when_enabled() {
+        use tower::ServiceExt;
+        let s = node_list_state(true);
+        s.node_list.as_ref().expect("mounted").run_cycle().await;
+        let response = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/nodes")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["networkId"], "testnet");
+        assert_eq!(json["primaryShard"], "/root");
+        assert_eq!(json["nodes"][0]["self"], true);
+        assert_eq!(json["nodes"][0]["proposer"], true);
+        assert_eq!(json["nodes"][0]["httpUrl"], "http://127.0.0.1:40403");
+        assert_eq!(
+            json["nodes"].as_array().expect("an array").len(),
+            1,
+            "no peers were connected, so self alone"
+        );
     }
 
     #[test]
@@ -3872,7 +4066,16 @@ mod tests {
             Err("unused".to_string())
         }
         async fn capabilities(&self) -> rchain_casper::api::block_api::Capabilities {
-            unreachable!("unused in these tests")
+            // A validator in manual mode, so the hostlist's `proposer` discriminator is exercised
+            // against a node that *can* propose without autopropose.
+            rchain_casper::api::block_api::Capabilities {
+                autopropose: false,
+                propose_on_deploy: false,
+                manual_propose: true,
+                admin_http: false,
+                dev_mode: false,
+                proposer: true,
+            }
         }
         async fn create_block(&self, _: bool) -> Result<String, String> {
             Err("unused".to_string())

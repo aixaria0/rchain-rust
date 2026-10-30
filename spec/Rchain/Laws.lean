@@ -4963,6 +4963,98 @@ def lawsC : List Law := [
       leak: no automatic step touches a bond. Default off; a network arms it at genesis. The boundary- \
       skip hole (no validity rule requires a `CloseBlock` at a boundary) is a separate residual." },
 
+  { number := 90, clause := "a", layer := "Node",
+    statement := "**A served hostlist entry is earned.** A peer appears in `GET /api/v1/nodes` only \
+      when a probe of its derived client endpoint (`protocol + 3`) completed in the current cycle \
+      with the serving node's `networkId`, a `shardId` in its membership, `proposer = true`, and an \
+      `address` naming that peer's node id. A peer that is not dialable, does not answer, answers for \
+      another network, shard or node, or does not claim a proposer is not served; the serving node \
+      itself is served only when it can propose",
+    status := .provedTied,
+    corpus := some "hostlist",
+    declarations := [`Rchain.HostList.valid, `Rchain.HostList.peerPart,
+      `Rchain.HostList.servedIds, `Rchain.HostList.every_served_entry_is_valid,
+      `Rchain.HostList.every_served_peer_is_a_proposer,
+      `Rchain.HostList.a_failed_single_probe_is_absent,
+      `Rchain.HostList.peer_part_mem],
+    axioms := [],
+    rust := ["node/src/web/node_list.rs", "casper/src/api/block_api_impl.rs"],
+    rustWitness := ["node/src/web/node_list.rs:an_observer_is_not_served",
+      "node/src/web/node_list.rs:a_mismatched_network_is_not_served",
+      "node/src/web/node_list.rs:a_peer_on_another_shard_is_not_served",
+      "node/src/web/node_list.rs:a_peer_answering_for_another_node_id_is_not_served",
+      "node/src/web/node_list.rs:an_unreachable_peer_is_not_served",
+      "node/src/web/node_list.rs:a_non_json_answer_is_refused",
+      "casper/src/api/block_api_impl.rs:proposer_is_the_validator_identity_not_the_mode"],
+    witness := [`Rchain.HostList.every_served_entry_is_valid,
+      `Rchain.HostList.every_served_peer_is_a_proposer,
+      `Rchain.HostList.a_failed_single_probe_is_absent],
+    falsifiable := "Dropping `proposer` from `valid` serves an observer that reports \
+      `manualPropose: true` (`an_observer_is_not_served`, and `an_observer_is_not_served` in the \
+      corpus); dropping `networkId` serves another chain's node; dropping the address check serves a \
+      co-hosted validator under its neighbour's identity; treating a failed probe as success serves a \
+      peer that did not answer. The `proposer` field itself is falsified at the source: \
+      `manual_propose` is `!autopropose && !proposeOnDeploy`, so an unkeyed observer reports it \
+      `true`, exactly like a manual-mode validator — the test pins that both report the same mode and \
+      only the key separates them.",
+    note := "**What the model does not claim.** `proposer` is a peer's own claim over plain HTTP, so \
+      an on-path observer can forge a well-formed answer; the list is advisory and a client \
+      re-verifies. Host-class filtering (a public node never probes a private peer, Law 62's rule), \
+      DNS pinning, the body and field bounds, and the redirect refusal are Rust-tested \
+      implementation facts rather than modelled. The probe adds no new host to the node's egress: it \
+      dials a port on a host the node already dials under mutual TLS, and the request carries no \
+      caller- or peer-supplied URL. **Rollout:** a node older than the `proposer` field lacks it and \
+      is excluded until upgraded; safe, temporarily a shorter list." },
+
+  { number := 90, clause := "b", layer := "Node",
+    statement := "**The list is bounded, deduplicated and ordered.** At most `maxEntries` entries, at \
+      most one per node id, the serving node first when it can propose, and the rest ascending by \
+      node id — the response is a function of the bound, not of the network's size, and its order is \
+      stable across cycles",
+    status := .provedTied,
+    corpus := some "hostlist",
+    declarations := [`Rchain.HostList.servedIds, `Rchain.HostList.peerPart,
+      `Rchain.HostList.the_list_is_bounded, `Rchain.HostList.self_is_first,
+      `Rchain.HostList.self_is_present_when_a_proposer],
+    axioms := [],
+    rust := ["node/src/web/node_list.rs"],
+    rustWitness := ["node/src/web/node_list.rs:the_list_is_sorted_and_bounded",
+      "node/src/web/node_list.rs:a_duplicate_connection_is_served_once",
+      "node/src/web/node_list.rs:self_is_first_and_flagged",
+      "node/src/web/node_list.rs:self_is_absent_when_not_a_proposer"],
+    witness := [`Rchain.HostList.the_list_is_bounded, `Rchain.HostList.self_is_first,
+      `Rchain.HostList.self_is_present_when_a_proposer],
+    falsifiable := "Removing the `take` makes the list a function of the peer count; sorting after \
+      truncation drops self or reorders it; skipping the id dedupe serves a peer twice when two \
+      connections name it. `truncation_self_first` and `duplicate_ids` in the corpus pin the first \
+      and third.",
+    note := "Ascending order is **by construction** — the peer part is walked over ascending ids — so \
+      it needs no sort theorem; the corpus's expected id list is what ties the order to the Rust's \
+      lexicographic `BTreeMap` order, which coincides for the fixed-length hex ids the node uses. \
+      `latestBlockNumber` and `acceptsDeploys` are served and deliberately **not** filtered on: a \
+      lagging or full proposer is still deploy-capable, and there is no oracle for a lag threshold." },
+
+  { number := 90, clause := "c", layer := "Node",
+    statement := "**The list is fresh.** It is derived only from the probes of the cycle that \
+      produced it; a peer whose probe fails in a cycle is absent from that cycle's list, whatever the \
+      previous cycle served. There is no cache that could revive an entry",
+    status := .provedTied,
+    corpus := some "hostlist",
+    declarations := [`Rchain.HostList.peerPart, `Rchain.HostList.servedIds,
+      `Rchain.HostList.a_failed_single_probe_is_absent],
+    axioms := [],
+    rust := ["node/src/web/node_list.rs"],
+    rustWitness := ["node/src/web/node_list.rs:an_unreachable_peer_is_not_served",
+      "node/src/web/node_list.rs:a_public_node_does_not_probe_a_private_peer"],
+    witness := [`Rchain.HostList.a_failed_single_probe_is_absent],
+    falsifiable := "Keeping a per-peer success cache across cycles revives a peer that has gone away; \
+      treating a timed-out probe as success serves it immediately. The `unreachable` corpus case pins \
+      the derivation; the provider rebuilds its snapshot from each cycle's outcomes and never reads \
+      the previous one.",
+    note := "The only freshness window is the previous snapshot being served while the next cycle \
+      runs, bounded by one probe interval and documented. The provider's snapshot is swapped whole; \
+      no lock is held across a probe, and the route takes no caller input." },
+
 ]
 
 def laws : List Law := lawsA ++ lawsB ++ lawsC

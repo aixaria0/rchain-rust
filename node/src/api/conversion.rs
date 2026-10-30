@@ -85,6 +85,7 @@ pub fn to_public_status(
         propose_on_deploy: caps.propose_on_deploy,
         manual_propose: caps.manual_propose,
         dev_mode: caps.dev_mode,
+        proposer: caps.proposer,
         degraded: resource.fallback.as_str().to_string(),
         // **The pool's capacity, not the advisory resource word** (Law 86a). A throttled node with a
         // free slot accepts; a node whose pool is full refuses with 429 until work drains or relays.
@@ -220,6 +221,7 @@ pub fn to_node_capabilities(
     caps: &Capabilities,
     faucet: bool,
     faucet_remaining: i64,
+    node_list: bool,
 ) -> NodeCapabilities {
     NodeCapabilities {
         autopropose: caps.autopropose,
@@ -227,6 +229,8 @@ pub fn to_node_capabilities(
         manual_propose: caps.manual_propose,
         admin_http: caps.admin_http,
         dev_mode: caps.dev_mode,
+        proposer: caps.proposer,
+        node_list,
         faucet,
         faucet_remaining,
     }
@@ -360,6 +364,7 @@ mod tests {
             manual_propose: false,
             admin_http: false,
             dev_mode: false,
+            proposer: false,
         };
         let roomy = DeployPoolStats {
             deploys: 1,
@@ -447,6 +452,7 @@ mod tests {
             manual_propose: false,
             admin_http: true,
             dev_mode: true,
+            proposer: false,
         };
         let health = ProposerHealth {
             consecutive_self_validation_failures: 3,
@@ -599,6 +605,7 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: true,
             dev_mode: false,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: DeployPoolStatus::default(),
@@ -615,6 +622,7 @@ mod tests {
                 manual_propose: true,
                 admin_http: false,
                 dev_mode: false,
+                proposer: false,
             },
             &ProposerHealth::default(),
             &FinalityHealth::default(),
@@ -666,6 +674,7 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: DeployPoolStatus::default(),
@@ -686,6 +695,7 @@ mod tests {
                 manual_propose: false,
                 admin_http: false,
                 dev_mode: false,
+                proposer: false,
             },
             &ProposerHealth::default(),
             &finality,
@@ -742,6 +752,7 @@ mod tests {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: DeployPoolStatus::default(),
@@ -752,6 +763,7 @@ mod tests {
             manual_propose: false,
             admin_http: true,
             dev_mode: false,
+            proposer: false,
         };
         let halted = ProposerHealth {
             autopropose_timer_halted: true,
@@ -843,6 +855,7 @@ mod tests {
             manual_propose: false,
             admin_http: true,
             dev_mode: false,
+            proposer: false,
         };
         let json = serde_json::to_value(to_public_status(
             &status,

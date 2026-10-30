@@ -109,6 +109,21 @@ pub struct ApiServer {
     pub port_admin_http: i32,
     pub max_blocks_limit: i32,
     pub enable_reporting: bool,
+    /// Publish `GET /api/v1/nodes` — the live, deploy-capable peer hostlist a wallet can spread
+    /// deploys over.
+    ///
+    /// **Off by default, because it discloses peer addresses to any HTTP client.** Only live
+    /// connections are published (never the Kademlia table), every entry has answered a probe on its
+    /// derived `protocol + 3` port, and only entries that report this network, one of this node's
+    /// shards and `proposer = true` are served. The peer's own HTTP port must be public and follow
+    /// the published layout for peers to list *this* node.
+    pub publish_node_list: bool,
+    /// How often the hostlist is re-probed. Each cycle replaces the previous snapshot whole.
+    pub node_list_probe_interval: Duration,
+    /// The per-peer probe budget (connect and total).
+    pub node_list_probe_timeout: Duration,
+    /// The most entries a published list may carry, self included (`1..=128`).
+    pub node_list_max_entries: usize,
     /// Serve the cross-shard transaction routes (`/api/v1/txn*`) on the **admin** HTTP server. Off by
     /// default; a node that is not a gateway answers 404 either way. They are not on the public API
     /// port at all: the coordinator spends from the node's own validator REV account, so the surface
