@@ -939,6 +939,35 @@ mod tests {
         BlockHeight::try_from(n).unwrap()
     }
 
+    #[test]
+    fn aged_stored_pending_is_reoffered_but_inflight_and_faulted_are_not() {
+        let pending = BlockDisposition::Pending {
+            block_number: height(8),
+            stage: PendingStage::Stored,
+            since_unix_ms: 1000,
+        };
+        assert!(!eligible_stored_pending(&pending, 60_999));
+        assert!(eligible_stored_pending(&pending, 61_000));
+        assert!(!eligible_stored_pending(&pending, 0));
+        for stage in [PendingStage::Validating, PendingStage::Retry] {
+            let in_flight = BlockDisposition::Pending {
+                block_number: height(8),
+                stage,
+                since_unix_ms: 1000,
+            };
+            assert!(!eligible_stored_pending(&in_flight, 600_000));
+        }
+        let faulted = BlockDisposition::Faulted {
+            block_number: height(8),
+            stage: "validation".to_string(),
+            reason: "injected".to_string(),
+            since_unix_ms: 1000,
+            last_attempt_unix_ms: 5000,
+            attempts: MAX_FAULT_RETRIES,
+        };
+        assert!(!eligible_stored_pending(&faulted, 600_000));
+    }
+
     async fn store() -> BlockDispositionStore {
         let manager = InMemoryStoreManager::default();
         let kv = database(
