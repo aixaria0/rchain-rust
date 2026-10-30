@@ -40,7 +40,7 @@
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
 - [Ingress admission](node/admission.md)
-- [Running a node: testnet and future mainnet, validator and observer](node/validator-observer-setup.md)
+- [Running a node: testnet now, mainnet later — validator and observer](node/validator-observer-setup.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [OCapN interoperability](node/ocapn.md)
 - [ERTP: brands, issuers, purses and payments](node/ertp.md)

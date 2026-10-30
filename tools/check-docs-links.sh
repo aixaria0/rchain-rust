@@ -7,7 +7,8 @@
 # indefinitely. Each of those has happened. This is the smallest check that catches the class:
 #
 #   1. SUMMARY is in sync: every target exists and every page is listed exactly once.
-#   2. Every relative link resolves against the linking file's directory.
+#   2. Every relative link resolves against the linking file's directory (the book and the root
+     reader-facing documents).
 #   3. Every `#fragment` resolves to a heading on the target page (GitHub/mdbook slug rule).
 #   4. No empty link text, empty destination, or empty parenthetical outside code.
 #
@@ -143,8 +144,12 @@ else:
 
 # --- 2/3. links and anchors ------------------------------------------------------------------------
 link_re = re.compile(r"(!?)\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+\"[^\"]*\")?\s*\)")
+# The reader-facing root documents are not book pages, but their links are still links. They are
+# checked for resolution and anchors; they are not part of the SUMMARY-sync rule.
+link_files = sorted(pages_set) + [os.path.join(root, n) for n in ("README.md", "AGENTS.md", "TERMS.md")
+                                  if os.path.exists(os.path.join(root, n))]
 total_links = total_anchors = 0
-for path in sorted(pages_set):
+for path in link_files:
     rel = os.path.relpath(path, root)
     text = read(path)
     spans = code_spans(text)
