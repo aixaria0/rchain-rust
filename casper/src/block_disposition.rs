@@ -786,18 +786,33 @@ pub async fn scan_legacy_bodies(
     dag: &Arc<dyn BlockDagStorage>,
     log: &Arc<dyn Log>,
 ) -> Result<LegacyScanReport, String> {
+    scan_unaccounted_bodies(ledger, block_store, dag, log, false).await
+}
+
+/// A later interrupted store/disposition write can create an unaccounted body
+/// *after* the one-time legacy marker has been written. The runtime orphan
+/// audit may recheck that durable obligation without rewinding the marker.
+async fn scan_unaccounted_bodies(
+    ledger: &BlockDispositionStore,
+    block_store: &BlockStore,
+    dag: &Arc<dyn BlockDagStorage>,
+    log: &Arc<dyn Log>,
+    ignore_legacy_marker: bool,
+) -> Result<LegacyScanReport, String> {
     let source = LogSource::new("casper.blocks.BlockDisposition");
-    match dag.read_legacy_body_scan_marker().await {
-        Ok(Some(version)) if version >= LEGACY_BODY_SCAN_VERSION => {
-            return Ok(LegacyScanReport::default());
-        }
-        Ok(_) => {}
-        Err(e) => {
-            log.warn(
-                source,
-                &format!("legacy body scan skipped: its marker could not be read: {e}"),
-            );
-            return Err(e);
+    if !ignore_legacy_marker {
+        match dag.read_legacy_body_scan_marker().await {
+            Ok(Some(version)) if version >= LEGACY_BODY_SCAN_VERSION => {
+                return Ok(LegacyScanReport::default());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log.warn(
+                    source,
+                    &format!("legacy body scan skipped: its marker could not be read: {e}"),
+                );
+                return Err(e);
+            }
         }
     }
     let keys = block_store.keys().await?;
@@ -878,18 +893,20 @@ pub async fn scan_legacy_bodies(
             ),
         );
     }
-    match dag
-        .write_legacy_body_scan_marker(LEGACY_BODY_SCAN_VERSION)
-        .await
-    {
-        Ok(()) => report.marker_written = true,
-        Err(e) => log.error(
-            source,
-            &format!(
-                "legacy body scan completed but could not write its marker; the next boot will \
-                 rescan: {e}"
+    if !ignore_legacy_marker {
+        match dag
+            .write_legacy_body_scan_marker(LEGACY_BODY_SCAN_VERSION)
+            .await
+        {
+            Ok(()) => report.marker_written = true,
+            Err(e) => log.error(
+                source,
+                &format!(
+                    "legacy body scan completed but could not write its marker; the next boot will \
+                     rescan: {e}"
+                ),
             ),
-        ),
+        }
     }
     Ok(report)
 }
@@ -1086,8 +1103,44 @@ pub async fn retry_ready_stored_pending(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The boot sweep gets the first immediate tick; this loop starts after one interval.
     interval.tick().await;
+    // A confirmed runtime orphan may have been created after the one-time
+    // legacy scan. Walk the store once per detected gap episode, not per tick.
+    let mut orphan_scan_attempted = false;
     loop {
         interval.tick().await;
+        if orphan_bodies() == 0 {
+            orphan_scan_attempted = false;
+        } else if !orphan_scan_attempted {
+            match block_store.count().await {
+                Ok(stored) if stored > dag.get_representation().await.dag_set.len() => {
+                    match scan_unaccounted_bodies(&ledger, &block_store, &dag, &log, true).await {
+                        Ok(report) => {
+                            orphan_scan_attempted = true;
+                            if report.adopted > 0 {
+                                log.warn(
+                                    source,
+                                    &format!(
+                                        "runtime orphan audit adopted {} stored bodies without \
+                                         disposition rows; durable retry remains subject to the \
+                                         existing DAG/parent and readiness gates",
+                                        report.adopted
+                                    ),
+                                );
+                            }
+                        }
+                        Err(e) => log.error(
+                            source,
+                            &format!("runtime orphan adoption failed; will retry: {e}"),
+                        ),
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log.error(
+                    source,
+                    &format!("runtime orphan audit could not count stored bodies: {e}"),
+                ),
+            }
+        }
         if let Err(e) = reoffer_ready_stored_pending_once(
             &ledger,
             &block_store,
@@ -1781,6 +1834,24 @@ mod tests {
             .expect("second scan");
         assert!(!again.scanned, "the marker skips the walk");
         assert_eq!(again.adopted, 0);
+
+        // Simulate the post-marker crash window: the body survives but its
+        // disposition row is missing. A runtime scan must adopt it again,
+        // without rewriting the one-time legacy marker or bypassing validation.
+        ledger.settle(block.block_hash).await.expect("remove row");
+        let recovery = scan_unaccounted_bodies(&ledger, &block_store, &dag, &log, true)
+            .await
+            .expect("runtime scan");
+        assert!(recovery.scanned);
+        assert_eq!(recovery.adopted, 1);
+        assert!(!recovery.marker_written);
+        assert!(matches!(
+            ledger.get(&block.block_hash).await.expect("recovered row"),
+            Some(BlockDisposition::Pending {
+                stage: PendingStage::Stored,
+                ..
+            })
+        ));
     }
 
     /// **The phase does not move before the drain closes** (Law 88a's `startup`).
