@@ -81,6 +81,23 @@ def sample(index, marker=None, expected=None):
     return row
 
 
+def verify_finality_progress(index, old, row):
+    if old is None:
+        return
+    if row["height"] < old["height"]:
+        raise AssertionError(f"finalized height regressed on validator {index}")
+    if row["hash"] != old["hash"]:
+        # The API selects max(height, hash) from a DAG fringe. A growing
+        # fringe can change that representative at the same height without
+        # losing finality. Require the former block to remain finalized,
+        # including when the representative's height increases.
+        retained = a.get(index, f"/api/is-finalized/{old['hash']}")
+        row["previous_finality"] = {
+            "height": old["height"], "hash": old["hash"], "retained": retained}
+        if retained is not True:
+            raise AssertionError(f"previous finalized block lost on validator {index}")
+
+
 def observe_until(out, label, indices, min_height, marker, expected, window):
     deadline = time.monotonic() + window
     seen = {}
@@ -91,14 +108,19 @@ def observe_until(out, label, indices, min_height, marker, expected, window):
         for index in indices:
             try:
                 row = sample(index, marker, expected)
-                old = seen.get(index)
-                if old is not None:
-                    if row["height"] < old["height"]:
-                        raise AssertionError(f"finalized height regressed on validator {index}")
-                    if row["height"] == old["height"] and row["hash"] != old["hash"]:
-                        raise AssertionError(f"finalized hash changed at fixed height on {index}")
-                seen[index] = row
                 rows[index] = row
+                verify_finality_progress(index, seen.get(index), row)
+                seen[index] = row
+            except AssertionError as exc:
+                # Preserve the violating response before failing; otherwise
+                # the evidence ends at the preceding successful sample.
+                errors[str(index)] = repr(exc)
+                attempts.append({"elapsed_sec": round(window - max(0, deadline - time.monotonic()), 2),
+                                 "nodes": rows, "errors": errors})
+                (out / f"{label}-observations.json").write_text(
+                    json.dumps({"phase": label, "target_min_finalized_height": min_height,
+                                "attempts": attempts}, indent=2) + "\n")
+                raise
             except (OSError, ValueError, KeyError, TimeoutError) as exc:
                 errors[str(index)] = repr(exc)
         attempts.append({"elapsed_sec": round(window - max(0, deadline - time.monotonic()), 2),

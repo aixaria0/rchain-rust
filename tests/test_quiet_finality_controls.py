@@ -1,5 +1,6 @@
 """Offline falsifiers for exact-hash quiet finality acceptance."""
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,42 @@ class QuietFinalityControls(unittest.TestCase):
         rows = {i: self.rows()[i] for i in range(7)}
         rows[6]["hash"] = "cd" * 32
         self.assertFalse(quiet.agreed_finality(rows, list(range(7)), 27, True))
+
+    def test_changed_fringe_representative_requires_retained_finality(self):
+        old = {"height": 13, "hash": "ab" * 32}
+        for height in [13, 14]:
+            row = {"height": height, "hash": "cd" * 32}
+            with patch.object(quiet.a, "get", return_value=True) as get:
+                quiet.verify_finality_progress(7, old, row)
+                get.assert_called_once_with(7, "/api/is-finalized/" + old["hash"])
+            self.assertIs(row["previous_finality"]["retained"], True)
+            for retained in [False, None, 1]:
+                with patch.object(quiet.a, "get", return_value=retained):
+                    with self.assertRaisesRegex(AssertionError, "previous finalized block lost"):
+                        quiet.verify_finality_progress(7, old, row)
+
+    def test_height_regression_still_fails(self):
+        with patch.object(quiet.a, "get") as get:
+            with self.assertRaisesRegex(AssertionError, "height regressed"):
+                quiet.verify_finality_progress(7, {"height": 14, "hash": "ab" * 32},
+                                               {"height": 13, "hash": "cd" * 32})
+            get.assert_not_called()
+
+    def test_finality_loss_preserves_the_violating_observation(self):
+        old = {"height": 13, "hash": "ab" * 32, "healthy": True}
+        new = {"height": 13, "hash": "cd" * 32, "healthy": True}
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(quiet, "sample", side_effect=[old, new]), \
+                patch.object(quiet.a, "get", return_value=False), \
+                patch.object(quiet.time, "monotonic", return_value=0), \
+                patch.object(quiet.time, "sleep"):
+            out = Path(temp)
+            with self.assertRaisesRegex(AssertionError, "previous finalized block lost"):
+                quiet.observe_until(out, "loss", [7], 14, None, None, 240)
+            attempts = json.loads((out / "loss-observations.json").read_text())["attempts"]
+            self.assertEqual(attempts[-1]["nodes"]["7"]["hash"], new["hash"])
+            self.assertIs(attempts[-1]["nodes"]["7"]["previous_finality"]["retained"], False)
+            self.assertIn("7", attempts[-1]["errors"])
 
     def test_stale_height_and_absent_marker_fail(self):
         rows = self.rows()
