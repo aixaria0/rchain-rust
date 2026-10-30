@@ -443,8 +443,8 @@ one, as do `scripts/qos-cli/agent.mjs` and `scripts/localnet/pk.txt`. The exact 
 
 **Current trusted genesis (2026-10-29):**
 `133b1d307b1750129cf0cfb69c4c8f950da21c4e8db2a6a076464d0ccfd98d44`.
-All four validator APIs returned this block at height zero in the retained snapshot, matching the
-operator's rebuild record.
+All four validator APIs returned this block at height zero in the retained snapshot, matching each
+other.
 The four bonds remain 250 each. Wallets were extended from four entries to nine: the existing four
 validator vaults, plus `validator`, `deployer`, `alice`, `bob` and `carol` from quantum-os's published
 test keys. **The actual deployed genesis input allocates 10,000 drops per
