@@ -3,7 +3,7 @@ name: Isolated N8 quiet-chain finality on 16GB
 on:
   push:
     branches:
-      - verify/quiet-finality-integrated-20261030
+      - verify/quiet-finality-16gb-20261030
 
 permissions:
   contents: read

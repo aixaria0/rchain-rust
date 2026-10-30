@@ -954,6 +954,19 @@ fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
+/// Consume one escape permit after a full monotonic stall interval.
+/// A still-open round must wait another interval before escaping again;
+/// otherwise a fast producer can exhaust the finality-lag bound while its
+/// peers are still assembling the next shared justification layer.
+fn take_round_escape(since: &Mutex<Option<Instant>>, now: Instant) -> Option<i64> {
+    let elapsed = stall_ms_since(since, now);
+    if !round_escape_owed(elapsed) {
+        return None;
+    }
+    *since.lock().unpoison() = Some(now);
+    Some(elapsed)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_block<'a, F, Fut>(
     runtime: &'a RuntimeManager,
@@ -1026,10 +1039,9 @@ where
         {
             let waited =
                 blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let stalled_ms = stall_ms_since(blocked_since, Instant::now());
-            if !round_escape_owed(stalled_ms) {
+            let Some(stalled_ms) = take_round_escape(blocked_since, Instant::now()) else {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
-            }
+            };
             log.warn(
                 LogSource::new("casper.blocks.Proposer"),
                 &format!(
@@ -1533,6 +1545,58 @@ mod tests {
         )));
         *since.lock().unpoison() = None;
         assert_eq!(stall_ms_since(&since, first + Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn round_escape_permit_is_consumed_even_when_the_round_stays_open() {
+        let since = Mutex::new(None);
+        let t = Instant::now();
+        assert_eq!(take_round_escape(&since, t), None);
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE),
+            Some(15_000)
+        );
+        // The archived failure took many escapes inside one interval.
+        // Both a duplicate tick and a burst after it must now wait.
+        for ms in [0, 1, 100, 967, 3_388, 14_999] {
+            assert_eq!(
+                take_round_escape(&since, t + ROUND_STALL_ESCAPE + Duration::from_millis(ms)),
+                None
+            );
+        }
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE * 2),
+            Some(15_000)
+        );
+        assert_eq!(take_round_escape(&since, t + ROUND_STALL_ESCAPE * 2), None);
+        // Closing the round starts a fresh observation, never an old permit.
+        *since.lock().unpoison() = None;
+        assert_eq!(take_round_escape(&since, t + ROUND_STALL_ESCAPE * 10), None);
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE * 11),
+            Some(15_000)
+        );
+    }
+
+    #[test]
+    fn late_escape_and_repeated_ticks_do_not_bank_unused_permits() {
+        let since = Mutex::new(None);
+        let t = Instant::now();
+        assert_eq!(take_round_escape(&since, t), None);
+        assert_eq!(
+            take_round_escape(&since, t + Duration::from_secs(90)),
+            Some(90_000)
+        );
+        for ms in 0..15_000 {
+            assert_eq!(
+                take_round_escape(&since, t + Duration::from_millis(90_000 + ms)),
+                None
+            );
+        }
+        assert_eq!(
+            take_round_escape(&since, t + Duration::from_secs(105)),
+            Some(15_000)
+        );
     }
 
     #[test]

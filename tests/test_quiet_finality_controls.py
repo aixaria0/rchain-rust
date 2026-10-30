@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+import tempfile
 
 path = Path(__file__).resolve().parent / "consensus-quiet-finality.py"
 spec = importlib.util.spec_from_file_location("quiet", path)
@@ -14,7 +16,8 @@ class QuietFinalityControls(unittest.TestCase):
         h = {"ready": True, "orphanBodies": 0, "pipelineFaults": 0,
              "proposalHalted": False}
         h.update({k: v for k, v in overrides.items() if k in h})
-        o = {"unrestorableRecords": overrides.get("unrestorableRecords", 0)}
+        o = {"unrestorableRecords": overrides.get("unrestorableRecords", 0),
+             "resources": {"cgroupOomKills": overrides.get("cgroupOomKills", 0)}}
         return quiet.verified_health(h, o)
 
     def rows(self):
@@ -45,13 +48,23 @@ class QuietFinalityControls(unittest.TestCase):
         rows[0]["healthy"] = False
         self.assertFalse(quiet.agreed_finality(rows, list(range(8)), 27, True))
 
+    def test_stalled_finality_cannot_pass_with_matching_hashes_and_marker(self):
+        row = {"height": 10, "hash": "ab" * 32, "healthy": True, "marker_present": True}
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(quiet, "sample", return_value=row), \
+                patch.object(quiet.time, "monotonic", side_effect=[0, 0, 0, 241]), \
+                patch.object(quiet.time, "sleep"):
+            with self.assertRaisesRegex(AssertionError, "within 240s"):
+                quiet.observe_until(Path(temp), "stalled", list(range(7)), 11, "marker", 42, 240)
+
     def test_missing_and_bad_health_fields_fail(self):
         self.assertTrue(self.healthy())
         for key, value in [("ready", False), ("ready", None),
                            ("orphanBodies", None), ("orphanBodies", 1),
                            ("pipelineFaults", 2), ("proposalHalted", True),
                            ("unrestorableRecords", 1),
-                           ("unrestorableRecords", None)]:
+                           ("unrestorableRecords", None), ("cgroupOomKills", 1),
+                           ("cgroupOomKills", None)]:
             with self.subTest(key=key, value=value):
                 self.assertFalse(self.healthy(**{key: value}))
         self.assertFalse(quiet.verified_health(

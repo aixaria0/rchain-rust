@@ -37,6 +37,8 @@ def verified_health(health, operator):
         and health.get("proposalHalted") is False
         and type(operator.get("unrestorableRecords")) is int
         and operator["unrestorableRecords"] == 0
+        and type(operator.get("resources", {}).get("cgroupOomKills")) is int
+        and operator["resources"]["cgroupOomKills"] == 0
     )
 
 
@@ -70,7 +72,7 @@ def sample(index, marker=None, expected=None):
         },
         "operator": {
             field: operator.get(field) for field in
-            ["unrestorableRecords", "unrestorableBlock", "finalityStall"]
+            ["unrestorableRecords", "unrestorableBlock", "finalityStall", "resources"]
         },
     }
     if marker is not None:
@@ -200,6 +202,22 @@ def run(out, window):
             arm["result"] = "PASS"
             arm["phase"] = "completed"
             save()
+        # A separate rejoin observation does not extend either quiet-arm deadline.
+        docker("network", "connect", "acceptance", victim)
+        disconnected = False
+        report["victim_reconnected_before_cleanup"] = True
+        last = report["arms"][-1]
+        report["rejoin"] = observe_until(
+            out, "quiet-rejoin", list(range(8)), last["finality"]["height"],
+            last["marker"], 42, window)
+        # Retain every arm's signed marker at the exact agreed finalized hash.
+        report["retained_markers"] = {}
+        for arm in report["arms"]:
+            retained = {i: a.marker_present(a.probe(i, arm["marker"], report["rejoin"]["hash"]), 42)
+                        for i in range(8)}
+            report["retained_markers"][arm["name"]] = retained
+            if not all(retained.values()):
+                raise AssertionError(f"finalized marker lost after rejoin: {arm['name']}")
         report["result"] = "PASS_N8_AND_N7_QUIET_FINALITY"
     except Exception as exc:
         report["result"] = "FAIL_N8_N7_QUIET_FINALITY"
@@ -214,6 +232,8 @@ def run(out, window):
             except Exception as exc:
                 report["victim_reconnect_error"] = repr(exc)
                 report["result"] = "FAIL_N8_N7_QUIET_FINALITY"
+                save()
+                raise
         save()
     print(json.dumps({"result": report["result"], "source": report["source_sha"],
                       "binary": report["binary_sha256"],
