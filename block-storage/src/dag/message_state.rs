@@ -164,6 +164,16 @@ where
     /// The stalled-round escape advances the sender's own entry and any peer entries
     /// needed to preserve the justifications in the sender's previous message.
     ///
+    /// **Why the escape exists:** a quiet bonded sender inside the liveness window can
+    /// prevent a round boundary from closing. The window advances relative to the tip,
+    /// so refusing every proposal freezes the very clock needed to retire that sender.
+    /// After a bounded stall, advancing the self-parent moves the tip and eventually
+    /// permits an ordinary round again. This escape need not advance finality itself.
+    ///
+    /// **Replace, do not append:** adding a second parent for the same sender makes
+    /// self-parent selection ambiguous and previously admitted proposals without tip
+    /// progress. The map maintains exactly one selected message per sender.
+    ///
     /// A frozen round snapshot can have an older peer message than the one the
     /// sender already justified. Advancing only the sender's entry makes the next
     /// block fail justification-regression validation against its own parent.
@@ -180,6 +190,12 @@ where
             // justification. Prefer the newest peer message when it includes
             // that history; retain the prior parent across a conflicting fork.
             for id in &mine.parents {
+                // A missing persisted parent means the coverage invariant was not checked.
+                // Flag it in verification builds instead of silently treating it as safe.
+                debug_assert!(
+                    self.msg_map.contains_key(id),
+                    "round escape: previous self-message references a missing parent"
+                );
                 if let Some(prior) = self.msg_map.get(id) {
                     let covered = parents
                         .get(&prior.sender)
@@ -525,6 +541,28 @@ mod tests {
         assert!(
             previous_b.seen.is_subset(&selected_b.seen),
             "the escaped block regresses its previous self-parent's B justification"
+        );
+
+        // Exercise the *same predicate* as casper/src/validate.rs
+        // check_justification_regression, not merely equality of selected IDs.
+        let validator_accepts = |justifications: &BTreeSet<Message<i32, i32>>| {
+            let prior_self = justifications.iter().find(|m| m.sender == 0).unwrap();
+            justifications.iter().all(|just| {
+                let old = prior_self
+                    .parents
+                    .iter()
+                    .filter_map(|id| state.msg_map.get(id))
+                    .find(|m| m.sender == just.sender);
+                old.is_none_or(|old| old.seen.is_subset(&just.seen))
+            })
+        };
+        assert!(validator_accepts(&escaped));
+        let stale: BTreeSet<_> = [a2.clone(), state.msg_map.get(&20).unwrap().clone()]
+            .into_iter()
+            .collect();
+        assert!(
+            !validator_accepts(&stale),
+            "validator must reject the stale peer justification"
         );
 
         // A higher-sequence message on a conflicting branch cannot replace
