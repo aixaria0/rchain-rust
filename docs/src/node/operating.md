@@ -54,6 +54,13 @@ Notes for operators:
   spend-this-node's-REV route as well. A transaction may name at most 32 legs, and the coordinator
   ledger holds at most 10,000 records; past either bound a new transaction is refused rather than
   queued.
+  **A leg's amount is not capped by this API** (register C348). It must be non-negative, and the
+  escrow can only move what the coordinator key's own vault holds — but a caller who can reach the
+  route can ask it to escrow that whole vault across shards. That is a deliberate boundary rather than
+  a missing check: a sub-balance cap would be a node-local spending policy layered on the chain's, and
+  the route is already behind three opt-ins (a multi-shard gateway with a signing key,
+  `api-server.enable-txn-api`, and an admin listener published beyond loopback). **If you serve it to
+  callers you do not trust, cap the coordinator key's balance, not the request.**
 - `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.

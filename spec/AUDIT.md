@@ -102,26 +102,20 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 8 · IN PROGRESS 4 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 4 · DONE 383** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 **Laws  181 of 387 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it.
+**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it where there is evidence to
+name. What that does *not* mean is stated under each half below.
 
-### TODO — findings (8)
+### Findings — closed
 
-| id | what | what closes it | account |
-|---|---|---|---|
-| `C345` | Cost-model: the collection conversions and set/map operations charge flat or sublinear for superlinear work — `toSet`/`toMap` 18 phlo at every N (500..40 000) while wall time grew 7→724 ms, `set` a flat 22, `keys` a flat method charge, and `++`/`.union` only the right operand | a charge proportional to the output size for the conversions and to both operands for union, measured against the block budget | §148 |
-| `C346` | `rho:gov:censure` charges N² for Θ(U³) work; the cubic path is unmeasured at the bound and U can reach 2N | a timing of the full censure path at the bound and a charge that tracks U³ | §148 |
-| `C347` | The OCapN greeter dials on a peer's handoff without drawing from the MAX_DIALED_SESSIONS reserve, so the node can be made to hold up to MAX_PEERS sessions against the documented 64 | draw the greeter's dials from the dial reserve, or record the 256 cap as the budget | §148 |
-| `C348` | The transaction API's per-leg amount is bounded only by the coordinator's full vault balance (the C121 residual, behind two or three operator opt-ins) | a sub-balance amount bound, or an operator-facing cap and warning | §148 |
-| `C349` | A websocket client that completes the upgrade and then goes silent holds that transport's accept loop for up to 40 s (10 s upgrade + 30 s challenge) | defer the upgrade and challenge to the session task, as the noise transport does | §148 |
-| `C350` | The receiver stores the body and writes its disposition row in two different LMDB environments, so a crash between them orphans the body with no row to re-offer | adopt a stored body with no row at boot, or make the two writes atomic | §148 |
-| `C351` | The proposal finality bound and its isolation latch are skipped entirely when the view has no finalised block (`if let Some(finalized)`), which the Lean model's own no-bound falsifier exhibits | a no-finality arm that treats genesis as the floor, as rewind_plan already does | §148 |
-| `C352` | Barrier B46 says `Running` requires no unresolved orphan; the code gates readiness (`/health`, `orphan_bodies`), not the phase | name readiness in B46, or gate Running on the settled audit | §148 |
+All 387 are settled: **323 name the evidence that holds them** and **64 do not** — the
+second number is the honest residual, and a column rather than an implication. A `done`
+row says the fix is in the tree or that the decision was taken; it does not say either is
+right. Read a row that matters at the § its account cites.
 
 ### T1 coverage — closed
 
@@ -139,7 +133,7 @@ defects this register had not recorded (C164, C165).
 | `C343` | **A stored block can have no acceptance disposition and a proposer can run a private chain.** The live build stored block bodies through height 250 on B/C/D while its DAG stayed at height 5, and A reached 267 against finality 3. The RCA found the processor's no-insert arms, the partial-insert short-circuit, the missing failed-parent release and the absent finality gate; dev #494 closed the receiver begin-lease leak. This pass adds Law 88a/88b, a per-shard phase, the start-up audit before Running, and the keys-only legacy body scan with its durable marker; the remaining evidence is the live status/operator and block-6 logs. | U19/U20 disposition ledger, boot/periodic audit, validation watchdog, failed-parent release and halt falsifiers; operator status/operator on B/C/D | §145 |
 | `C344` | **A stuck validator is not priced, and the first liveness response could take a bond through no fault.** A validator absent from the advancing finality set keeps its bond, counts in the denominator and (with absence-slack 0) is paid; RCHIP #55 adds an automatic bond-preserving jail and a >2/3 active-stake vote that alone may slash and permanently eject. The mechanism is default-off, genesis-armed, and its live testnet arm (jail, vote-slash, partition negative, restart/expiry) is owed; H-RS-17 and HAZOP U21 record the residuals, including the boundary-CloseBlock skip.  | owed: live testnet jail/vote-slash and partition arms; a validity rule requiring CloseBlock at a boundary | §147 |
 
-### DONE (375)
+### DONE (383)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -432,6 +426,14 @@ defects this register had not recorded (C164, C165).
 | `C340` | A boolean memory gate in front of a bounded pool refused every deploy and explore at 547 MiB on a 4 GiB host. The gate read the fallback word, not the pool: `throttled` refused all ingress even with ten thousand free slots, explore shared the same 503, and there was no deploy relay, so the receiving node was the only proposer and the chain froze at height 1688. The close-out is Law 86: admission reads the pool's count/byte/share/rate bounds (429 + `Retry-After` when full), headroom is an execution permit budget (one permit always progresses), a certified batch runs independent deploys in parallel with a sequential fallback, and an admitted deploy is copied to peers' deploy service (opt-in) so a constrained node does not bottleneck the network. The live 4 GiB/two-validator arm is owed. | casper/src/batch.rs::certify | §142 |
 | `C341` | **The execution half of the permit budget was a metric, not a bound.** `CapacityBudget` was built only inside the HTTP server and the proposer never acquired the execution permit, so a `Throttled` host kept proposing at full rate. The remediation shares one node-level budget, acquires up to `min(execution.limit(), batch_cap)` permits around the propose, passes the count as the batch limit into `compute_state_with_limit`/`play_deploys_batched_with`, and withholds with `ResourcePressure` at zero. With batching off execution is inherently serial; the permit is then a zero-headroom gate. Law 86d and B35 are restored at that scope. | node/src/instances/proposer_instance.rs::a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease | §143 |
 | `C342` | The reconciliation range cache survived recovery and was reused by the convergence and finality checks. An old agreement could hide a current divergence, an old split could reject a successful recovery, and finality above the plan range was invisible. Verification now refreshes node inventories each round, includes current finality heights, and discards failed or invalid transfers before using live per-height fallback. The cache opt-out also bypasses existing snapshots. | tools/reconcile-network.sh::refresh_block_ranges/tests/reconcile-cache-regression.py | §144 |
+| `C345` | Cost-model: the collection conversions and set/map operations charge flat or sublinear for superlinear work — `toSet`/`toMap` 18 phlo at every N (500..40 000) while wall time grew 7→724 ms, `set` a flat 22, `keys` a flat method charge, and `++`/`.union` only the right operand | rholang/src/reduce.rs::to_set_charges_its_elements/rholang/src/reduce.rs::a_union_charges_both_operands_alike/rholang/src/accounting.rs::collection_and_censure_charges_are_the_models | §148 |
+| `C346` | `rho:gov:censure` charges N² for Θ(U³) work; the cubic path is unmeasured at the bound and U can reach 2N | rholang/src/system_processes.rs::censure_is_charged_the_cube_of_its_universe/rholang/src/accounting.rs::collection_and_censure_charges_are_the_models | §148 |
+| `C347` | The OCapN greeter dials on a peer's handoff without drawing from the MAX_DIALED_SESSIONS reserve, so the node can be made to hold up to MAX_PEERS sessions against the documented 64 | ocapn/src/capacity.rs::a_dial_slot_is_taken_from_the_shared_budget_and_released_with_the_permit/ocapn/src/capacity.rs::every_dialing_fixture_draws_from_the_shared_budget | §148 |
+| `C348` | The transaction API's per-leg amount is bounded only by the coordinator's full vault balance (the C121 residual, behind two or three operator opt-ins) | docs/src/node/operating.md/node/src/web/http.rs | §148 |
+| `C349` | A websocket client that completes the upgrade and then goes silent holds that transport's accept loop for up to 40 s (10 s upgrade + 30 s challenge) | ocapn/src/websocket.rs::a_silent_client_does_not_hold_the_accept | §148 |
+| `C350` | The receiver stores the body and writes its disposition row in two different LMDB environments, so a crash between them orphans the body with no row to re-offer | shared/src/lmdb.rs::put_across_writes_both_or_neither_and_refuses_two_environments/casper/src/block_disposition.rs::the_writer_stores_the_body_and_its_row_together/casper/src/storage.rs::mapping_has_expected_databases/block-storage/src/dag/dag_storage.rs::LEGACY_BODY_SCAN_VERSION | §148 |
+| `C351` | The proposal finality bound and its isolation latch are skipped entirely when the view has no finalised block (`if let Some(finalized)`), which the Lean model's own no-bound falsifier exhibits | casper/src/blocks/proposer/proposer.rs::a_view_without_a_finalized_block_still_trips_the_bound/spec/Rchain/Disposition.lean::a_view_without_a_finalized_block_is_still_bounded | §148 |
+| `C352` | Barrier B46 says `Running` requires no unresolved orphan; the code gates readiness (`/health`, `orphan_bodies`), not the phase | docs/src/spec/resource-safety-case.md | §148 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

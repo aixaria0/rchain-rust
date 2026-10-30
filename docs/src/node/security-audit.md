@@ -10,13 +10,17 @@ charge — together with five defects outside that class and two places where th
 more than the code does. The structural properties that make whole classes of defect unrepresentable
 are unchanged, and they are in §6.
 
-**Scope, and how to read it.** The pass was report-only: no production code was changed. What you are
-reading is a photograph of `be5016682`: the measurements in §3 and the verdicts in §2 are true of that
-commit. Disposition is *not* this page's claim — the check-off is [`spec/AUDIT.md`](../../../spec/AUDIT.md),
-the account of this pass is [`spec/audit/passes.md`](../../../spec/audit/passes.md) §148, and its
-evidence (probe log, verdict ledger, the three chain pins) is
-[`spec/audit/evidence/n20261030-reaudit/README.md`](../../../spec/audit/evidence/n20261030-reaudit/). The
-September 2026 pass is preserved as §9.
+**Scope, and how to read it.** The pass itself was report-only: no production code was changed while it
+ran. What you are reading is a photograph of `be5016682`, so the measurements in §3 and the verdicts in
+§2 are true of that commit — and **the re-admission checks in §2 are what say whether they still hold**.
+The eight findings were then remediated in the same PR (pass §149), so a reader of today's tree should
+read §2 as *what was found* and §149 as *what changed*: the §2 rows are not rewritten, because a
+findings page that edits its own findings cannot be checked against. Disposition is *not* this page's
+claim — the check-off is [`spec/AUDIT.md`](../../../spec/AUDIT.md), the account of the pass is
+[`spec/audit/passes.md`](../../../spec/audit/passes.md) §148 with the remediation as §149, and the
+evidence is [`spec/audit/evidence/n20261030-reaudit/README.md`](../../../spec/audit/evidence/n20261030-reaudit/)
+and [`spec/audit/evidence/c345-c352-remediation-20261030/`](../../../spec/audit/evidence/c345-c352-remediation-20261030/).
+The September 2026 pass is preserved as §9.
 
 Two design facts from the prior close-out still shape any remediation. Cancellation inside a running
 builtin is **not achievable on this design** — a builtin runs its CPU synchronously inside
