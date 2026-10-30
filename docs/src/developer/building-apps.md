@@ -168,6 +168,34 @@ version ignores the new protobuf field, so it would evaluate such a deploy *with
 and diverge — every validator must be on this version before attachments are used (a coordinated
 upgrade; no genesis reset).
 
+### Finality is not execution success (#487)
+
+`acceptsDeploys` in `GET /api/v1/status` answers only whether the *local pool has space*. It
+does not imply that the network can finalize. A successful `POST /api/v1/deploy` is a submission
+receipt, and `ProcessedWithSuccess` means execution/inclusion, **not settlement**.
+
+Use `GET /api/v1/finality-observation` for a sampled node-local
+`latestBlockNumber`, `finalizedBlockNumber`, `finalizedBlockHash`,
+`observedFinalityLag` and `observedAtUnixMs`. The `availability` field is intentionally
+`unknown`: one node's frontier and peer count cannot prove live bonded quorum. Missing
+readings return HTTP 503 with nullable fields. Observations can be stale; callers must
+check timestamps and repeat sampling across validators before making network claims.
+
+For a specific signed deploy, poll
+`GET /api/v1/deploy-settlement/{deploy_signature}`. Its `stage` is one of
+`notProcessed`, `includedUnfinalized`, `finalityUnknown`,
+`finalizedSuccess`, `finalizedError`. Only `finalizedSuccess` sets
+`settlementConfirmed=true`. A failed block-finality lookup yields
+`finalityUnknown`, never success. All statements are explicitly node-local;
+applications requiring independent confirmation should compare finalized hashes and
+verify bonded-validator finality attestations across multiple nodes.
+
+gRPC clients can make the corresponding separate queries through the existing
+`DeployService` methods: `findDeploy` / deploy status to establish inclusion,
+then `isFinalized` for that *inclusion block*, and `lastFinalizedBlock` for a
+frontier observation. The existing gRPC `Status` does **not** become a quorum signal.
+These reads do not change admission, consensus rules, pool bounds, or retries.
+
 ### 3.2 Read responses
 
 > **Coming from `rnode`?** [Porting an app from rnode](porting-a-client.md) has the exact shape of every
