@@ -936,6 +936,145 @@ async fn api_v1_deploy_status(
     json_result(state.web_api.deploy_status(&deploy_signature).await)
 }
 
+/// A single node can report a finalized frontier, not the availability of network quorum.
+fn finality_observation(
+    status: Option<&crate::api::dto::PublicStatus>,
+    finalized: Option<&rchain_models::casper::protocol::deploy_service::BlockInfo>,
+    observed_at_unix_ms: u64,
+) -> serde_json::Value {
+    let tip = status.map(|s| s.latest_block_number);
+    let height = finalized.map(|b| b.block_info.block_number);
+    let hash = finalized.map(|b| b.block_info.block_hash.clone());
+    let lag = tip.zip(height).and_then(|(tip, height)| {
+        if tip >= height && height >= 0 {
+            Some(tip.saturating_sub(height))
+        } else {
+            None
+        }
+    });
+    json!({
+        "scope": "nodeLocal",
+        "availability": "unknown",
+        "observedAtUnixMs": observed_at_unix_ms,
+        "latestBlockNumber": tip,
+        "finalizedBlockNumber": height,
+        "finalizedBlockHash": hash,
+        "observedFinalityLag": lag,
+    })
+}
+
+fn observation_time_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// GET /api/v1/finality-observation: informational node-local evidence, never quorum assurance.
+/// A missing or inconsistent reading is explicitly unknown, never interpreted as a healthy network.
+async fn api_finality_observation(State(state): State<HttpState>) -> Response {
+    let observed_at = observation_time_ms();
+    let (status, finalized) = tokio::join!(
+        state.web_api.status(),
+        state.web_api.last_finalized_block(),
+    );
+    let complete = status.is_ok() && finalized.is_ok();
+    let body = finality_observation(status.as_ref().ok(), finalized.as_ref().ok(), observed_at);
+    (
+        if complete { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
+        Json(body),
+    )
+        .into_response()
+}
+
+/// Convert an execution observation and an independent block-finality verdict to settlement.
+/// An error while reading finality is *unknown*, never `false` or `true`.
+fn deploy_settlement_observation(
+    deploy_id: &str,
+    execution: &crate::api::dto::DeployExecStatus,
+    finalized: Option<bool>,
+    observed_at_unix_ms: u64,
+) -> serde_json::Value {
+    use crate::api::dto::DeployExecStatus;
+    match execution {
+        DeployExecStatus::NotProcessed { status } => json!({
+            "deployId": deploy_id,
+            "observedAtUnixMs": observed_at_unix_ms,
+            "stage": "notProcessed",
+            "execution": "unknown",
+            "finalized": null,
+            "settlementConfirmed": false,
+            "blockHash": null,
+            "blockNumber": null,
+            "nodeStatus": status,
+            "scope": "nodeLocal",
+        }),
+        DeployExecStatus::ProcessedWithSuccess { block, .. }
+        | DeployExecStatus::ProcessedWithError { block, .. } => {
+            let succeeded = matches!(execution, DeployExecStatus::ProcessedWithSuccess { .. });
+            let stage = match (finalized, succeeded) {
+                (Some(true), true) => "finalizedSuccess",
+                (Some(true), false) => "finalizedError",
+                (Some(false), _) => "includedUnfinalized",
+                (None, _) => "finalityUnknown",
+            };
+            json!({
+                "deployId": deploy_id,
+                "observedAtUnixMs": observed_at_unix_ms,
+                "stage": stage,
+                "execution": if succeeded { "succeeded" } else { "failed" },
+                "finalized": finalized,
+                "settlementConfirmed": succeeded && finalized == Some(true),
+                "blockHash": block.block_hash,
+                "blockNumber": block.block_number,
+                "nodeStatus": null,
+                "scope": "nodeLocal",
+            })
+        }
+    }
+}
+
+/// GET /api/v1/deploy-settlement/{signature}. A processed deploy is not a settled deploy.
+/// Read `is_finalized` against its *actual inclusion block*, never inferred from tip success.
+async fn api_deploy_settlement(
+    State(state): State<HttpState>,
+    Path(deploy_signature): Path<String>,
+) -> Response {
+    let execution = match state.web_api.deploy_status(&deploy_signature).await {
+        Ok(execution) => execution,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "deployId": deploy_signature,
+                    "stage": "unknown",
+                    "finalized": null,
+                    "settlementConfirmed": false,
+                    "error": "deploy status could not be read",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let finalized = match &execution {
+        crate::api::dto::DeployExecStatus::NotProcessed { .. } => None,
+        crate::api::dto::DeployExecStatus::ProcessedWithSuccess { block, .. }
+        | crate::api::dto::DeployExecStatus::ProcessedWithError { block, .. } => {
+            state.web_api.is_finalized(&block.block_hash).await.ok()
+        }
+    };
+    Json(deploy_settlement_observation(
+        &deploy_signature,
+        &execution,
+        finalized,
+        observation_time_ms(),
+    ))
+    .into_response()
+}
+
 /// `GET /api/v1/openapi.json` — the OpenAPI 3.0 document describing the v1 API. Hand-written from the
 /// endpoint DTOs (the Scala derives the same schema from its endpoints4s algebra).
 /// The OpenAPI document this node serves at `GET /api/v1/openapi` — the schema a client generates its
@@ -955,6 +1094,27 @@ pub const OPENAPI_JSON: &str = r##"{
             "description": "Node version, address and peer/node counts",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiStatus" } } }
           }
+        }
+      }
+    },
+    "/finality-observation": {
+      "get": {
+        "summary": "Node-local finalized frontier and observed lag (network availability unknown)",
+        "description": "A sampled node-local frontier; not a claim about network quorum. A missing source returns HTTP 503 with null fields.",
+        "responses": {
+          "200": {"description": "Local frontier observation", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "503": {"description": "Incomplete local observation (unknown)"}
+        }
+      }
+    },
+    "/deploy-settlement/{deploy_signature}": {
+      "get": {
+        "summary": "Execution and separately observed inclusion-block finality",
+        "description": "Only finalizedSuccess confirms settlement. ProcessedWithSuccess alone is speculative. On a failed finality read the response is finalityUnknown and settlementConfirmed=false.",
+        "parameters": [{"in": "path", "name": "deploy_signature", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Execution/finality distinction", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Deploy status could not be read"}
         }
       }
     },
@@ -1903,6 +2063,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/deploy/{deploy_id}", get(api_find_deploy))
         .route("/api/is-finalized/{hash}", get(api_is_finalized))
         .route("/api/v1/status", get(api_status))
+        .route("/api/v1/finality-observation", get(api_finality_observation))
+        .route(
+            "/api/v1/deploy-settlement/{deploy_signature}",
+            get(api_deploy_settlement),
+        )
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/pos", get(api_pos_status))
@@ -2414,6 +2579,93 @@ mod tests {
             report_store,
             None,
         ))
+    }
+
+
+    fn issue_487_block() -> rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+        rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+            version: 1,
+            shard_id: "/testnet".to_string(),
+            block_hash: "block-1781".to_string(),
+            block_number: 1781,
+            sender: "sender".to_string(),
+            seq_num: 1,
+            pre_state_hash: "pre".to_string(),
+            post_state_hash: "post".to_string(),
+            justifications: Vec::new(),
+            bonds: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: "sig".to_string(),
+            block_size: "0".to_string(),
+            deploy_count: 1,
+            rejected_deploys: Vec::new(),
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn issue_487_execution_success_without_finality_is_not_settlement() {
+        let execution = DeployExecStatus::ProcessedWithSuccess {
+            deploy_result: Vec::new(),
+            block: issue_487_block(),
+        };
+        let speculative = deploy_settlement_observation("sig", &execution, Some(false), 123);
+        assert_eq!(speculative["stage"], "includedUnfinalized");
+        assert_eq!(speculative["execution"], "succeeded");
+        assert_eq!(speculative["finalized"], false);
+        assert_eq!(speculative["settlementConfirmed"], false);
+        assert_eq!(speculative["blockNumber"], 1781);
+        let unknown = deploy_settlement_observation("sig", &execution, None, 124);
+        assert_eq!(unknown["stage"], "finalityUnknown");
+        assert!(unknown["finalized"].is_null());
+        assert_eq!(unknown["settlementConfirmed"], false);
+        let confirmed = deploy_settlement_observation("sig", &execution, Some(true), 125);
+        assert_eq!(confirmed["stage"], "finalizedSuccess");
+        assert_eq!(confirmed["settlementConfirmed"], true);
+    }
+
+    #[test]
+    fn issue_487_finalized_execution_error_is_not_successful_settlement() {
+        let execution = DeployExecStatus::ProcessedWithError {
+            deploy_error: "insufficient phlo".to_string(),
+            block: issue_487_block(),
+        };
+        let result = deploy_settlement_observation("sig", &execution, Some(true), 126);
+        assert_eq!(result["stage"], "finalizedError");
+        assert_eq!(result["execution"], "failed");
+        assert_eq!(result["finalized"], true);
+        assert_eq!(result["settlementConfirmed"], false);
+        let pending = DeployExecStatus::NotProcessed { status: "Pooled".to_string() };
+        let result = deploy_settlement_observation("sig", &pending, Some(true), 126);
+        assert_eq!(result["stage"], "notProcessed");
+        assert!(result["finalized"].is_null());
+        assert_eq!(result["settlementConfirmed"], false);
+    }
+
+    #[test]
+    fn issue_487_finality_observation_never_guesses_quorum() {
+        let mut status = test_status();
+        status.latest_block_number = 1791;
+        status.accepts_deploys = true;
+        let frontier = rchain_models::casper::protocol::deploy_service::BlockInfo {
+            block_info: rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+                block_number: 1756,
+                ..issue_487_block()
+            },
+            deploys: Vec::new(),
+        };
+        let reading = finality_observation(Some(&status), Some(&frontier), 127);
+        assert_eq!(reading["observedFinalityLag"], 35);
+        assert_eq!(reading["availability"], "unknown");
+        assert_eq!(reading["scope"], "nodeLocal");
+        assert_eq!(status.accepts_deploys, true);
+        let missing = finality_observation(Some(&status), None, 128);
+        assert!(missing["observedFinalityLag"].is_null());
+        assert!(missing["finalizedBlockHash"].is_null());
+        let mut inconsistent = frontier;
+        inconsistent.block_info.block_number = 1800;
+        let reading = finality_observation(Some(&status), Some(&inconsistent), 129);
+        assert!(reading["observedFinalityLag"].is_null());
     }
 
     fn test_status() -> PublicStatus {
