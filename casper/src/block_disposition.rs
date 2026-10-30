@@ -632,6 +632,89 @@ pub async fn reoffer_unsettled(
     );
 }
 
+/// Re-offer a *stored* pending body after its parents have reached the DAG.
+///
+/// The boot sweep cannot replay a block whose parents are still missing, and the
+/// fault loop intentionally only retries faulted rows. Without this sweep, a
+/// previously skipped stored row can remain pending indefinitely after its
+/// parent arrives. Only the Stored stage is eligible: Validating and Retry
+/// indicate a block was already submitted to the processor. An age floor
+/// excludes normal ingress handoffs and the boot-time sweep.
+pub const PENDING_PARENT_RECHECK_AGE_MS: u64 = 60_000;
+
+pub fn eligible_stored_pending(disposition: &BlockDisposition, now_ms: u64) -> bool {
+    matches!(
+        disposition,
+        BlockDisposition::Pending {
+            stage: PendingStage::Stored,
+            since_unix_ms,
+            ..
+        } if now_ms.saturating_sub(*since_unix_ms) >= PENDING_PARENT_RECHECK_AGE_MS
+    )
+}
+
+pub async fn retry_ready_stored_pending(
+    ledger: BlockDispositionStore,
+    block_store: BlockStore,
+    dag: Arc<dyn BlockDagStorage>,
+    to_processor: mpsc::Sender<BlockMessage>,
+    log: Arc<dyn Log>,
+) {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    crate::engine::node_phase::wait_until_running().await;
+    let mut interval = tokio::time::interval(RETRY_SWEEP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Avoid racing the launch-time reoffer sweep on its first immediate tick.
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        let rows = match ledger.unsettled().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                log.error(source, &format!("pending parent sweep could not read ledger: {e}"));
+                continue;
+            }
+        };
+        let now_ms = now_unix_millis();
+        for (hash, disposition) in rows {
+            if !eligible_stored_pending(&disposition, now_ms) {
+                continue;
+            }
+            let repr = dag.get_representation().await;
+            if repr.contains(&hash) {
+                if let Err(e) = ledger.settle(hash).await {
+                    log.warn(source, &format!("could not settle inserted pending block {}: {e}", hash.to_hex()));
+                }
+                continue;
+            }
+            let stored = match block_store.get(&[hash]).await {
+                Ok(stored) => stored,
+                Err(e) => {
+                    log.error(source, &format!("could not load stored pending body {}: {e}", hash.to_hex()));
+                    continue;
+                }
+            };
+            let Some(block) = stored.into_iter().next().flatten() else {
+                log.error(source, &format!("pending body {} is missing from storage; retaining obligation", hash.to_hex()));
+                continue;
+            };
+            if !block.justifications.iter().all(|parent| repr.contains(parent)) {
+                continue;
+            }
+            // The stage transition prevents further sweeps from dispatching the
+            // same body while its validation is in flight. Never erase faults.
+            if let Err(e) = ledger.mark_retry_started(hash).await {
+                log.error(source, &format!("could not reserve pending replay {}: {e}", hash.to_hex()));
+                continue;
+            }
+            log.info(source, &format!("re-offering stored pending body {} after parents entered DAG", hash.to_hex()));
+            if !chan::send(&to_processor, block).await {
+                return;
+            }
+        }
+    }
+}
+
 /// The retry loop: every [`RETRY_SWEEP_INTERVAL`], re-offer the faulted blocks whose backoff has
 /// elapsed. The processor's fault handlers update the row, so a repeated fault counts and a
 /// successful one settles it. A terminal fault stays in the ledger and keeps the pipeline fault
