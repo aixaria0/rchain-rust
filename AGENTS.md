@@ -113,7 +113,7 @@ is not pulled in by the library target and a bare `lake build` would otherwise c
 answers asks for one — a "network usability test" applied to every doc change. It is not recorded as
 adopted, because a policy nothing checks reads as a policy that holds. What does hold is the narrower
 and true thing: the two rules above, the audit's residue stated above, and the registers that *are*
-gated (`spec/AUDIT.md`'s check-off, the law register, the test-coverage census). Whether a doc PR gets
+gated (`spec/AUDIT.md`'s check-off, the law register, the test-coverage census, the cost register). Whether a doc PR gets
 a checklist is a maintainer's decision rather than an edit to this file.
 
 ## Intent

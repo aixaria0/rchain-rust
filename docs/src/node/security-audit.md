@@ -144,14 +144,16 @@ synchronous builtin — it bounds the waiter, not the work. **These are the inst
 the conversion and fold arms; that is an inspection, not a proof that no fourth exists**, and no gate
 is about cost (§5).
 
-**What §149 did, and what it did not.** The conversions and `set`/`keys` now charge their output
+**What §149 did, and what §150 added.** The conversions and `set`/`keys` now charge their output
 (`3 · n`, computed before the work), `++`/`.union` charge **both** operands (as `diff_cost` already
 charged `|left|·|right|`), and `censure` charges `(U+1)³`. The bound stayed at 512 because the cubic
-path was then measured at it — 33 ms for a 512-member universe in release. **Not done**: a cost-shape
-gate, which is still the missing instrument (this finding was found by measurement, and none of the
-existing gates can see a charge that does not track its work); and the charge is linear for `O(n log n)`
-work, so a log factor remains — bounded, not exact. The 600 s deadline stays as the liveness backstop
-it is.
+path was then measured at it — 33 ms for a 512-member universe in release. **§150 then built the
+instrument §149 lacked**: [`spec/COST.md`](../../../spec/COST.md) registers every priced operation with
+the shape of its charge, a census refuses an arm that declares none, and a deterministic shape test
+measures that a declared shape still grows — and its first census found **two more instances of the
+class** (`set.add` C353, the tallies' uncounted option lists C354). What remains is the **log factor**
+— the charge is linear for `O(n log n)` work, bounded, not exact — and the fact that the gate reads
+declarations rather than work. The 600 s deadline stays as the liveness backstop it is.
 
 ## 4. Other confirmed findings
 

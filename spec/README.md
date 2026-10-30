@@ -57,7 +57,9 @@ spec/
                        block/merge/storage validation, the finality gate's partition and its
                        forward dual, the validator lifecycle, the record and the fringe state
     Crypto/            Law 19: Random/Spec (axiomatized by design)
-  INVENTORY.md         the law catalog (Laws 1–77; the register covers 1–87): source-of-truth → theorem → Rust test
+  INVENTORY.md         the law catalog (Laws 1–77; the register covers 1–91): source-of-truth → theorem → Rust test
+  cost-register.tsv    the cost register: every priced operation, the shape of its charge, and its residual
+  COST.md              the rendered register (emitted from the TSV; refused stale)
   STYLE.md             conventions of this tree: naming, measured options, what is deliberately absent
 ```
 

@@ -25,6 +25,7 @@ catalogue is [`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus co
 | **Port an existing app** (or debug a parser that worked elsewhere) | [Porting an app from rnode](developer/porting-a-client.md) — reply shapes, refused terms, the traps |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
 | Map a language feature, or a **syntax, matching, reply-shape or JSON** feature, to its **law** and its proof | [The laws](formal/laws.md) |
+| Ask whether gas bounds work, or why a charge is the shape it is | [The cost model, and the gate that keeps it honest](formal/cost-model.md) |
 | **Work on the law register** — add or change a law, read a status, run the gates | [Laws reference for AI agents](ai/laws-reference.md) |
 | Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/scheduling.md) |
 | Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/scheduling.md) |

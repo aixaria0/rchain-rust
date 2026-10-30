@@ -45,6 +45,8 @@ disagree, the register is right.
 | 80–85 | **The join and the chain's identity** | root publication, the verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state |
 | 86 | **Admission and the pool** | the pool is the throttle: a bounded queue, no silent loss, independent work in parallel, one permit progresses, pending work relays |
 | 87 | **Decimal** | the exact value algebra: canonical form, the scaled-value embedding, exact arithmetic, exact-or-error division, the `edecimal` payload |
+| 88–90 | **Disposition, liveness, hostlist** | a stored body is accounted for and the proposal gate is total in its anchor (88); jail before any vote reaches a bond (89); the published hostlist is earned, bounded and fresh (90) |
+| 91 | **The cost model** | a canonicalisation and a union charge their elements, `censure` its cubic fold, a tally its option lists; the register and the census that keep the shapes honest are [here](cost-model.md) |
 
 ## Rholang — the language (Laws 1–6)
 

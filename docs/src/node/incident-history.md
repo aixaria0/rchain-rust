@@ -231,7 +231,11 @@ next pass: it re-derived this close-out, found the cost-model class live again i
 conversions, and opened C345–C352. **All eight were remediated in the same PR** (pass §149): the
 conversions and unions charge their output, `censure` its cube (Law 91), the greeter and the websocket
 accept are bounded, the body and its disposition row are one transaction, and the proposal finality
-bound is total in its anchor. C348 is an accepted residual and C352 a corrected claim.
+bound is total in its anchor. C348 is an accepted residual and C352 a corrected claim. **Pass §150 then
+built the instrument the audit said was missing** — a register of every priced operation, a census that
+refuses an arm declaring no charge, and a shape test — and its first census found **two more instances**
+the arm-by-arm pass had missed: `set.add` (C353, a flat 3 phlo for a full re-canonicalisation) and both
+tallies (C354, whose charge ignored the option lists entirely).
 
 - The three P1s were one root cause — the gas model did not bound work — closed by a per-block phlo
   cap, charging the operations that charged less than their work, and charging the parse. The
