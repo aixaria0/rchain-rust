@@ -2639,8 +2639,8 @@ mod tests {
             s.web_api = Arc::new(MockWebApi {
                 status: test_status(),
                 pooled_deploys: PooledDeploys {
-                deploys: Vec::new(),
-            },
+                    deploys: Vec::new(),
+                },
                 deploy_result: Some(DeployExecStatus::ProcessedWithSuccess {
                     deploy_result: Vec::new(),
                     block: issue_487_block(),
