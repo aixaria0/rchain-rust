@@ -13,44 +13,20 @@ whose thesis is carrying invariants in the semantics rather than in review.
 and no finding was fixed while it ran. What you are reading is therefore a photograph of `67dd6fb7b`:
 the findings, their probes and the numbers those probes produced — the amplification table in §3, the
 probe results in §7 — are true of that commit and not of whatever `dev` says today, and they are left
-as measured rather than edited. **Where a *status* has moved since, it is stated as a status and given
-its current figure** (the register's totals, the witness count, which questions have closed), because a
-reader checking this chapter against today's tree should not find it wrong — only dated.
+as measured rather than edited. A reader checking a *status* against today's tree should use
+[`spec/AUDIT.md`](../../../spec/AUDIT.md); this chapter is dated, not current.
 
-**Every confirmed finding was closed out — the P1s and P2s the same day, and the lower-severity tail
-over the following days.** The fixes are in their own commits rather than edited into this text, so
-that the photograph stays a photograph; what follows is the outcome, not a rewrite, and where a status
-has moved since, it is stated as a status rather than edited into the measurement.
+**Disposition is not this page's claim.** The check-off is
+[`spec/AUDIT.md`](../../../spec/AUDIT.md), the evidence behind every row is
+[`spec/audit/passes.md`](../../../spec/audit/passes.md), and the close-out timeline is in
+[Incident history](incident-history.md#september-2026-audit-close-out). What follows is the report:
+findings, probes, and the structural properties that survive the defects.
 
-The three P1s were one root cause — the gas model did not bound work — and were closed by a per-block
-phlo cap, by making the five operations that charged less than their work charge for it, and by
-charging the parse. The P2s closed by a DAG write order that now writes data before the pointer it is
-found by, by saturating arithmetic in the `qucalc` governance folds, and by a block `version`
-predicate that had existed since the port with **no caller**.
-
-**Signing and an SBOM on the release path closed as a decision, and the other item did not close
-because it cannot.** The release path was resolved on 2026-09-28: a `sha256sum` is published beside the
-binary and nothing further, because a signature needs a trust root and a key policy that a code change
-should not choose silently — the decision and its reasoning are recorded on the step in
-`.github/workflows/build-rnode.yml`, which is where a reader should look for it. And *cancellation
-inside a running builtin* is **not achievable on this design**: a builtin runs its CPU synchronously inside
+Two design facts from the close-out belong here because they shape any remediation. Cancellation inside
+a running builtin is **not achievable on this design** — a builtin runs its CPU synchronously inside
 `Box::pin(async { … })` with no `await` before it, so a deadline can bound how long the *caller* waits
-and never the work itself. That finding is what determined the shape of the whole remediation — bound
-the work, because interrupting it is not available — and it is worth stating here because a reader who
-expects a cancellation token will go looking for one that was deliberately not written.
-
-**Two corrections belong in this chapter rather than in a commit.** The remediation advice in §3 named
-a `HashSet` where `Par` derives no `Hash`, so it did not compile; it is marked there. And one of the
-five planned charge fixes was **reverted because implementing it showed the finding was wrong**: the
-crypto builtins' inputs have to pass through the storage path, which already charges proportionally,
-so their flat charge bought no unbounded work. A finding that does not survive being implemented is a
-finding that was wrong, and it is recorded as one rather than quietly dropped.
-
-The places where the close-out *went beyond* the reference implementation are registered in
-[`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 — the per-block cost bounds, the DAG write
-order, the block `version` check, the governance bound, the ordered dedup and the three charges that
-followed, and (item 12, the largest of them) the **randomised active-validator draw**, which replaces a
-selection rule the reference's own source marks as a placeholder.
+and never the work itself. And the release publishes a `sha256sum` and nothing further, because a
+signature needs a trust root and a key policy that a code change should not choose silently.
 
 ## 1. Method
 
@@ -95,29 +71,25 @@ marked *measured* carry a command and a number; those marked *read* are code-pat
 
 ## 2. Results
 
-| | | Closed out |
-|---|---|---|
-| Confirmed P0 (chain split / fund loss / RCE) | **none** | — |
-| Confirmed P1 (remote unauthenticated denial of service) | 3, sharing one root cause | **all three, same day** |
-| Confirmed P2 | 4 | **all four, same day** |
-| Confirmed P3 | 14 | **all fourteen** — the signing/SBOM one as a decision (a checksum, nothing further), the rest fixed |
-| Not re-established (refutation incomplete) | 1 | **closed since** — the cost asymmetry was measured at 14.2 s for a 4097-member fold and bounded to 512 (§3) |
-| Refuted during the pass | 10 | — |
+| | |
+|---|---|
+| Confirmed P0 (chain split / fund loss / RCE) | **none** |
+| Confirmed P1 (remote unauthenticated denial of service) | 3, sharing one root cause |
+| Confirmed P2 | 4 |
+| Confirmed P3 | 14 |
+| Not re-established (refutation incomplete) | 1 |
+| Refuted during the pass | 10 |
 
 The absence of a P0 is the headline result, and it is a result about the project's prior work: on a tree
 where earlier passes had confirmed remote denial-of-service defects, this pass could not find a chain
 split, a fund loss, or remote code execution.
 
-**The closure column is the part a later reader needs most**, and both of its exceptions have since
-been settled. The *not-re-established* row was the `qucalc::gov::censure` cost asymmetry: the pass's
-refutation never completed, so what an attacker actually pays at the ingress was unanswered, and the
-close-out recorded that rather than guessing. **It was measured afterwards** — 14.2 seconds for a
-4097-member fold, i.e. the charge was not merely asymmetric but absent — and the bound that replaced it
-is 512, set from that measurement. The register now reads **204 of 204 rows `done`**, with no
-not-re-established row left. The P3 row's exception was signing and an SBOM, a decision rather than
-work, and the decision has been taken: an `sha256sum` beside the binary and nothing further, recorded
-on the release step with the reason (a signature needs a trust root that a code change should not pick
-on the project's behalf).
+The *not-re-established* row was the `qucalc::gov::censure` cost asymmetry: the pass's refutation never
+completed, and what an attacker pays at the ingress was unanswered. It was measured afterwards — **14.2
+seconds** for a 4097-member fold, so the charge was not merely asymmetric but absent — and the bound that
+replaced it is **512**, set from that measurement. The P3 row's exception was signing and an SBOM, a
+decision rather than work: an `sha256sum` beside the binary and nothing further, recorded on the release
+step. Disposition of every row is in [`spec/AUDIT.md`](../../../spec/AUDIT.md).
 
 ## 3. The gas model does not bound work
 
@@ -169,26 +141,25 @@ set/map dedup ordered; wire `parsing_cost` at execution time before the cost is 
 cancellation flag inside long builtins. The `par_set` change is small and removes the amplification's
 root.
 
-*Corrected during the close-out, 2026-09-28.* This paragraph first said "replace the linear scan with a
-`HashSet`", and **that does not compile**: `Par` derives no `Hash` anywhere in the AST and no manual
-impl exists, so `HashSet<Par>` is a type error. The fix that landed is **sort-then-dedup** — `par_set`
+The remediation advice cannot be "replace the linear scan with a `HashSet`": **that does not compile**,
+because `Par` derives no `Hash` anywhere in the AST and no manual impl exists. The fix is
+**sort-then-dedup** — `par_set`
 sorts by `Par`'s derived total order, which puts equal elements adjacent, then `Vec::dedup`s them, and
 because the sort is stable it keeps the first of each run, which is the element the scan kept;
 `par_map` sorts by key and makes one keep-last pass, reproducing last-write-wins. Byte-for-byte the
-same output at Θ(N log N). The advice was wrong in the ordinary way — a remediation sentence is a claim
-like any other, and this one was never compiled before it was published.
+same output at Θ(N log N).
 
-*And the remediation has since been carried out* (2026-09-28), in the order given. The ordered dedup,
+The remediation in the tree is in this order. The ordered dedup,
 the two validator-side caps and the execution-time parse charge landed first — and then the per-block
 cap turned out to be **inoperative on its own**, because a cost model bounds work only when a phlo buys
-bounded work. A second pass made the five operations whose charge did not track their work charge for
-it. The worst was `rho::gov:censure`, cubic in its arguments and charged **nothing at all**; the cost of
+bounded work. A second pass made the operations whose charge did not track their work charge for it;
+one planned fix was reverted because the finding did not survive implementation. The worst was `rho::gov:censure`, cubic in its arguments and charged **nothing at all**; the cost of
 that being free was measured at **14.2 seconds** for a 4097-member fold, and the bound that replaced it
 is 512 — set from that measurement, not chosen.
 
-**What that sweep is worth, stated rather than implied.** The five were found by *reading the cost
+**What that sweep is worth, stated rather than implied.** These charges were found by *reading the cost
 table for charges that do not track their work* — an inspection, not a proof that no sixth exists. The
-claim is "these five", not "the cost model is now sound", and a sixth charge of the same shape would
+claim is "these charges", not "the cost model is now sound", and a sixth charge of the same shape would
 need the same reading to find. The per-block cap bounds the total a block can spend; it does not, on
 its own, make any individual charge proportional, which is why both halves were needed and why the cap
 alone was found to be inoperative.
@@ -267,25 +238,20 @@ counted-but-unenforced classes in the type-system gate; a coverage-ledger check 
 invokes; and hand-repeated counts that have drifted (the README's line count and the two documents'
 disagreement over how many crates the workspace has).
 
-**All but one of those have since closed**, re-checked against the tree rather than remembered:
-`await-holding-lock` is now reported **only inside `#[cfg(test)]` modules** (the gate still allow-lists
-the lint, so this is a property of the sites, not of the lint); the deploy-status casing is stated
-correctly in `operating.md` and `building-apps.md` and held by law 43's envelope corpus; the served
-`openapi.json` declares a string body for `/api/explore-deploy` and says so in `spec/API-SCHEMA.md`;
-`cargo-deny` runs `check` rather than `check advisories`, so the licence allow-list is live; the release
-workflow publishes a checksum; `next-audit-number` reads the emitted register's own rendering, which is
-the shape it had missed; the README's lines and the crate count agree with the workspace (13);
-`coverage.yml` exists and refuses a stale commit. The one that remains is the type-system gate's
-counted classes — still reported, still not enforced — and it is no longer a *finding*: the baseline's
-own header now says they are a dated measurement rather than a ratchet, so the gate does not claim to
-enforce what it does not.
+The type-system gate's counted classes remain reported and **not enforced**; the baseline's own header
+now says they are a dated measurement rather than a ratchet, so the gate does not claim to enforce what
+it does not. The other classes in that sweep are held by their own gates or corpus rows; the check-off
+in [`spec/AUDIT.md`](../../../spec/AUDIT.md) is the record.
 
 ## 5. What a green register does not cover
 
-The project's check-off is genuinely green — **204 of 204 findings closed**, all 89 T1 rows with a
-verdict — and, unusually, the law register does not overclaim: all **88** registered Rust witnesses
-resolve to real functions, there are **zero `#[ignore]`d tests** in the tree, and the Lean gate refuses
-`sorry`, `admit` and `opaque`. That was checked adversarially rather than assumed.
+The check-off has no `todo` rows — `TODO 0`, four `in progress`, 375 `done` in
+[`spec/AUDIT.md`](../../../spec/AUDIT.md) — and, unusually, the law register does not overclaim: every
+registered Rust witness runs by name (`tools/check-rust-witnesses.sh`), no registered witness is
+`#[ignore]`d, and the Lean gate refuses `sorry`, `admit` and `opaque`. The tree's three `#[ignore]`s are
+a diagnostic table printer (`casper/src/blocks/proposer/proposer.rs`) and two benchmarks/replays
+(`casper/tests/n420_rcash_replay.rs`, `casper/tests/startup_metadata_bench.rs`); none is a registered
+witness.
 
 What the register does not cover is specific:
 
@@ -335,7 +301,8 @@ which removes a class of divergence rather than testing for it.
 1. **Unforgeability is axiomatised, not proved.** The claim that a name's bytes cannot be guessed rests
    on the crypto axioms (law 19), not on a theorem. A break in the hash would falsify an axiom, not
    contradict a proof. Say "axiomatised at the crypto boundary" — never "proved unforgeable".
-2. **The `rho:*` namespace is ambient authority.** Twenty-seven system urns are resolved
+2. **The `rho:*` namespace is ambient authority.** A fixed table of 32 system channels (`FixedChannels`,
+   byte ids 0–32 with 9 unused) is resolved
    unconditionally for every deploy, so any contract that can spell the public string can reach the
    channel — including `rho:gov:*`, whose folds were the pass's worst cost finding and are now charged
    and bounded (§3, §4). Mutation methods on some channels are additionally gated by the caller's own
@@ -371,13 +338,10 @@ attacker is flat or sublinear?**
 Every one of the four has such an operation. This is a defect class in the design of VM cost models
 generally, not a distinguishing weakness of any one chain.
 
-**Two rows below have moved since the probe, and the table is left as measured rather than edited.**
-This node's amplification instance — the `Set` dedup's Θ(N²·⁴³) for a flat 13 phlo — is now
-sort-then-dedup, i.e. Θ(N log N), and the zero-phlo governance folds are charged and bounded (§3, §4),
-so "worst instance found" describes the tree the probe ran against. The containment cell said "no
-per-block cap"; a per-block phlo cap and a validator-side deploy-count cap have since landed, which is
-the row the README's own table marks as the one this node did not lead and fixed within the day. What
-remains of that cell is the third item: there is still **no timeout on the block execution path**, and
+**The table is as measured at the report commit.** This node's amplification instance — the `Set`
+dedup's Θ(N²·⁴³) for a flat 13 phlo — is now sort-then-dedup, Θ(N log N), and the zero-phlo governance
+folds are charged and bounded (§3, §4). A per-block phlo cap and a validator-side deploy-count cap have
+landed. What remains is the third item: there is still **no timeout on the block execution path**, and
 that is not repairable by bounding work, because a builtin cannot be interrupted (§3).
 
 | | Worst instance found | What the attacker pays | Blast-radius containment |
@@ -397,7 +361,7 @@ On the inherent-safety axis (§6) the ordering is different, and more favourable
 
 | | Unforgeable authority | No ambient authority | Encapsulation | Reentrancy / confused deputy | Machine-checked |
 |---|---|---|---|---|---|
-| **This node** | **unrepresentable** (soundness axiomatised) | none in the language; **27 ambient urns** in the chain layer | n/a — capabilities are copyable references by design | **unrepresentable** | **Lean 4 + Coq; closedness proved** |
+| **This node** | **unrepresentable** (soundness axiomatised) | none in the language; **32 ambient system channels** in the chain layer | n/a — capabilities are copyable references by design | **unrepresentable** | **Lean 4 + Coq; closedness proved** |
 | **Sui** | **unrepresentable** — linear `UID` freshly minted from the transaction digest | banned at the bytecode level | **unrepresentable** — linear resources | **unrepresentable** — no dynamic dispatch | static verifier yes; **Move Prover absent** |
 | **Solana** | checked — a program-derived address has no private key, but granting the privilege is a runtime check | present — any program may invoke any executable program | absent — accounts are flat cloneable buffers | checked at runtime | ABI digests only, which are checksums |
 | **Bitcoin SV** | absent as a concept | fewest surfaces, by having almost no semantics | linear by consensus validation | moot — no calls exist | **nothing** |

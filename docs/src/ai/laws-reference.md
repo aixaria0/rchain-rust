@@ -148,5 +148,5 @@ honest about it, is a reading — and the falsifier is where that reading is rec
 - [`spec/LAWS.md`](../../../spec/LAWS.md) — every entry's status, declarations, axioms and falsifier.
 - [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) — the long-form catalogue (through Law 77).
 - [The laws → Rust code](../contributor/laws-to-rust.md) — per-law Lean and Rust anchors (Laws 1–29).
-- [Formal specification & audit](../contributor/spec.md) — the tree and every gate.
+- [The formal specification tree](../../../spec/README.md) — the oracle and every gate.
 - [Navigation for AI agents](../ai-entrypoint.md) — the goal-indexed map of the book.

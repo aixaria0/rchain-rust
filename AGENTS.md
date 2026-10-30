@@ -285,8 +285,11 @@ For every law in the inventory:
 
 ## Ground truth
 
-**Where the Scala is.** The `legacy/` tree was archived out of the working tree on 2026-09-28 — 32 MB
-and 1,596 files that no CI job built, tested or scanned, carrying a 2020-21 dependency manifest
+**Where the Scala is.** The `legacy/` tree was archived out of the working tree on 2026-09-28 —
+<!-- recount:legacy-mib -->26.2<!-- recount:end --> MiB
+(<!-- recount:legacy-bytes -->27,425,437<!-- recount:end --> bytes) across
+<!-- recount:legacy-files -->1,596<!-- recount:end --> files that no CI job built, tested or scanned,
+carrying a 2020-21 dependency manifest
 `cargo-deny` cannot see. It is readable at the revision that froze it, **`1b7583649`**:
 `https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/<path>`, or locally with
 `git checkout 1b7583649 -- legacy`. Every `legacy/...` path cited anywhere in this repository — here,
@@ -393,11 +396,12 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   Law 11 rig-replay); certificate and oracle are complementary, each with a decided witness.
   Pure `relaxed` stays hard-rejected on the block paths. Phase-by-phase account:
   [`docs/src/contributor/onchain-validation-phases.md`](docs/src/contributor/onchain-validation-phases.md).
-- **Rewrite — complete**: all thirteen workspace members are at the workspace root — the eleven ported
-  crates (`sdk`, `shared`, `crypto`, `graphz`, `models`, `block-storage`, `rspace`, `rholang`,
-  `casper`, `comm`, `node`) plus `rspace-bench` and `qucalc`, the Rust-first native AI + governance
-  crate (Part VI of the book). The proofs-first *pause* was lifted in practice; the port was written
-  against the verified spec rather than waiting on Laws 1–11.
+- **Rewrite — complete**: all <!-- recount:members -->14<!-- recount:end --> workspace members are at
+  the workspace root — the eleven ported crates (`sdk`, `shared`, `crypto`, `graphz`, `models`,
+  `block-storage`, `rspace`, `rholang`, `casper`, `comm`, `node`) plus `rspace-bench`, `ocapn` (the
+  CapTP/OCapN transports) and `qucalc`, the Rust-first native AI + governance crate (Part VI of the
+  book). The proofs-first *pause* was lifted in practice; the port was written against the verified
+  spec rather than waiting on Laws 1–11.
 - **Node — operational**: `rnode` builds and runs. A standalone node reaches the `Running` state
   (genesis block created) and serves the API — Deploy **40401**, Propose/Repl **40402** (loopback),
   HTTP **40403**, admin **40405**, protocol **40400**, discovery **40404**. Run instructions:

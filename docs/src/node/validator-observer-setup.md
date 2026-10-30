@@ -21,7 +21,7 @@ and the join's trust boundary in [what a joining node trusts](../spec/trust-mode
 
 Both run the same binary and sync the same way. The difference is admission: a validator must be
 **trusted** (admission list, `pos:trusted`) and then **bond itself**. Admission is not consensus
-membership — `untrust` does not confiscate a bond or remove an active seat (Law 82, AUDIT C111); the
+membership — `untrust` does not confiscate a bond or remove an active seat (Law 82); the
 boundary re-selects the active set each epoch. The lifecycle is
 `observer → trusted → bonded → active → withdrawing → claimable`.
 
@@ -68,9 +68,9 @@ The bootstrap must additionally be reachable outbound for the fringe request. `p
 fallback is to **seed it from a synced node** (copy the data directory excluding `node.key.pem` and
 `node.certificate.pem`) rather than to admit only the bootstrap.
 
-The join path's fixes are recorded in Law 81 and register C337; the remaining live arms — the
+The join path's fixes are recorded in Law 81; the remaining live arms — the
 blocked-inbound regression and the fresh join on the current binary — are tracked in
-[#479](https://github.com/rhovision-org/rholo/issues/479).
+[Incident history](incident-history.md#testnet-rebuild-and-receiver-exhaustion).
 
 ## 4. Validator identity
 
@@ -85,7 +85,7 @@ rnode ... --validator-private-key-path /etc/rnode/validator.key
 
 Keep file permissions at `0600`, keep the admin listener on loopback, and treat the node's data directory
 as sensitive: the TLS identity (`node.key.pem`, `node.certificate.pem`) and the validator key live there.
-The wargame's key-lifecycle row (`W-N5` in [the bounded adversary](../spec/adversary.md)) is the threat
+The wargame's key-lifecycle row (in [the bounded adversary](../spec/adversary.md)) is the threat
 model for replacement and custody.
 
 ## 5. Creating a network (the genesis master)

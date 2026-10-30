@@ -48,7 +48,7 @@ Notes for operators:
   **These routes are on the *admin* HTTP server (port 40405), not the public one (40403)** — the
   coordinator signs every leg with this node's validator key and escrows out of **that key's own REV
   account**, so the surface is privileged in the same way `/api/propose` is, and it is deliberately not
-  reachable on the API port a remote client can reach (AUDIT C121). The admin server binds
+  reachable on the API port a remote client can reach. The admin server binds
   `127.0.0.1` unless `api-server.enable-devnet-admin-public = true`, so a wallet on another host needs
   that opt-in — and should weigh it: publishing the admin port publishes an unauthenticated
   spend-this-node's-REV route as well. A transaction may name at most 32 legs, and the coordinator
@@ -58,14 +58,15 @@ Notes for operators:
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.
 - **There is a fourth kind of listener, and every one of them is off unless you ask for one.** The
-  OCapN listeners (issue #249) are where a foreign peer — an Agoric vat, say — can hold live references
+  OCapN listeners are where a foreign peer — an Agoric vat, say — can hold live references
   to objects on this node: `api-server.ocapn-listen` is the conformance suite's plaintext
   `tcp-testing-only` port, `ocapn-listen-unix` a domain socket authenticated by its `0600` mode,
   `ocapn-listen-noise` the one a remote peer should use (authenticated *and* encrypted), and
   `ocapn-listen-websocket` the one `@endo/ocapn` speaks and the weakest of the networked two. They are
   **not** part of the API above, and when `dev.deployer-private-key` is set a peer that
   reaches one can make this node **submit deploys signed with that key** and cause it to **dial any
-  address the peer names**. Read [](ocapn.md) before enabling it; the short version is that binding it
+  address the peer names**. Read [OCapN interoperability](ocapn.md) before enabling it; the short
+  version is that binding it
   publishes the node's own authority, so bind loopback unless every peer that can reach the address is
   one you trust.
 
@@ -101,7 +102,7 @@ not set up for you:
    ```
 
    **There is no flag that takes the hex itself.** `--validator-private-key <hex>` existed and was
-   removed (W-N11-05): a secret in `argv` is readable by any local process through
+   removed because a secret in `argv` is readable by any local process through
    `/proc/<pid>/cmdline`, and hiding the flag from `--help` hides it from the operator, not from the
    host. A command line that still passes it is refused at parse time, naming this route.
 
@@ -227,9 +228,9 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
   accepted (`Response: Success!` with a DeployId) and then never proposed:
   `deploy-status` answers `notProcessed / Unknown`, and the proposer logs
   `No pooled deploys; injecting dummy deploy for block #NNN`. Pass
-  `--valid-after-block-number <current height>` on a binary that predates
-  [#58](https://github.com/rhovision-org/rholo/pull/58), which makes the CLI resolve the anchor
-  from the node's own height the way the faucet, the browser client and `txn_coordinator` already do.
+  `--valid-after-block-number <current height>` on a binary that predates the anchor fix; the CLI
+  resolves the anchor from the node's own height the way the faucet, the browser client and
+  `txn_coordinator` do.
   Short chains hide this: below the lifespan, `-1` is not yet "expired".
 
 - **`deploy-status` reports the outcome *and the reason*.** A success returns
@@ -239,13 +240,13 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
   `{"NotProcessed": {"status": "Pooled"}}`; and a deploy the node has no record of returns
   `"Unknown"`. **The variant tags are PascalCase and the fields camelCase**, which is what law 43's
   envelope catalogue declares (`spec/conformance/envelope.tsv`) — a client switching on
-  `processedWithError` (as this page used to say) matches nothing, and nothing errors.
+  `processedWithError` matches nothing, and nothing errors.
 
-  The reason comes from the block's recorded failure (issue #15), so it is available on any node
+  The reason comes from the block's recorded failure, so it is available on any node
   holding the block. The placeholder
   `"<deploy error message not available in cache or deploy executed on another node>"` survives for one
   case only: a deploy whose record carries no message at all (a block from a node that predates
-  issue #15), which is also the only case the Scala's per-node execution tracker could answer.
+  the fix), which is also the only case the Scala's per-node execution tracker could answer.
 
   To read a term's **return value** — usually what you actually want — have the term send its result
   somewhere it can be read back, using the registry result-slot pattern that the browser client and
@@ -266,7 +267,7 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
 The last row is the one that matters for a *network*: a validator that holds no deploys still has to move
 its latest message, or its stake never reaches the 2/3 finality threshold. Attestation is therefore **on
 by default** (`--no-attest-on-new-blocks` turns it off) and a validator needs **no `--autopropose`** to be
-live — including a validator on a host too small to run the continuous timer (#70). `--autopropose`
+live — including a validator on a small host. `--autopropose`
 remains a dev/CI tool for continuous block production; its dummy-`Nil` injector is not a liveness
 mechanism.
 
@@ -370,7 +371,7 @@ Two reads, and the difference between them matters:
   single status call's size a function of that.
 - **`GET /api/v1/pos/delegations?delegator=<65-byte hex>`** — **one delegator's positions**, across
   every operator it has staked with. Scoped to the key you ask about, which is the bounded direction.
-  **On the admin listener (40405), not the public one** (W-N3-03): it is a store query keyed on a
+  **On the admin listener (40405), not the public one**: it is a store query keyed on a
   caller-supplied key, not chain state a peer would read, and it answered any caller's question about
   any delegator's portfolio while it was public.
 
