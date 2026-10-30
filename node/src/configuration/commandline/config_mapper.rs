@@ -386,6 +386,27 @@ pub fn from_options(options: &Options) -> Hocon {
         );
         flag(
             &mut e,
+            "api-server.publish-node-list",
+            run.api_publish_node_list,
+        );
+        opt_duration(
+            &mut e,
+            "api-server.node-list-probe-interval",
+            run.api_node_list_probe_interval,
+        );
+        opt_duration(
+            &mut e,
+            "api-server.node-list-probe-timeout",
+            run.api_node_list_probe_timeout,
+        );
+        if let Some(v) = run.api_node_list_max_entries {
+            e.push((
+                "api-server.node-list-max-entries".to_string(),
+                Hocon::Integer(i64::try_from(v).unwrap_or(i64::MAX)),
+            ));
+        }
+        flag(
+            &mut e,
             "api-server.enable-devnet-cors",
             run.api_enable_devnet_cors,
         );

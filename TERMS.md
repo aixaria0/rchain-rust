@@ -25,6 +25,8 @@ it is still paid for an epoch it was drawn for, even if it did not run. That asy
 behaviour, not a promise: the protocol, a network's genesis parameters, or a future release may price
 absence differently.
 
+A network may **arm liveness enforcement** at genesis (RCHIP #55, `docs/src/spec/rchip-55-liveness-enforcement.md`). On such a network, after sustained absence across a configured number of **advancing** epoch boundaries the validator is removed from the active set for a configured number of epochs and earns nothing; **its bond and its delegators' principal are untouched**. A **stake-weighted vote of strictly more than two thirds of the active stake**, over a configured window, may then **slash it at the configured tier and permanently eject it** from bonding. The bond is at risk only through that vote. A network with the shipped default genesis is unaffected.
+
 ## 2. Hardware and uptime are your responsibility
 
 The documented minimum is **per validator**: 2–4 vCPU, 8 GB RAM, 100–250 GB NVMe SSD, 10 Mbit+

@@ -4,7 +4,7 @@
 > invalid attributable block or a proven equivocation can cost a stated share of your bond, accrued
 > rewards and escrowed withdrawal claim. A merely absent or slow validator is **not** slashed under the
 > shipped protocol, but it holds finality back, still counts in the quorum denominator, and may still be
-> paid. The legal/operator notice is [`TERMS.md`](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md).
+> paid. The legal/operator notice is [`TERMS.md`](../../../TERMS.md).
 
 This page is the operator's risk view: what the protocol can do to stake, what it does not do, how much
 hardware a validator actually needs, and where a small operator can participate without becoming a
@@ -59,7 +59,7 @@ shrink when a validator is absent ([consensus](consensus.md), Law 14a/52). With 
 These are arithmetic, not probabilities. A single node can be the difference between a finalising chain
 and a frozen one; no single node should be a **failure domain** for the network. Do not co-locate
 validators that are meant to be independent; one host, one cloud account, one bad upgrade or one
-network partition can otherwise remove more than a third at once. The failure-domain work is #428 M1.
+network partition can otherwise remove more than a third at once.
 
 ## 4. Who bears what
 
@@ -67,9 +67,9 @@ network partition can otherwise remove more than a third at once. The failure-do
 |---|---|---|---|---|
 | below-floor host / bad disk | finality lag or stall | income loss, no slash for absence; a buggy invalid block can slash | preflight, the two flags, notice, cgroup guidance | `--allow-under-minimum` remains possible; the memory floor is a policy table, not a measured curve above ~5k blocks |
 | `throttled` host under load | execution pressure can reach `critical` and withhold production | missed production/attestation income | fallback word, execution permit lease, watchdog | the proposer acquires the execution permits and caps a batched block; the sequential path is inherently one-at-a-time, and zero headroom withholds |
-| co-located / correlated validators | >1/3 stake can disappear together → no quorum | bond/income and reputation | co-location advisory, runbook | host topology is the operator's; #428 M1; no protocol-level anti-affinity |
-| silence is paid | finality can stall while an absent validator is still paid | no bond loss today; opportunity/reward only | notice, future policy options below | #149; `absence-slack` is a genesis decision and is off by default |
-| late detection | finality is already frozen before the operator notices | reputation, missed income | `/health` peer fields, `/metrics`, operator status | the signal exists; the operator still owns the external alert (B38) |
+| co-located / correlated validators | >1/3 stake can disappear together → no quorum | bond/income and reputation | co-location advisory, runbook | host topology is the operator's; no protocol-level anti-affinity |
+| silence is paid | finality can stall while an absent validator is still paid | no bond loss today; opportunity/reward only | notice, future policy options below | `absence-slack` is a genesis decision and is off by default; the participation rule is in [Incident history](incident-history.md) |
+| late detection | finality is already frozen before the operator notices | reputation, missed income | `/health` peer fields, `/metrics`, operator status | the signal exists; the operator still owns the external alert |
 
 The operator owns the ringfence, the keys, the host and the monitoring; the protocol owns the quorum
 rule and the slash predicate. Neither side can make the other's risk disappear.
@@ -116,14 +116,16 @@ genesis decision for each network. If a network wants to price absence, the stag
 | 0 | current: behavioural slashing; absence paid; no inactivity leak | only invalid/equivocation | shipped |
 | 1 | arm the existing income rule after measuring the participation lag | no | a network/genesis decision; measure first |
 | 2 | an inactivity leak / reward decay (new state) | no | not built; Lean-first and maintainer decision |
-| 3 | liveness slashing | yes | **last resort**, only for sustained, objective, attributable absence, never a single outage or partition; governance and testnet first |
+| 3 | liveness slashing — **now the opt-in jail + stake vote** (RCHIP #55, Law 89) | only through a >2/3 active-stake vote | implemented, **default off**; jail first (bond untouched), the vote is the only bond path; live testnet evidence owed |
+| 4 | mainnet arming | as above | **not authorised**; waits on the live artefact |
 
-The recommendation is **not** to add liveness slashing now. Hardware is handled by the preflight,
-explicit risk acceptance and the notice; if absence is to be priced, start with income and measurement.
-The protocol's own principle is that a staker must not lose its bond through no fault of its own.
+**Policy decision.** For the inactivity leak, no automatic step burns a bond. RCHIP #55 adds a *bond-preserving jail* and a *vote-gated slash*; the two
+are not a leak. The recommendation for a default network is still **do not arm**; a network that arms
+accepts that a >2/3 active-stake vote can eject a validator, and that a partitioned minority can be
+jailed on the side that still finalises. Mainnet arming waits on the live testnet artefact.
 
 ## 8. Terms and reporting
 
-Read [`TERMS.md`](https://github.com/rhovision-org/rholo/blob/dev/TERMS.md) (draft for legal review) for
+Read [`TERMS.md`](../../../TERMS.md) (draft for legal review) for
 the operator notice. Report a suspected defect through the repository's issue tracker; do not publish a
 key, a signed deploy or a private host detail in a public issue.

@@ -52,6 +52,10 @@ jemalloc purge and the #117 retention test; the devnet/Docker memory ceiling.
 | B43 | **operator risk notice**: `TERMS.md` plus the validator start-up log notice; the notice is informational, not a verdict | F |
 | B44 | **explicit below-minimum acceptance**: a validator below the memory floor needs `--allow-under-minimum` and `--accept-under-minimum-risk`; observers remain allowed below the floor | F |
 | B45 | **execution-permit wiring**: the proposer acquires the execution permits and passes the batch cap; a `Throttled` host makes a smaller batch when batching is enabled and withholds at zero | #486 / C341 |
+| B46 | **block disposition and repair**: a stored body has a DAG record or a live pending lease; a fault is recorded and retried; a boot/periodic audit re-offers or quarantines an orphan; **readiness** (`/health`, `orphan_bodies`) requires no unresolved orphan — the phase does not, and `Running` may be entered with one pending (C352) | U19 |
+| B47 | **phase/readiness and isolation halt**: `Syncing`/`Blocked` refuse deploy admission and report not-ready; a proposer beyond the finality bound stops propose and attest and needs an operator resume | U20 |
+| B48 | **liveness jail**: at advancing boundaries a sustained absentee is removed from the active set for J boundaries and paid nothing; the bond and delegations are untouched, the jail expires for a returning validator and renews for a silent one | U21 / RCHIP #55 |
+| B49 | **vote-gated slash/eject**: a slash vote opens only against a jailed validator; strictly more than two thirds of the active stake must vote for it; a passing vote slashes at the configured tier and permanently bans the key | U21 / RCHIP #55 |
 
 **Consequences:** an accepted deploy that is not durable or whose acceptance is ambiguous; API/read
 timeouts and clients losing the chain; height divergence and finality lag; a joiner that cannot sync; a
@@ -79,7 +83,10 @@ or `owed: <unit> — <path::test>` where it is not yet built. `owed:` is visible
 | H-RS-11 | T-RS-11 ambiguous acceptance, an orphan root or a stale derived index | root-pair write, reset bracket | B39, B40 | C-RS-1 | no cross-store WAL; D1/D2 reduce and repair the known windows | casper/tests/current_root_publication.rs::a_failed_insert_leaves_the_current_root_where_it_was |
 | H-RS-12 | T-RS-12 peers cannot route around a constrained validator | none | B42 | C-RS-4 | the relay is opt-in and uses the peer's external deploy API port, not a protocol-level routing guarantee; the four-validator relay arm records a critical node's deploy included by a healthy peer, and the shared-host cgroup topology remains owed | spec/audit/evidence/n477-relay-arm-20261028/README.md |
 | H-RS-13 | T-RS-14 the execution permit half of B35 was never acquired by the proposer, so `Throttled` kept full-rate execution | B33 (fallback), B37 (Critical gate) | B45 | C-RS-8 | the execution budget caps a batched proposal and withholds at zero; a sequential block is inherently one-at-a-time; the fallback still withholds at `Critical` | node/src/instances/proposer_instance.rs::a_throttled_proposer_takes_a_smaller_batch_and_releases_the_lease |
-| H-RS-14 | T-RS-13 an operator bonds without accepting the hardware/absence risk, or runs below the floor without a notice | B31 (preflight), B37 (Critical gate) | B43, B44 | C-RS-7 | absence is not slashed and is paid by default; the notice/acceptance does not make the host adequate | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| H-RS-14 | T-RS-13 an operator bonds without accepting the hardware/absence risk, or runs below the floor without a notice | B31 (preflight), B37 (Critical gate) | B43, B44 | C-RS-7 | under the shipped default absence is not slashed and is paid by default; a network that arms RCHIP #55 can jail an absentee and a >2/3 vote can slash it, and the operator notice now says so; the notice/acceptance does not make the host adequate | node/tests/resource_preflight_arming.rs::the_preflight_refuses_a_validator_warns_an_observer_and_honours_the_override |
+| H-RS-17 | T-RS-17 a silent validator is paid and holds finality for ever, or a liveness rule punishes a partitioned minority and takes a bond through no fault | the income-only participation rule (off by default) and the whole-active-stake denominator | B48, B49 | C-RS-9, C-RS-7 | jail is bond-preserving and expires; only a >2/3 vote reaches the bond; a stalled chain freezes both clocks; a proponent can present a stale reachable fringe; a boundary block can omit `CloseBlock` (no validity rule yet); no live testnet evidence | owed: the partition arm and the live jail/vote-slash drill; the jail, threshold and return/renewal tests exist in `rholang/src/native_state.rs` |
+| H-RS-15 | T-RS-15 a received block is stored but never accepted or refused: an `Internal`/insert fault is dropped, the receiver retains it as pending, and no audit re-offers it; children wait and the height stops | B39/B40 repair the derived-index windows, not a body with no DAG entry | B46 | C-RS-1, C-RS-5 | the durable ledger, the start-up audit before `Running`, bounded retry, the marker-gated **keys-only** pre-ledger scan and the periodic count audit are implemented; an undecodable body and a persistent fault still need an operator reset, and the fault/orphan counters remain node-wide | casper/src/block_disposition.rs::the_legacy_scan_adopts_every_unaccounted_body_and_writes_its_marker; casper/src/block_disposition.rs::the_phase_stays_starting_until_the_drain_closes |
+| H-RS-16 | T-RS-16 a validator whose peers reject its chain keeps proposing; the tip advances against frozen finality and the node looks healthy | none | B47 | C-RS-4, C-RS-5 | the height-gap gate is a local policy, not a proof of peer acceptance; the phase is per shard and node readiness requires every shard Running, so one syncing shard no longer looks like a healthy node. The attestation endpoint and the operator resume remain separate controls | owed: the operator halt/resume drill; the bound, phase-gate (`a_syncing_cell_does_not_propose`) and all-shards-ready (`health_is_ready_only_when_every_shard_runs`) tests exist |
 
 ## Barrier independence
 
@@ -102,6 +109,13 @@ These are stated rather than assumed, because several barriers share an input or
   indexes remain separate transactions; there is no cross-store WAL. D2 repairs the derived rows at boot.
 - **B39 is a repair, not a prevention.** A crash between metadata and index cleanup is still possible; the
   boot audit makes it visible and repairable.
+- **B46 is a disposition/repair barrier, not a proof of acceptance.** The ledger and audit make an
+  orphan visible and retryable; a persistent fault still requires the operator reset, and the
+  single-process task supervisor is not an independent process.
+- **B48 and B49 share the finalised-fringe participation reading.** B48 is automatic and bond-preserving; B49 applies only to an already-jailed target and is the only path to the pool. Neither steps without finality progress.
+- **B47 is a local isolation policy.** The height gap is computed from this node's DAG; a peer's
+  rejection is inferred from frozen finality, not observed directly. A network with two independent
+  partitions can still have two local views; the operator resume is the recovery contract.
 
 ## ALARP argument
 
@@ -115,9 +129,14 @@ The node-local risk is **as low as reasonably practicable** only if these hold (
    loop into the same replay OOM.
 3. **The operator can see it.** The state, the reason and the provenance are on the surfaces; a measured
    fact is distinguishable from a policy threshold.
-4. **Residual risk is outside node control or disproportionately expensive.** Host topology, cgroup
+4. **No silent acceptance and no private-chain production.** A stored body has a disposition or a
+   live lease, an orphan is retried/reported, and a proposer beyond the finality bound stops
+   proposing and attesting (B46/B47). The remaining exposure is an operator action or a peer set the
+   node cannot observe directly.
+5. **Residual risk is outside node control or disproportionately expensive.** Host topology, cgroup
    enforcement, the kernel's OOM choice, a measured replay curve at target height, cross-node degraded
-   gossip, bootstrap failover, state GC and a cross-store WAL are not added here.
+   gossip, bootstrap failover, state GC and a cross-store WAL are not added here. A liveness jail or slash of an honest validator during a
+partition, a jail that moves a bond, or a vote below two thirds would invalidate this claim.
 
 **What would invalidate this claim:** an OOM inside the declared supported tier; a preflight that
 false-passes a 1 GiB / 1k-block host; or a degraded node losing an accepted deploy. Any of those changes

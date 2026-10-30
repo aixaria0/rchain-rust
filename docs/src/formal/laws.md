@@ -1,6 +1,6 @@
 # The laws — what they guarantee
 
-rholo's behaviour is pinned by **<!-- counts:laws -->87 laws<!-- counts:end -->** — one invariant per layer of
+rholo's behaviour is pinned by **<!-- counts:laws -->91 laws<!-- counts:end -->** — one invariant per layer of
 the system. A law says what must be true of the node (or of the model it is proved over), why it matters,
 and what would falsify it. This page is the **reading**: one line per law, grouped by layer. The checked
 register is the authority for status, declarations and falsifiers; where this page and the register
@@ -8,10 +8,10 @@ disagree, the register is right.
 
 > **How to read a law number**
 >
-> - **`Law N`** — a stable number, 1–87. Numbers are never reused; a new law takes the next one.
+> - **`Law N`** — a stable number, 1–91. Numbers are never reused; a new law takes the next one.
 > - **`Law Nx`** — a *clause* of a law whose parts have different proofs or statuses (`16a`, `16b`, …).
->   <!-- counts:clause-laws -->18<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
-> - **Entry** — one row of the register. **<!-- counts:laws -->87 laws<!-- counts:end --> = <!-- counts:entries -->119 entries<!-- counts:end -->**, and the
+>   <!-- counts:clause-laws -->21<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
+> - **Entry** — one row of the register. **<!-- counts:laws -->91 laws<!-- counts:end --> = <!-- counts:entries -->131 entries<!-- counts:end -->**, and the
 >   status counts are per entry. Laws 14, 16 and 86 have clauses on both sides of `proved-tied`/`proved-model`,
 >   which is why the number of *laws* proved is smaller than the sum of the two status columns.
 > - **`C###`** — an audit finding (`spec/audit/passes.md`), never a law. HAZOP rows are `F-U…`/`H-U…`,
@@ -45,6 +45,8 @@ disagree, the register is right.
 | 80–85 | **The join and the chain's identity** | root publication, the verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state |
 | 86 | **Admission and the pool** | the pool is the throttle: a bounded queue, no silent loss, independent work in parallel, one permit progresses, pending work relays |
 | 87 | **Decimal** | the exact value algebra: canonical form, the scaled-value embedding, exact arithmetic, exact-or-error division, the `edecimal` payload |
+| 88–90 | **Disposition, liveness, hostlist** | a stored body is accounted for and the proposal gate is total in its anchor (88); jail before any vote reaches a bond (89); the published hostlist is earned, bounded and fresh (90) |
+| 91 | **The cost model** | a canonicalisation and a union charge their elements, `censure` its cubic fold, a tally its option lists; the register and the census that keep the shapes honest are [here](cost-model.md) |
 
 ## Rholang — the language (Laws 1–6)
 
@@ -148,7 +150,7 @@ catalog does not silently shrink.
 
 | Law | What it guarantees |
 |---|---|
-| 51 | Non-progress has three shapes (void requirement, terminal refusal, drift) and two causes (a historic predicate, two split readers). |
+| 51 | Non-progress has three shapes (void requirement, terminal refusal, drift) and two causes (a historic predicate, two split readers). A time-gated action (51d) consumes its permit: a banked permit fires on every tick rather than pacing. |
 | 52 | Finality's denominator is the whole bonded stake; only the partition may shrink — two disjoint groups cannot both be a strict supermajority. |
 | 53 | An attribution is terminal: the refusal persists and the rule refuses the validator's children, until a restoring rule or a rewind removes the state. |
 | 54 | A liveness predicate reads the current view, not a history; and two views of one set written in separate steps can split their readers. |
@@ -234,23 +236,39 @@ catalog does not silently shrink.
 | 87d | Division is exact or an explicit error: zero divisor, or `InexactDivision` when no quotient fits in 38 digits. |
 | 87e | `Expr.edecimal` carries `scaledValue`; the model's value order is the sorter's DECIMAL class order. |
 
+## The node hostlist (Law 90)
+
+| Law | What it guarantees |
+|---|---|
+| 90a | A served entry is earned: the peer answered a probe of its derived client endpoint, named itself, matched this network and a member shard, and reported `proposer: true`. An observer, a silent peer or another chain's node is never served. |
+| 90b | The list is bounded, deduplicated and ordered: at most `maxEntries`, one entry per node id, self first when it can propose, the rest ascending by node id. |
+| 90c | The list is fresh: it is derived only from the current probe cycle, so a peer that stopped answering disappears on the next cycle. |
+
+## The cost model (Law 91)
+
+| Law | What it guarantees |
+|---|---|
+| 91a | A canonicalisation charges the elements it canonicalises — three phlo per element of the output it is about to build, computed from the operand before the work — and a union charges **both** operands, so the charge does not depend on which operand is which. |
+| 91b | `rho:gov:censure` charges `(U+1)³` for a member universe of `U`: a charge that covers every member and grows with the universe, bounding the fold's `U+1`-round fixed point. |
+| 91c | A tally charges the option lists it scans: a ranked tally the worst case of one scan per entry per round, an approval tally every approved entry. The member maps keep the universe bound; the lists are priced, not refused. |
+
 ## Proved, assumed, and open
 
 The register classifies every entry; the words mean different things:
 
 - **proved-tied** — proved, *and* tied to the node by a conformance corpus the Rust consumer runs.
-  <!-- counts:proved-tied-entries -->30<!-- counts:end --> entries.
+  <!-- counts:proved-tied-entries -->36<!-- counts:end --> entries.
 - **proved-model** — proved about a model that a person keeps in sync with the Rust.
-  <!-- counts:proved-model-entries -->80<!-- counts:end --> entries.
+  <!-- counts:proved-model-entries -->86<!-- counts:end --> entries.
 - **axiom-by-design** — a primitive assumed rather than proved (cryptography): <!-- counts:axioms -->10 axioms<!-- counts:end --> across the tree.
 - **owed / deferred** — stated, with the proof or the decision outstanding; **open** — a recorded design
   question, not a proof gap; **vacuous** — proved but restating its own definition (kept visible, never
   counted as coverage); **orphaned** — out of scope (the Rosette rows); **retired** — the port has no
   rule of that shape, evidenced by naming the code that was read.
 
-The count arithmetic, in one sentence: **<!-- counts:laws -->87 laws<!-- counts:end -->, <!-- counts:entries -->119 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->18<!-- counts:end --> laws
-carry clauses; **<!-- counts:proved-laws -->80<!-- counts:end --> laws are proved in at least one clause**, split over entries as
-<!-- counts:proved-tied-entries -->30<!-- counts:end --> tied and <!-- counts:proved-model-entries -->80<!-- counts:end --> over the model. The two status columns overlap on
+The count arithmetic, in one sentence: **<!-- counts:laws -->91 laws<!-- counts:end -->, <!-- counts:entries -->131 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->21<!-- counts:end --> laws
+carry clauses; **<!-- counts:proved-laws -->84<!-- counts:end --> laws are proved in at least one clause**, split over entries as
+<!-- counts:proved-tied-entries -->36<!-- counts:end --> tied and <!-- counts:proved-model-entries -->86<!-- counts:end --> over the model. The two status columns overlap on
 laws 14, 16 and 86, which is why they do not add up to the law-level union. No total on this page is
 hand-written: the spans are emitted from the register.
 
@@ -259,7 +277,7 @@ hand-written: the spans are emitted from the register.
 - [`spec/LAWS.md`](../../../spec/LAWS.md) — the generated tables: every entry's status, declarations,
   axioms, witnesses and falsifier. **The authority.**
 - [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) — the long-form catalogue with the Rust realization per
-  law. Its hand-written table currently ends at **Law 77**; the register covers 1–87, and where the two
+  law. Its hand-written table currently ends at **Law 77**; the register covers 1–91, and where the two
   disagree the register is right.
 - [The laws → Rust code](../contributor/laws-to-rust.md) — per-law Lean/Rust anchors and tests, scoped to
   Laws 1–29 by design.

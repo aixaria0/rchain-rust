@@ -8,6 +8,7 @@ pub mod catchup;
 pub mod lfs_block_requester;
 pub mod lfs_tuple_space_requester;
 pub mod node_launch;
+pub mod node_phase;
 pub mod node_running;
 pub mod node_syncing;
 pub mod recovery;

@@ -173,6 +173,21 @@ pub struct HealthCounters {
 /// The health counters' one key, a literal for the same reason as the other two.
 pub const HEALTH_COUNTERS_KEY: &[u8] = b"shard-health-counters";
 
+/// **The one-time legacy body scan's completion record** (U19/F-U19-07). A literal in the same
+/// durable-records store as the reset/halt/health keys; a value of [`LEGACY_BODY_SCAN_VERSION`]
+/// means "this store has been walked for bodies with no disposition row". Written only after the
+/// walk, so a crash before it rescans on the next boot.
+pub const LEGACY_BODY_SCAN_KEY: &[u8] = b"legacy-body-scan";
+
+/// The scan's meaning. Bump this if a later scan must run again on a store already marked.
+///
+/// **Version 2 is the move to the block-storage environment** (C350). The ledger's rows moved with
+/// `STORE_FORMAT_VERSION` 4, so an upgraded node opens an empty ledger over a populated body store;
+/// the scan adopts every body the DAG does not hold — exactly the unsettled set — and writes the new
+/// marker. What is lost is a `Faulted` row on an unsettled body: it comes back as `Pending` with its
+/// attempt count reset, which retries a body that had failed rather than dropping one.
+pub const LEGACY_BODY_SCAN_VERSION: u8 = 2;
+
 impl HealthCounters {
     /// Three big-endian u64s, 24 bytes. Fixed width, so a decode cannot be ambiguous and a truncated
     /// value is refused rather than guessed at — the codec property [`ResetMarker`]'s and
@@ -361,6 +376,19 @@ pub trait BlockDagStorage: Send + Sync {
     /// same reason the read answers `None`: a backend with no marker has nothing to clear.
     async fn clear_reset_marker(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// **Has this store been walked for pre-ledger bodies?** The default answers *no*: a backend
+    /// with no durable-records store cannot record the scan, and the scan must not run with nowhere
+    /// to write its marker.
+    async fn read_legacy_body_scan_marker(&self) -> Result<Option<u8>, String> {
+        Ok(None)
+    }
+
+    /// Record that the legacy body scan completed. The default refuses, like `write_reset_marker`:
+    /// a backend that cannot record it must not look like one that did.
+    async fn write_legacy_body_scan_marker(&self, _version: u8) -> Result<(), String> {
+        Err("this DAG storage cannot record a legacy body scan".to_string())
     }
 
     /// **Record that this shard's autopropose timer has halted** (see [`HaltRecord`]) — the write that
@@ -690,5 +718,8 @@ mod tests {
         // All three records share one store, so their keys must all differ.
         assert_ne!(HEALTH_COUNTERS_KEY, RESET_MARKER_KEY);
         assert_ne!(HEALTH_COUNTERS_KEY, HALT_RECORD_KEY);
+        assert_ne!(LEGACY_BODY_SCAN_KEY, RESET_MARKER_KEY);
+        assert_ne!(LEGACY_BODY_SCAN_KEY, HALT_RECORD_KEY);
+        assert_ne!(LEGACY_BODY_SCAN_KEY, HEALTH_COUNTERS_KEY);
     }
 }

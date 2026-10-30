@@ -128,6 +128,10 @@ pub struct PublicStatus {
     /// Dev mode is on. Public: it is a configuration fact, and a client that must not be handed
     /// dev-only answers has to be able to see it.
     pub dev_mode: bool,
+    /// **This node holds a validator identity and can propose at all.** The field a wallet needs to
+    /// tell a validator from an observer: `manualPropose` is a mode flag and an unkeyed observer
+    /// reports it as `true` too (see `Capabilities::proposer`).
+    pub proposer: bool,
     /// **The sampled resource state, advisory** (A1, Law 86): `normal` while the host facts are
     /// readable, `unavailable` when they are not, and `throttled`/`critical` when the fallback state
     /// machine latches them. It is a word, not a number, and it no longer gates admission: a throttled
@@ -445,6 +449,11 @@ pub struct NodeCapabilities {
     pub admin_http: bool,
     /// Dev mode is on (`--dev-mode`).
     pub dev_mode: bool,
+    /// **This node holds a validator identity and can propose at all** (`Capabilities::proposer`).
+    /// An observer reports `false`; `manualPropose` does not distinguish the two.
+    pub proposer: bool,
+    /// The `GET /api/v1/nodes` hostlist is mounted (`api-server.publish-node-list`).
+    pub node_list: bool,
     /// The `/api/v1/faucet` endpoint is available (dev mode + a deployer key + remaining budget).
     pub faucet: bool,
     /// Faucet transfer budget still available, in REV drops. Clients can hide a dry faucet.
@@ -549,6 +558,7 @@ mod tests {
             propose_on_deploy: true,
             manual_propose: false,
             dev_mode: true,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: DeployPoolStatus::default(),

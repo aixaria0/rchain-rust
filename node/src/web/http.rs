@@ -35,6 +35,10 @@ use rchain_shared::base16;
 use rchain_shared::rate_limiter::KeyedRateLimiter;
 use rchain_shared::refined::{Port, ShardId};
 
+use std::collections::BTreeMap;
+
+use rchain_casper::engine::node_phase::{NodePhase, NodePhaseCell};
+
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
@@ -46,6 +50,7 @@ use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::resources::{CapacityBudget, ResourceGuard};
 use crate::runtime::shutdown::stop_requested;
+use crate::web::node_list::NodeListProvider;
 use crate::web::pos_read::PosReadApi;
 use crate::web::reporting::transform_result;
 use crate::web::status_info;
@@ -54,6 +59,10 @@ use crate::web::version_info;
 /// Rate limit for the devnet faucet endpoint. Much stricter than the deploy route because each
 /// request transfers real (dev) REV.
 const FAUCET_RATE_LIMIT_PER_SEC: u64 = 1;
+
+/// `GET /api/v1/nodes` reads a cached snapshot, so this is a courtesy bound rather than a cost
+/// bound: enough for a wallet's discovery sweep, not enough to be a scraping surface.
+const NODE_LIST_RATE_LIMIT_PER_SEC: u64 = 10;
 
 /// The most legs one cross-shard transaction may name (AUDIT C121).
 ///
@@ -160,6 +169,35 @@ pub struct StatusProvider {
 pub struct ShardRegistry {
     pub primary: ShardId,
     pub members: Vec<(ShardId, Arc<dyn BlockApi>)>,
+    /// **One phase cell per member shard** (B47). `/health` reads every one; deploy admission reads
+    /// the shard the request names. A shard absent here is not claimed Running.
+    pub phases: BTreeMap<ShardId, NodePhaseCell>,
+}
+
+impl ShardRegistry {
+    /// The primary shard's phase, or `Starting` when the fixture has no cell for it.
+    pub fn primary_phase(&self) -> NodePhase {
+        self.phases
+            .get(&self.primary)
+            .map(NodePhaseCell::phase)
+            .unwrap_or(NodePhase::Starting)
+    }
+
+    /// The named shard's phase, if it is a member.
+    pub fn phase_of(&self, id: &ShardId) -> Option<NodePhase> {
+        self.phases.get(id).map(NodePhaseCell::phase)
+    }
+
+    /// **Node readiness is every shard's readiness.** A node with one serving and one syncing shard
+    /// is not ready for node-level work; an empty member list (the HTTP fixture) is governed by the
+    /// primary cell rather than vacuously true.
+    pub fn all_running(&self) -> bool {
+        matches!(self.primary_phase(), NodePhase::Running)
+            && self
+                .members
+                .iter()
+                .all(|(id, _)| self.phases.get(id).is_some_and(NodePhaseCell::is_running))
+    }
 }
 
 /// State shared by the public HTTP server (port of the `webApi` + `prometheusReporter` +
@@ -213,6 +251,12 @@ pub struct HttpState {
     /// handler's own condition, carried here so the mount and the handler cannot disagree (AUDIT
     /// R34). When false the routes do not exist and the documented **404** is what a caller gets.
     pub faucet_enabled: bool,
+    /// **The deploy hostlist** (`GET /api/v1/nodes`), when `api-server.publish-node-list` is on.
+    /// `None` means the route is not mounted at all, so a disabled node answers 404 exactly like one
+    /// built before the route existed.
+    pub node_list: Option<Arc<NodeListProvider>>,
+    /// Rate limiter for the hostlist route. See [`NODE_LIST_RATE_LIMIT_PER_SEC`].
+    pub node_list_rate_limiter: Arc<KeyedRateLimiter>,
 }
 
 /// State shared by the admin HTTP server (port of the `adminWebApiRoutes` argument of
@@ -337,6 +381,22 @@ async fn api_deploys(State(state): State<HttpState>) -> Response {
 
 async fn api_capabilities(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.capabilities().await)
+}
+
+/// `GET /api/v1/nodes` — the deploy hostlist (Law 90).
+///
+/// The route is only mounted when `api-server.publish-node-list` is on, so the `None` arm is what a
+/// caller sees on a node that does not publish it — and it is the same 404 an older node answers.
+/// The handler reads a snapshot the probe loop swapped whole; it holds no lock across I/O and takes
+/// no caller input, which is why the probe target set cannot be steered by a request.
+async fn api_node_list(State(state): State<HttpState>) -> Response {
+    match &state.node_list {
+        Some(provider) => {
+            let snapshot = provider.snapshot();
+            Json(snapshot.as_ref()).into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// `GET /api/v1/shards` — the shards this node is a member of (a gateway is a member of several),
@@ -561,6 +621,15 @@ async fn api_txn_run(State(state): State<AdminState>, Json(req): Json<TxnRequest
                 .into_response()
         }
     };
+    // **The leg amount has a floor and no ceiling beyond the coordinator's own vault** (register
+    // C348, the C121 residual). `GatewayTxn::run` refuses a negative amount (`NonNegI64`), and what
+    // the escrow can move is bounded by what the coordinator holds — but this API does not cap a leg,
+    // so a caller who can reach the route can ask the coordinator to escrow its whole vault across
+    // shards. That is a decision rather than an oversight (2026-10-30): the route is behind three
+    // opt-ins — a multi-shard gateway with a signing key, `api-server.enable-txn-api`, and an admin
+    // listener published beyond loopback — and a sub-balance cap would be a second, node-local policy
+    // layered on the chain's. An operator who serves it to untrusted callers caps the coordinator's
+    // vault, not the request; `docs/src/node/operating.md` says so.
     let mut legs = Vec::with_capacity(req.legs.len());
     for leg in &req.legs {
         match rchain_shared::refined::ShardId::try_from(leg.shard_id.clone()) {
@@ -657,11 +726,39 @@ fn deploy_response(result: Result<String, BlockApiException>) -> Response {
 /// nginx snapshot on the public testnet can proxy this route; a host-level `mem_available_mb` still
 /// belongs on the operator surface.
 async fn api_health(State(state): State<HttpState>) -> Response {
+    // **Phase is a readiness signal, not a resource verdict** (U20/B47). `acceptsDeploys` remains
+    // Law 86a pool capacity; `ready` is the answer to "can this node include work now?" and is the
+    // field a deploy client should gate on. Readiness is **every shard's**: a node with one
+    // serving and one syncing shard is not ready for node-level work.
+    let pipeline_faults = rchain_casper::blocks::block_processor::pipeline_faults();
+    let proposal_isolated = rchain_casper::blocks::proposer::proposer::proposal_isolated();
+    // **Confirmed, not sampled**: `orphan_bodies` is zero until the periodic audit has seen the
+    // same store/DAG gap for three consecutive samples, so an in-flight block does not flap this.
+    let orphan_bodies = rchain_casper::block_disposition::orphan_bodies();
+    let primary_phase = state.shards.primary_phase();
+    let all_running = state.shards.all_running();
+    let shard_phases: BTreeMap<String, &'static str> = state
+        .shards
+        .phases
+        .iter()
+        .map(|(id, cell)| (id.to_string(), cell.phase().label()))
+        .collect();
+    let blocked = !all_running || pipeline_faults > 0 || proposal_isolated || orphan_bodies > 0;
     match state.web_api.status().await {
         Ok(status) => (
             StatusCode::OK,
             Json(json!({
-                "ok": true,
+                "ok": !blocked,
+                "ready": !blocked,
+                "phase": primary_phase.label(),
+                "nodePhase": primary_phase.label(),
+                "shardPhases": shard_phases,
+                "pipelineFaults": pipeline_faults,
+                "orphanBodies": orphan_bodies,
+                "orphanDetections": rchain_casper::block_disposition::orphan_detections(),
+                "lastPipelineFault": rchain_casper::blocks::block_processor::last_pipeline_fault(),
+                "proposalHalted": proposal_isolated,
+                "proposalHaltReason": rchain_casper::blocks::proposer::proposer::proposal_isolation_reason(),
                 "degraded": status.degraded,
                 "acceptsDeploys": status.accepts_deploys,
                 "height": status.latest_block_number,
@@ -673,13 +770,50 @@ async fn api_health(State(state): State<HttpState>) -> Response {
             .into_response(),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"ok": false, "error": e.0})),
+            Json(json!({"ok": false, "ready": false, "phase": "unavailable", "error": e.0})),
         )
             .into_response(),
     }
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
+    // **A shard outside its serving phases does not claim it can include work.** The pool may have
+    // room; the shard still cannot produce a block from it. Judge the shard the deploy names, so one
+    // syncing shard does not refuse every shard's work. `acceptsDeploys` keeps its Law 86a meaning.
+    let target = ShardId::try_from(req.data.shard_id.clone())
+        .ok()
+        .and_then(|id| state.shards.phase_of(&id));
+    if let Some(phase) = target {
+        if !phase.admits_work() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!(
+                        "shard {} is in phase {}; deploy admission is refused",
+                        req.data.shard_id,
+                        phase.label()
+                    ),
+                    "ready": false,
+                    "phase": phase.label(),
+                })),
+            )
+                .into_response();
+        }
+    }
+    if rchain_casper::blocks::block_processor::pipeline_faults() > 0
+        || rchain_casper::blocks::proposer::proposer::proposal_isolated()
+        || rchain_casper::block_disposition::orphan_bodies() > 0
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "node is blocked (pipeline fault, isolation or an orphan body); deploy admission is refused",
+                "ready": false,
+                "phase": "blocked",
+            })),
+        )
+            .into_response();
+    }
     deploy_response(state.web_api.deploy(&req).await)
 }
 
@@ -811,6 +945,160 @@ async fn api_v1_deploy_status(
     json_result(state.web_api.deploy_status(&deploy_signature).await)
 }
 
+/// A single node can report a finalized frontier, not the availability of network quorum.
+fn finality_observation(
+    status: Option<&crate::api::dto::PublicStatus>,
+    finalized: Option<&rchain_models::casper::protocol::deploy_service::BlockInfo>,
+    observed_at_unix_ms: u64,
+) -> serde_json::Value {
+    let tip = status.map(|s| s.latest_block_number);
+    let height = finalized.map(|b| b.block_info.block_number);
+    let hash = finalized.map(|b| b.block_info.block_hash.clone());
+    let lag = tip.zip(height).and_then(|(tip, height)| {
+        if tip >= height && height >= 0 {
+            Some(tip.saturating_sub(height))
+        } else {
+            None
+        }
+    });
+    json!({
+        "scope": "nodeLocal",
+        "availability": "unknown",
+        "observedAtUnixMs": observed_at_unix_ms,
+        "latestBlockNumber": tip,
+        "finalizedBlockNumber": height,
+        "finalizedBlockHash": hash,
+        "observedFinalityLag": lag,
+    })
+}
+
+fn observation_time_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// GET /api/v1/finality-observation: informational node-local evidence, never quorum assurance.
+/// A missing or inconsistent reading is explicitly unknown, never interpreted as a healthy network.
+async fn api_finality_observation(State(state): State<HttpState>) -> Response {
+    let observed_at = observation_time_ms();
+    let (status, finalized) =
+        tokio::join!(state.web_api.status(), state.web_api.last_finalized_block(),);
+    let complete = status.is_ok() && finalized.is_ok();
+    let body = finality_observation(status.as_ref().ok(), finalized.as_ref().ok(), observed_at);
+    (
+        if complete {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(body),
+    )
+        .into_response()
+}
+
+/// Convert an execution observation and an independent block-finality verdict to settlement.
+/// An error while reading finality is *unknown*, never `false` or `true`.
+fn deploy_settlement_observation(
+    deploy_id: &str,
+    execution: &crate::api::dto::DeployExecStatus,
+    finalized: Option<bool>,
+    observed_at_unix_ms: u64,
+) -> serde_json::Value {
+    use crate::api::dto::DeployExecStatus;
+    match execution {
+        DeployExecStatus::NotProcessed { status } => json!({
+            "deployId": deploy_id,
+            "observedAtUnixMs": observed_at_unix_ms,
+            "stage": "notProcessed",
+            "execution": "unknown",
+            "finalized": null,
+            "settlementConfirmed": false,
+            "blockHash": null,
+            "blockNumber": null,
+            "nodeStatus": status,
+            "scope": "nodeLocal",
+        }),
+        DeployExecStatus::ProcessedWithSuccess { block, .. }
+        | DeployExecStatus::ProcessedWithError { block, .. } => {
+            let succeeded = matches!(execution, DeployExecStatus::ProcessedWithSuccess { .. });
+            let stage = match (finalized, succeeded) {
+                (Some(true), true) => "finalizedSuccess",
+                (Some(true), false) => "finalizedError",
+                (Some(false), _) => "includedUnfinalized",
+                (None, _) => "finalityUnknown",
+            };
+            json!({
+                "deployId": deploy_id,
+                "observedAtUnixMs": observed_at_unix_ms,
+                "stage": stage,
+                "execution": if succeeded { "succeeded" } else { "failed" },
+                "finalized": finalized,
+                "settlementConfirmed": succeeded && finalized == Some(true),
+                "blockHash": block.block_hash,
+                "blockNumber": block.block_number,
+                "nodeStatus": null,
+                "scope": "nodeLocal",
+            })
+        }
+    }
+}
+
+/// GET /api/v1/deploy-settlement/{signature}. A processed deploy is not a settled deploy.
+/// Read `is_finalized` against its *actual inclusion block*, never inferred from tip success.
+async fn api_deploy_settlement(
+    State(state): State<HttpState>,
+    Path(deploy_signature): Path<String>,
+) -> Response {
+    let execution = match state.web_api.deploy_status(&deploy_signature).await {
+        Ok(execution) => execution,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "deployId": deploy_signature,
+                    "stage": "unknown",
+                    "finalized": null,
+                    "settlementConfirmed": false,
+                    "error": "deploy status could not be read",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let finalized = match &execution {
+        crate::api::dto::DeployExecStatus::NotProcessed { .. } => None,
+        crate::api::dto::DeployExecStatus::ProcessedWithSuccess { block, .. }
+        | crate::api::dto::DeployExecStatus::ProcessedWithError { block, .. } => {
+            match state.web_api.is_finalized(&block.block_hash).await {
+                Ok(is_finalized) => Some(is_finalized),
+                // Return the same fail-closed observation, with unknown finality.
+                // A failed RPC must never be interpreted as block settlement.
+                Err(_) => {
+                    return Json(deploy_settlement_observation(
+                        &deploy_signature,
+                        &execution,
+                        None,
+                        observation_time_ms(),
+                    ))
+                    .into_response();
+                }
+            }
+        }
+    };
+    Json(deploy_settlement_observation(
+        &deploy_signature,
+        &execution,
+        finalized,
+        observation_time_ms(),
+    ))
+    .into_response()
+}
+
 /// `GET /api/v1/openapi.json` — the OpenAPI 3.0 document describing the v1 API. Hand-written from the
 /// endpoint DTOs (the Scala derives the same schema from its endpoints4s algebra).
 /// The OpenAPI document this node serves at `GET /api/v1/openapi` — the schema a client generates its
@@ -830,6 +1118,27 @@ pub const OPENAPI_JSON: &str = r##"{
             "description": "Node version, address and peer/node counts",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiStatus" } } }
           }
+        }
+      }
+    },
+    "/finality-observation": {
+      "get": {
+        "summary": "Node-local finalized frontier and observed lag (network availability unknown)",
+        "description": "A sampled node-local frontier; not a claim about network quorum. A missing source returns HTTP 503 with null fields.",
+        "responses": {
+          "200": {"description": "Local frontier observation", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "503": {"description": "Incomplete local observation (unknown)"}
+        }
+      }
+    },
+    "/deploy-settlement/{deploy_signature}": {
+      "get": {
+        "summary": "Execution and separately observed inclusion-block finality",
+        "description": "Only finalizedSuccess confirms settlement. ProcessedWithSuccess alone is speculative. On a failed finality read the response is finalityUnknown and settlementConfirmed=false.",
+        "parameters": [{"in": "path", "name": "deploy_signature", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Execution/finality distinction", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Deploy status could not be read"}
         }
       }
     },
@@ -878,6 +1187,16 @@ pub const OPENAPI_JSON: &str = r##"{
         "description": "Primary shard first, each with the height of its own chain. A gateway node is a member of several. Deploys name their target shard in `DeployRequest.data.shardId`.",
         "responses": {
           "200": { "description": "Membership list", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShardsResponse" } } } }
+        }
+      }
+    },
+    "/nodes": {
+      "get": {
+        "summary": "Deploy-capable nodes a wallet can send deploys to",
+        "description": "The live peers whose derived `protocol + 3` HTTP port answered /api/v1/status with this network and shard and reported `proposer: true`. Advisory: peers report their own state, so a client re-verifies. Present only when `api-server.publish-node-list` is on; answers 404 otherwise.",
+        "responses": {
+          "200": { "description": "The hostlist", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeListResponse" } } } },
+          "404": { "description": "The node does not publish a hostlist" }
         }
       }
     },
@@ -1090,6 +1409,30 @@ pub const OPENAPI_JSON: &str = r##"{
           }
         }
       },
+      "NodeListResponse": {
+        "type": "object",
+        "properties": {
+          "networkId": { "type": "string" },
+          "primaryShard": { "type": "string" },
+          "generatedAt": { "type": "integer", "format": "int64", "description": "When the probe cycle that produced this list completed, in unix milliseconds" },
+          "ownLatestBlockNumber": { "type": "integer", "format": "int64", "description": "The serving node's own height, to rank a peer's latestBlockNumber against" },
+          "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/NodeListEntry" } }
+        }
+      },
+      "NodeListEntry": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string", "description": "The peer's TLS identity (hex), not its validator key" },
+          "httpUrl": { "type": "string", "description": "The URL this node probed and that answered; the only client endpoint served" },
+          "networkId": { "type": "string" },
+          "shardId": { "type": "string" },
+          "nodeVersion": { "type": "string" },
+          "latestBlockNumber": { "type": "integer", "format": "int64", "description": "Peer-reported at probe time; advisory, not a membership condition" },
+          "proposer": { "type": "boolean", "description": "Peer-reported; always true for a served entry" },
+          "acceptsDeploys": { "type": "boolean", "description": "Peer-reported pool capacity at probe time; advisory, and a client must still handle a 429" },
+          "self": { "type": "boolean", "description": "The serving node itself" }
+        }
+      },
       "ApiStatus": {
         "type": "object",
         "description": "**The chain-public half of the node's status** (W-N3-01). The operator half — divergence records, the safety halt, the report counters, the sync task's state, the durable reset marker — is `OperatorStatus`, served on the admin listener at /api/v1/status/operator and never here.",
@@ -1106,6 +1449,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all. Unlike manualPropose (a mode), an unkeyed observer reports false" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable (a stale or unreadable sample reports unavailable). A word, not a number; the numbers are on the operator surface" },
           "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
           "pool": { "type": "object", "properties": {
@@ -1132,6 +1476,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all. Unlike manualPropose (a mode), an unkeyed observer reports false" },
           "degraded": { "type": "string", "description": "The pressure fallback state: normal | throttled | critical | unavailable. A word, not a number; the numbers are on the operator surface" },
           "acceptsDeploys": { "type": "boolean", "description": "Whether the deploy pool has room under its count and term-byte bounds (Law 86a). Memory pressure bounds execution concurrency, not admission" },
           "pool": { "type": "object", "properties": {
@@ -1401,6 +1746,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean" },
           "adminHttp": { "type": "boolean" },
           "devMode": { "type": "boolean" },
+          "proposer": { "type": "boolean", "description": "This node holds a validator identity and can propose at all; an unkeyed observer reports false" },
+          "nodeList": { "type": "boolean", "description": "GET /api/v1/nodes is mounted (api-server.publish-node-list)" },
           "faucet": { "type": "boolean" },
         "faucetRemaining": { "type": "integer", "format": "int64" }
         }
@@ -1502,6 +1849,22 @@ async fn admin_resume_autopropose(State(state): State<AdminState>) -> Response {
 /// It takes a **fresh sample** and clears only when that sample is clear; a pressured node answers
 /// `409` with the measured state, so the actuator cannot override live pressure. It never touches the
 /// autopropose halt: that is an integrity decision, not a resource one.
+/// `POST /api/v1/proposer/resume` — clear the process-local proposal-isolation latch.
+///
+/// The next proposal still re-checks the height gap, so an operator who resumes a node that is
+/// still beyond the bound gets the latch set again. This is the explicit recovery action; there is
+/// no automatic clear.
+async fn admin_resume_proposal() -> Response {
+    rchain_casper::blocks::proposer::proposer::clear_proposal_isolation();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "proposal isolation cleared; the next proposal re-checks the finality bound",
+        })),
+    )
+        .into_response()
+}
+
 async fn admin_resume_resources(State(state): State<AdminState>) -> Response {
     match state.admin_web_api.resume_resource_fallback().await {
         Ok(word) if word == "normal" => (
@@ -1724,6 +2087,14 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/deploy/{deploy_id}", get(api_find_deploy))
         .route("/api/is-finalized/{hash}", get(api_is_finalized))
         .route("/api/v1/status", get(api_status))
+        .route(
+            "/api/v1/finality-observation",
+            get(api_finality_observation),
+        )
+        .route(
+            "/api/v1/deploy-settlement/{deploy_signature}",
+            get(api_deploy_settlement),
+        )
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/pos", get(api_pos_status))
@@ -1771,6 +2142,23 @@ pub fn router(state: HttpState) -> Router {
                     (
                         state.faucet_rate_limiter.clone(),
                         "faucet rate limit exceeded",
+                    ),
+                    peer_rate_limit,
+                )),
+        );
+    }
+
+    // The deploy hostlist. Mounted only when the operator opted in: it publishes peer addresses,
+    // and a node that has not opted in must answer 404 rather than an empty list, so a client can
+    // tell "not published" from "no peers".
+    if state.node_list.is_some() {
+        routes = routes.merge(
+            Router::new()
+                .route("/api/v1/nodes", get(api_node_list))
+                .route_layer(middleware::from_fn_with_state(
+                    (
+                        state.node_list_rate_limiter.clone(),
+                        "node list rate limit exceeded",
                     ),
                     peer_rate_limit,
                 )),
@@ -1905,6 +2293,7 @@ pub fn admin_router(state: AdminState) -> Router {
     // should not be able to hammer it.
     let resume_routes = Router::new()
         .route("/api/v1/autopropose/resume", post(admin_resume_autopropose))
+        .route("/api/v1/proposer/resume", post(admin_resume_proposal))
         .route_layer(middleware::from_fn_with_state(
             (
                 state.resume_rate_limiter.clone(),
@@ -1974,6 +2363,9 @@ pub async fn acquire_http_server(
     // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
     // the caller because that is where both are known.
     faucet_enabled: bool,
+    // The deploy hostlist, when `api-server.publish-node-list` is on. Built by the caller, which is
+    // where the shard registry and the comm state are known.
+    node_list: Option<Arc<NodeListProvider>>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
@@ -2051,11 +2443,21 @@ pub async fn acquire_http_server(
             MAX_TRACKED_PEERS,
         )),
         faucet_enabled,
+        node_list: node_list.clone(),
+        node_list_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            NODE_LIST_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
         max_connection_idle,
     ));
+    // The hostlist's probe loop follows the same stop signal as the server, so a node stop does not
+    // leave a task probing peers after the listener has gone.
+    if let Some(provider) = &node_list {
+        provider.spawn(stop.clone());
+    }
     // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the
     // connections already in flight finish, so a stop is not a truncation of somebody's request.
     //
@@ -2145,6 +2547,7 @@ mod tests {
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
     use crate::resources::{ResourceGuard, ResourceSnapshot, ResourceState};
+    use crate::web::node_list::NodeListConfig;
     use crate::web::transaction::TransactionResponse;
     use async_trait::async_trait;
     use axum::body::to_bytes;
@@ -2205,6 +2608,173 @@ mod tests {
         ))
     }
 
+    #[tokio::test]
+    async fn issue_487_http_finality_route_never_claims_network_quorum() {
+        use tower::ServiceExt;
+        let mut s = state();
+        s.web_api = Arc::new(MockWebApi {
+            status: {
+                let mut status = test_status();
+                status.latest_block_number = 1791;
+                status.accepts_deploys = true;
+                status
+            },
+            pooled_deploys: PooledDeploys {
+                deploys: Vec::new(),
+            },
+            deploy_result: None,
+            finalized_block: Some(BlockInfo {
+                block_info: rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+                    block_number: 1756,
+                    ..issue_487_block()
+                },
+                deploys: Vec::new(),
+            }),
+            finalized_result: None,
+        });
+        let response = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/finality-observation")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["availability"], "unknown");
+        assert_eq!(json["observedFinalityLag"], 35);
+        assert_eq!(json["finalizedBlockNumber"], 1756);
+    }
+
+    #[tokio::test]
+    async fn issue_487_http_settlement_route_requires_independent_finality() {
+        use tower::ServiceExt;
+        for (finalized, expected_stage, confirmed) in [
+            (Some(false), "includedUnfinalized", false),
+            (Some(true), "finalizedSuccess", true),
+            (None, "finalityUnknown", false),
+        ] {
+            let mut s = state();
+            s.web_api = Arc::new(MockWebApi {
+                status: test_status(),
+                pooled_deploys: PooledDeploys {
+                    deploys: Vec::new(),
+                },
+                deploy_result: Some(DeployExecStatus::ProcessedWithSuccess {
+                    deploy_result: Vec::new(),
+                    block: issue_487_block(),
+                }),
+                finalized_block: None,
+                finalized_result: finalized,
+            });
+            let response = router(s)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/api/v1/deploy-settlement/deadbeef")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["stage"], expected_stage);
+            assert_eq!(json["settlementConfirmed"], confirmed);
+        }
+    }
+
+    fn issue_487_block() -> rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+        rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+            version: 1,
+            shard_id: "/testnet".to_string(),
+            block_hash: "block-1781".to_string(),
+            block_number: 1781,
+            sender: "sender".to_string(),
+            seq_num: 1,
+            pre_state_hash: "pre".to_string(),
+            post_state_hash: "post".to_string(),
+            justifications: Vec::new(),
+            bonds: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: "sig".to_string(),
+            block_size: "0".to_string(),
+            deploy_count: 1,
+            rejected_deploys: Vec::new(),
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn issue_487_execution_success_without_finality_is_not_settlement() {
+        let execution = DeployExecStatus::ProcessedWithSuccess {
+            deploy_result: Vec::new(),
+            block: issue_487_block(),
+        };
+        let speculative = deploy_settlement_observation("sig", &execution, Some(false), 123);
+        assert_eq!(speculative["stage"], "includedUnfinalized");
+        assert_eq!(speculative["execution"], "succeeded");
+        assert_eq!(speculative["finalized"], false);
+        assert_eq!(speculative["settlementConfirmed"], false);
+        assert_eq!(speculative["blockNumber"], 1781);
+        let unknown = deploy_settlement_observation("sig", &execution, None, 124);
+        assert_eq!(unknown["stage"], "finalityUnknown");
+        assert!(unknown["finalized"].is_null());
+        assert_eq!(unknown["settlementConfirmed"], false);
+        let confirmed = deploy_settlement_observation("sig", &execution, Some(true), 125);
+        assert_eq!(confirmed["stage"], "finalizedSuccess");
+        assert_eq!(confirmed["settlementConfirmed"], true);
+    }
+
+    #[test]
+    fn issue_487_finalized_execution_error_is_not_successful_settlement() {
+        let execution = DeployExecStatus::ProcessedWithError {
+            deploy_error: "insufficient phlo".to_string(),
+            block: issue_487_block(),
+        };
+        let result = deploy_settlement_observation("sig", &execution, Some(true), 126);
+        assert_eq!(result["stage"], "finalizedError");
+        assert_eq!(result["execution"], "failed");
+        assert_eq!(result["finalized"], true);
+        assert_eq!(result["settlementConfirmed"], false);
+        let pending = DeployExecStatus::NotProcessed {
+            status: "Pooled".to_string(),
+        };
+        let result = deploy_settlement_observation("sig", &pending, Some(true), 126);
+        assert_eq!(result["stage"], "notProcessed");
+        assert!(result["finalized"].is_null());
+        assert_eq!(result["settlementConfirmed"], false);
+    }
+
+    #[test]
+    fn issue_487_finality_observation_never_guesses_quorum() {
+        let mut status = test_status();
+        status.latest_block_number = 1791;
+        status.accepts_deploys = true;
+        let frontier = rchain_models::casper::protocol::deploy_service::BlockInfo {
+            block_info: rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+                block_number: 1756,
+                ..issue_487_block()
+            },
+            deploys: Vec::new(),
+        };
+        let reading = finality_observation(Some(&status), Some(&frontier), 127);
+        assert_eq!(reading["observedFinalityLag"], 35);
+        assert_eq!(reading["availability"], "unknown");
+        assert_eq!(reading["scope"], "nodeLocal");
+        assert!(status.accepts_deploys);
+        let missing = finality_observation(Some(&status), None, 128);
+        assert!(missing["observedFinalityLag"].is_null());
+        assert!(missing["finalizedBlockHash"].is_null());
+        let mut inconsistent = frontier;
+        inconsistent.block_info.block_number = 1800;
+        let reading = finality_observation(Some(&status), Some(&inconsistent), 129);
+        assert!(reading["observedFinalityLag"].is_null());
+    }
+
     fn test_status() -> PublicStatus {
         PublicStatus {
             version: VersionInfo {
@@ -2222,6 +2792,7 @@ mod tests {
             propose_on_deploy: true,
             manual_propose: false,
             dev_mode: true,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: crate::api::dto::DeployPoolStatus {
@@ -2274,6 +2845,9 @@ mod tests {
     struct MockWebApi {
         status: PublicStatus,
         pooled_deploys: PooledDeploys,
+        deploy_result: Option<DeployExecStatus>,
+        finalized_block: Option<BlockInfo>,
+        finalized_result: Option<bool>,
     }
 
     #[async_trait]
@@ -2291,7 +2865,9 @@ mod tests {
         }
 
         async fn deploy_status(&self, _: &str) -> Result<DeployExecStatus, BlockApiException> {
-            unimplemented!()
+            self.deploy_result
+                .clone()
+                .ok_or_else(|| BlockApiException("deploy result unavailable".to_string()))
         }
 
         async fn pooled_deploys(&self) -> Result<PooledDeploys, BlockApiException> {
@@ -2324,7 +2900,9 @@ mod tests {
         }
 
         async fn last_finalized_block(&self) -> Result<BlockInfo, BlockApiException> {
-            unimplemented!()
+            self.finalized_block
+                .clone()
+                .ok_or_else(|| BlockApiException("finalized block unavailable".to_string()))
         }
 
         async fn get_block(&self, _: &str) -> Result<BlockInfo, BlockApiException> {
@@ -2356,8 +2934,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn is_finalized(&self, _: &str) -> Result<bool, BlockApiException> {
-            unimplemented!()
+        async fn is_finalized(&self, hash: &str) -> Result<bool, BlockApiException> {
+            assert_eq!(hash, "block-1781", "lookup must use the inclusion block");
+            self.finalized_result
+                .ok_or_else(|| BlockApiException("finality unavailable".to_string()))
         }
 
         async fn get_transaction(&self, _: &str) -> Result<TransactionResponse, BlockApiException> {
@@ -2374,12 +2954,22 @@ mod tests {
                 pooled_deploys: PooledDeploys {
                     deploys: Vec::new(),
                 },
+                deploy_result: None,
+                finalized_block: None,
+                finalized_result: None,
             }),
             block_report_api: test_block_report_api(),
             // The HTTP tests drive the routes, not the shard list; one member stands in.
-            shards: Arc::new(ShardRegistry {
-                primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
-                members: Vec::new(),
+            shards: Arc::new({
+                let primary =
+                    rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap();
+                let phase = NodePhaseCell::new();
+                phase.set_phase(NodePhase::Running);
+                ShardRegistry {
+                    primary: primary.clone(),
+                    members: Vec::new(),
+                    phases: BTreeMap::from([(primary, phase)]),
+                }
             }),
             status_provider: None,
             // `GET /api/v1/pos` (AUDIT C148) is pinned on its own below; the other routes never read
@@ -2396,6 +2986,11 @@ mod tests {
             )),
             faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
                 FAUCET_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
+            node_list: None,
+            node_list_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                NODE_LIST_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
             deploy_admission: None,
@@ -2416,6 +3011,98 @@ mod tests {
             // off case is pinned by its own test below.
             faucet_enabled: true,
         }
+    }
+
+    /// The `state()` fixture with the hostlist mounted (or not), against the transaction stub — a
+    /// keyed, manual-mode node, so the route's `self` entry is a *proposer* and not just a node.
+    fn node_list_state(enabled: bool) -> HttpState {
+        let mut s = state();
+        if enabled {
+            let shard = "/root";
+            s.node_list = Some(
+                NodeListProvider::new(
+                    NodeListConfig {
+                        probe_interval: Duration::from_secs(60),
+                        probe_timeout: Duration::from_secs(1),
+                        max_entries: 8,
+                    },
+                    Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                    RPConf {
+                        local: PeerNode::from(
+                            NodeIdentifier::new(vec![1u8; 32]),
+                            "127.0.0.1".to_string(),
+                            rchain_shared::refined::Port::new(40400),
+                            rchain_shared::refined::Port::new(40404),
+                        ),
+                        network_id: "testnet".to_string(),
+                        bootstrap: None,
+                        default_timeout: Duration::from_secs(1),
+                        max_num_of_connections: 10,
+                        clear_connections: ClearConnectionsConf {
+                            num_of_connections_pinged: 1,
+                        },
+                    },
+                    Arc::new(TxnStubApi {
+                        shard_id: shard.to_string(),
+                    }),
+                    vec![shard.to_string()],
+                    shard.to_string(),
+                    40403,
+                    Arc::new(rchain_shared::log::NopLog),
+                )
+                .expect("a node-list provider"),
+            );
+        }
+        s
+    }
+
+    /// **A node that has not opted in does not have the route.** The empty list is the wrong answer:
+    /// a client could not tell "not published" from "no deploy-capable peers", and an older node
+    /// answers 404 too.
+    #[tokio::test]
+    async fn the_node_list_route_is_absent_when_disabled() {
+        use tower::ServiceExt;
+        let response = router(state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/nodes")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The enabled route serves the documented shape, and the serving node — a proposer — is the
+    /// first entry, flagged `self`, at the URL derived from its advertised host and its real port.
+    #[tokio::test]
+    async fn the_node_list_route_serves_self_when_enabled() {
+        use tower::ServiceExt;
+        let s = node_list_state(true);
+        s.node_list.as_ref().expect("mounted").run_cycle().await;
+        let response = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/nodes")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["networkId"], "testnet");
+        assert_eq!(json["primaryShard"], "/root");
+        assert_eq!(json["nodes"][0]["self"], true);
+        assert_eq!(json["nodes"][0]["proposer"], true);
+        assert_eq!(json["nodes"][0]["httpUrl"], "http://127.0.0.1:40403");
+        assert_eq!(
+            json["nodes"].as_array().expect("an array").len(),
+            1,
+            "no peers were connected, so self alone"
+        );
     }
 
     #[test]
@@ -2849,6 +3536,84 @@ mod tests {
         assert_eq!(json["finalityStallEpisodes"], 1);
     }
 
+    /// **Node readiness is every shard's readiness** (B47): one running shard and one syncing shard
+    /// is not ready, the flat `phase`/`nodePhase` are the primary's reading, and `shardPhases`
+    /// names each member. Moving the second shard to `Running` is what flips `ready`.
+    #[tokio::test]
+    async fn health_is_ready_only_when_every_shard_runs() {
+        use tower::ServiceExt;
+
+        let primary = ShardId::try_from("/root".to_string()).unwrap();
+        let child = ShardId::try_from("/root/child".to_string()).unwrap();
+        let primary_cell = NodePhaseCell::new();
+        primary_cell.set_phase(NodePhase::Running);
+        let child_cell = NodePhaseCell::new();
+        child_cell.set_phase(NodePhase::Syncing);
+        let mut s = state();
+        s.shards = Arc::new(ShardRegistry {
+            primary: primary.clone(),
+            members: vec![
+                (
+                    primary.clone(),
+                    Arc::new(TxnStubApi {
+                        shard_id: "/root".to_string(),
+                    }) as Arc<dyn BlockApi>,
+                ),
+                (
+                    child.clone(),
+                    Arc::new(TxnStubApi {
+                        shard_id: "/root/child".to_string(),
+                    }) as Arc<dyn BlockApi>,
+                ),
+            ],
+            phases: BTreeMap::from([
+                (primary.clone(), primary_cell),
+                (child.clone(), child_cell.clone()),
+            ]),
+        });
+
+        let reply = router(s.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["ready"], false,
+            "one syncing shard withholds readiness"
+        );
+        assert_eq!(
+            json["nodePhase"], "running",
+            "the flat phase is the primary's"
+        );
+        assert_eq!(json["shardPhases"]["/root"], "running");
+        assert_eq!(json["shardPhases"]["/root/child"], "syncing");
+
+        child_cell.set_phase(NodePhase::Running);
+        let reply = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["ready"], true, "every shard is running");
+    }
+
     /// **A full pool is a 429 with a retry; a malformed deploy stays a 400** (Law 86a).
     #[test]
     fn a_bounded_deploy_refusal_is_429_with_retry_after() {
@@ -3112,6 +3877,9 @@ mod tests {
                     valid_after_block_number: -1,
                 }],
             },
+            deploy_result: None,
+            finalized_block: None,
+            finalized_result: None,
         });
         let response = api_deploys(State(s)).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -3672,7 +4440,16 @@ mod tests {
             Err("unused".to_string())
         }
         async fn capabilities(&self) -> rchain_casper::api::block_api::Capabilities {
-            unreachable!("unused in these tests")
+            // A validator in manual mode, so the hostlist's `proposer` discriminator is exercised
+            // against a node that *can* propose without autopropose.
+            rchain_casper::api::block_api::Capabilities {
+                autopropose: false,
+                propose_on_deploy: false,
+                manual_propose: true,
+                admin_http: false,
+                dev_mode: false,
+                proposer: true,
+            }
         }
         async fn create_block(&self, _: bool) -> Result<String, String> {
             Err("unused".to_string())
@@ -3864,9 +4641,15 @@ mod tests {
         members: Vec<(rchain_shared::refined::ShardId, Arc<dyn BlockApi>)>,
     ) -> HttpState {
         let mut s = state();
-        s.shards = Arc::new(ShardRegistry {
-            primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
-            members,
+        s.shards = Arc::new({
+            let primary = rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap();
+            let phase = NodePhaseCell::new();
+            phase.set_phase(NodePhase::Running);
+            ShardRegistry {
+                primary: primary.clone(),
+                members,
+                phases: BTreeMap::from([(primary, phase)]),
+            }
         });
         s
     }

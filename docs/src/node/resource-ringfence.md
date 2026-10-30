@@ -1,10 +1,10 @@
 # Ringfencing a node
 
 A node cannot set its own memory, CPU or disk limits — that is the operator's boundary — and a node
-that is not bounded competes with everything else on the host for memory. The #420 incident is the
-worked example: two validators on each 1 GB host, a deploy burst, host memory exhausted, and the kernel
+that is not bounded competes with everything else on the host for memory. A memory-exhaustion
+incident is the worked example ([Incident history](incident-history.md#ingress-admission-and-the-memory-gate)): two validators on each 1 GB host, a deploy burst, host memory exhausted, and the kernel
 chose which processes died. This page is the operator half of the
-[resource safety case](../spec/resource-safety-case.md). The start-up preflight (A2), the fallback state
+[resource safety case](../spec/resource-safety-case.md). The start-up preflight, the fallback state
 machine and the headroom permit budget are shipped (Law 86); memory pressure bounds **execution
 concurrency**, not admission, so the limits on this page remain the runtime barrier between a busy node
 and the host. A node on an undersized host keeps accepting and relaying work; it does not become
@@ -120,7 +120,7 @@ df -h /var/lib/rnode
 
 The external `testnet.rhobot.net/health` snapshot carries `mem_available_mb`/`disk_free_mb`; the node's
 own `/api/status` carries `degraded`/`acceptsDeploys`, and `/api/status/operator` carries the sampled
-headroom, floors, recovery boundary, permit limits, source and sample age (unit A1).
+headroom, floors, recovery boundary, permit limits, source and sample age.
 
 **`acceptsDeploys` is the deploy pool's count and term-byte capacity, not a memory reading** (Law 86).
 A throttled node with a free pool slot accepts; `degraded` is the fallback state machine's **advisory**
@@ -134,7 +134,7 @@ was not reporting pressure at that instant, not that it is healthy.
 The node cannot raise a cgroup limit, prevent co-location, or choose the kernel's OOM victim. It can
 detect a limit, refuse to start below a policy floor, bound execution concurrency with the headroom
 permit budget, hold pending work in the pool, relay it to peers, and report the state and the reason.
-Those are the safety-case barriers B31–B42; this page is the operator barrier they depend on.
+Those are the safety-case barriers; this page is the operator barrier they depend on.
 
 ---
 

@@ -8,7 +8,7 @@ use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -289,6 +289,16 @@ impl Proposer {
             BlockCreatorResult::AlreadyProposedThisRound => Ok((
                 ProposeResult {
                     propose_status: ProposeStatus::NotEnoughNewBlocks,
+                },
+                None,
+            )),
+            // **No private chain.** A node that has fallen more than the policy bound behind
+            // finality must not keep extending a chain no peer has accepted. The status is the one
+            // that already existed but had no producer; the node-level gate turns it into a halt
+            // of propose *and* attest, with an operator resume.
+            BlockCreatorResult::TooFarAheadOfLastFinalized => Ok((
+                ProposeResult {
+                    propose_status: ProposeStatus::TooFarAheadOfLastFinalized,
                 },
                 None,
             )),
@@ -883,6 +893,70 @@ async fn report_nothing_to_include(
 /// elapsed blocked time may authorise escape; the attempt count remains diagnostic telemetry.
 pub const ROUND_STALL_ESCAPE: Duration = Duration::from_secs(15);
 
+/// **How far above the last finalized block a validator may propose.**
+///
+/// This is the isolation bound the proposer never had: `TooFarAheadOfLastFinalized` existed as a
+/// status variant but no code produced it, so a validator whose peers had stopped accepting its
+/// blocks could extend a private chain indefinitely. Thirty-two heights is policy, not a measured
+/// optimum — a healthy four-validator net trails finality by a handful of heights — and it is
+/// deliberately a height gap, not a wall-clock stall: finality-stall counters fire on a healthy
+/// net (see `ShardHealth`'s own episodes), while a tip 32 blocks beyond the last finalized block
+/// is unambiguously a node that cannot get its own chain accepted.
+pub const MAX_PROPOSAL_FINALITY_LAG: i64 = 32;
+
+/// The height-gap half of the isolation gate, as a pure predicate so the boundary (`== bound`
+/// passes, `bound + 1` refuses) is testable without a DAG.
+pub fn within_proposal_finality_bound(tip_height: i64, finalized_height: i64) -> bool {
+    tip_height.saturating_sub(finalized_height) <= MAX_PROPOSAL_FINALITY_LAG
+}
+
+/// **The height the gate measures from when the view has no finalised block** (C351).
+///
+/// `last_finalized_block_hash()` is `None` on a view with no fringe, and the gate used to be wrapped
+/// in `if let Some(finalized)`, so *both* the bound and the isolation latch were skipped entirely —
+/// the shape the Lean model refuses with `a_gate_without_the_bound_admits_a_private_chain`. A node
+/// that early in a chain has no safe state to name, and "no anchor" is not "no bound": genesis is
+/// the floor, which is the same answer `RewindPlan` already gives (`block-storage/src/dag/
+/// representation.rs::rewind_plan`), and it is what the model's `finalizedFloor` states.
+pub fn finalized_floor(finalized: Option<BlockHeight>) -> BlockHeight {
+    finalized.unwrap_or_else(BlockHeight::zero)
+}
+
+/// The gate's decision, as a pure function so the **no-finality arm** is testable without a DAG.
+///
+/// This is the property C351 is about: `proposal_is_within_bound(n, None)` is `false` beyond the
+/// bound. The gate this replaced could be written `finalized.is_some_and(|f| within(n, f))`, which
+/// answers `true` for `None` — no bound at all — and that is the falsifier the test exhibits.
+pub fn proposal_is_within_bound(
+    next_block_num: BlockHeight,
+    finalized: Option<BlockHeight>,
+) -> bool {
+    within_proposal_finality_bound(
+        i64::from(next_block_num),
+        i64::from(finalized_floor(finalized)),
+    )
+}
+
+/// Set when the height-gap gate refuses a proposal. It is a process-local fail-safe latch: it
+/// stops proposing and attesting and tells a peer/operator why; a restart (or an explicit
+/// operator resume) is the recovery. No proposal path may clear it just because one later tick
+/// looks closer to finality — the node has already shown it cannot get its chain accepted.
+static PROPOSAL_ISOLATED: AtomicBool = AtomicBool::new(false);
+static PROPOSAL_ISOLATION_REASON: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn proposal_isolated() -> bool {
+    PROPOSAL_ISOLATED.load(Ordering::Relaxed)
+}
+
+pub fn proposal_isolation_reason() -> Option<String> {
+    PROPOSAL_ISOLATION_REASON.lock().unpoison().clone()
+}
+
+pub fn clear_proposal_isolation() {
+    PROPOSAL_ISOLATED.store(false, Ordering::Relaxed);
+    *PROPOSAL_ISOLATION_REASON.lock().unpoison() = None;
+}
+
 /// Elapsed time since this process first observed the blocked round. A host wall-clock
 /// correction cannot advance or delay this timer. The first sighting always returns zero;
 /// a clock value before the stored sighting also returns zero (defensive test case).
@@ -905,6 +979,34 @@ fn stall_ms_since(first_sighting: &Mutex<Option<Instant>>, now: Instant) -> i64 
 /// Attempt counts are diagnostic telemetry, intentionally absent from this decision (#339).
 fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
+}
+
+/// **The pacing rule as a pure function** (Law 51d), so the conformance corpus can tie the model
+/// to the node. Given the first blocked sighting (if any) and `now`, returns `(escape?, new
+/// sighting)`: `None` starts the clock; a full interval returns `true` and **consumes** the permit
+/// by moving the sighting to `now`; anything else returns `false` and leaves the sighting alone.
+/// The mutex form below is this function's one implementation — a banked permit would make a
+/// still-open round escape on every tick after the first interval.
+pub fn take_escape_permit(first_ms: Option<u64>, now_ms: u64) -> (bool, Option<u64>) {
+    let bound = ROUND_STALL_ESCAPE.as_millis() as u64;
+    match first_ms {
+        None => (false, Some(now_ms)),
+        Some(first) if now_ms.saturating_sub(first) >= bound => (true, Some(now_ms)),
+        Some(first) => (false, Some(first)),
+    }
+}
+
+/// Consume one escape permit after a full monotonic stall interval.
+/// A still-open round must wait another interval before escaping again;
+/// otherwise a fast producer can exhaust the finality-lag bound while its
+/// peers are still assembling the next shared justification layer.
+fn take_round_escape(since: &Mutex<Option<Instant>>, now: Instant) -> Option<i64> {
+    let elapsed = stall_ms_since(since, now);
+    if !round_escape_owed(elapsed) {
+        return None;
+    }
+    *since.lock().unpoison() = Some(now);
+    Some(elapsed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -931,6 +1033,13 @@ where
     F: Fn(BlockHash) -> Fut + Sync,
     Fut: Future<Output = Result<Arc<BlockIndex>, String>>,
 {
+    // The isolation latch is a fail-safe, not a per-tick verdict: once set, this process does
+    // not propose again until an operator repairs/restarts (or calls the resume hook). Check it
+    // before the parent merge so a latched node does no proposal work at all.
+    if proposal_isolated() {
+        return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
+    }
+
     let creators_validator_for_parents =
         Validator::from_slice(validator_identity.public_key.bytes());
 
@@ -972,10 +1081,9 @@ where
         {
             let waited =
                 blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let stalled_ms = stall_ms_since(blocked_since, Instant::now());
-            if !round_escape_owed(stalled_ms) {
+            let Some(stalled_ms) = take_round_escape(blocked_since, Instant::now()) else {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
-            }
+            };
             log.warn(
                 LogSource::new("casper.blocks.Proposer"),
                 &format!(
@@ -1013,6 +1121,40 @@ where
         .iter()
         .map(|m| m.block_hash)
         .collect();
+
+    // **The private-chain bound.** A node whose tip is this far beyond its own last finalized
+    // block has no evidence that any peer accepts its chain; continuing to propose is how A ran
+    // 267 heights against finality 3. Return the pre-existing status variant and leave the block
+    // uncreated. The node-level gate turns this into a propose-and-attest halt with an operator
+    // resume; the proposer alone at least stops extending the chain.
+    let last_finalized_height = {
+        let repr = dag.get_representation().await;
+        repr.last_finalized_block_hash()
+            .and_then(|hash| repr.block_height_of(&hash))
+    };
+    // **The gate is total** (C351): a view with no finalised block measures from genesis rather than
+    // skipping the bound and the latch. Before this, `if let Some(finalized)` made "no anchor" mean
+    // "no bound", which is `Disposition.a_gate_without_the_bound_admits_a_private_chain`.
+    let finalized = finalized_floor(last_finalized_height);
+    let gap = i64::from(next_block_num) - i64::from(finalized);
+    if !proposal_is_within_bound(next_block_num, last_finalized_height) {
+        let reason = format!(
+            "tip {} is {gap} heights beyond last finalized {} (bound {MAX_PROPOSAL_FINALITY_LAG})",
+            i64::from(next_block_num),
+            i64::from(finalized)
+        );
+        PROPOSAL_ISOLATED.store(true, Ordering::Relaxed);
+        *PROPOSAL_ISOLATION_REASON.lock().unpoison() = Some(reason.clone());
+        log.warn(
+            LogSource::new("casper.blocks.Proposer"),
+            &format!(
+                "refusing to propose at height {}: {reason}; this node cannot show that its chain \
+                 is accepted",
+                i64::from(next_block_num)
+            ),
+        );
+        return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
+    }
 
     // **The proposer's half of #153's bound.** A justification set wider than the protocol allows is
     // refused by every validator (`validate::justification_count`), so emitting one would be a block
@@ -1408,6 +1550,43 @@ where
 mod tests {
     use super::*;
 
+    /// **The private-chain boundary is inclusive at the bound and refuses one height beyond it.**
+    /// `TooFarAheadOfLastFinalized` existed without a producer; this pins the arithmetic the
+    /// `create_block` gate now uses.
+    #[test]
+    fn the_proposal_finality_bound_passes_at_the_bound_and_refuses_beyond_it() {
+        assert!(within_proposal_finality_bound(MAX_PROPOSAL_FINALITY_LAG, 0));
+        assert!(!within_proposal_finality_bound(
+            MAX_PROPOSAL_FINALITY_LAG + 1,
+            0
+        ));
+        assert!(within_proposal_finality_bound(4, 0));
+    }
+
+    /// **A view with no finalised block is still bounded** (C351). The gate used to be wrapped in
+    /// `if let Some(finalized)`, so `None` skipped the bound *and* the isolation latch: a node whose
+    /// fringe had not formed could extend a private chain without limit — the Lean model's own
+    /// `Disposition.a_gate_without_the_bound_admits_a_private_chain`. Genesis is the floor, the same
+    /// answer `rewind_plan` gives, so the no-anchor arm refuses exactly where the anchored arm does.
+    #[test]
+    fn a_view_without_a_finalized_block_still_trips_the_bound() {
+        let height = |v: i64| BlockHeight::try_from(v).expect("non-negative");
+        let bound_plus_one = height(MAX_PROPOSAL_FINALITY_LAG + 1);
+        // The floor is genesis, and it is a floor rather than a sentinel: an anchor is passed through.
+        assert_eq!(finalized_floor(None), BlockHeight::zero());
+        assert_eq!(finalized_floor(Some(height(0))), BlockHeight::zero());
+        assert_eq!(finalized_floor(Some(height(7))), height(7));
+        // The falsifier: `finalized.is_some_and(|f| within(n, f))` answers `true` here.
+        assert!(!proposal_is_within_bound(bound_plus_one, None));
+        assert!(!proposal_is_within_bound(bound_plus_one, Some(height(0))));
+        // And the arm still admits a tip at the bound, so the gate did not become a refuse-all.
+        assert!(proposal_is_within_bound(
+            height(MAX_PROPOSAL_FINALITY_LAG),
+            None
+        ));
+        assert!(proposal_is_within_bound(height(1), None));
+    }
+
     /// The clock begins at the first blocked observation, and resetting the round
     /// discards the observation. Wall time is deliberately absent from this API.
     #[test]
@@ -1433,6 +1612,58 @@ mod tests {
         )));
         *since.lock().unpoison() = None;
         assert_eq!(stall_ms_since(&since, first + Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn round_escape_permit_is_consumed_even_when_the_round_stays_open() {
+        let since = Mutex::new(None);
+        let t = Instant::now();
+        assert_eq!(take_round_escape(&since, t), None);
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE),
+            Some(15_000)
+        );
+        // The archived failure took many escapes inside one interval.
+        // Both a duplicate tick and a burst after it must now wait.
+        for ms in [0, 1, 100, 967, 3_388, 14_999] {
+            assert_eq!(
+                take_round_escape(&since, t + ROUND_STALL_ESCAPE + Duration::from_millis(ms)),
+                None
+            );
+        }
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE * 2),
+            Some(15_000)
+        );
+        assert_eq!(take_round_escape(&since, t + ROUND_STALL_ESCAPE * 2), None);
+        // Closing the round starts a fresh observation, never an old permit.
+        *since.lock().unpoison() = None;
+        assert_eq!(take_round_escape(&since, t + ROUND_STALL_ESCAPE * 10), None);
+        assert_eq!(
+            take_round_escape(&since, t + ROUND_STALL_ESCAPE * 11),
+            Some(15_000)
+        );
+    }
+
+    #[test]
+    fn late_escape_and_repeated_ticks_do_not_bank_unused_permits() {
+        let since = Mutex::new(None);
+        let t = Instant::now();
+        assert_eq!(take_round_escape(&since, t), None);
+        assert_eq!(
+            take_round_escape(&since, t + Duration::from_secs(90)),
+            Some(90_000)
+        );
+        for ms in 0..15_000 {
+            assert_eq!(
+                take_round_escape(&since, t + Duration::from_millis(90_000 + ms)),
+                None
+            );
+        }
+        assert_eq!(
+            take_round_escape(&since, t + Duration::from_secs(105)),
+            Some(15_000)
+        );
     }
 
     #[test]

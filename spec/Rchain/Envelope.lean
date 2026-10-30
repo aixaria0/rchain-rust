@@ -66,7 +66,7 @@ def envelopeCatalog : List EnvelopeRow :=
   [ { name := "ApiStatus", endpoint := "GET /api/v1/status",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
-        "degraded", "acceptsDeploys", "pool"] }
+        "proposer", "degraded", "acceptsDeploys", "pool"] }
   -- **The operator half, on its own endpoint** (W-N3-01). The row above used to carry every key
   -- below, and served them on a public listener; the split *is* the finding, so the catalog splits
   -- with it. A superset of the row above by construction: `OperatorStatus` flattens `PublicStatus`
@@ -74,7 +74,7 @@ def envelopeCatalog : List EnvelopeRow :=
   , { name := "OperatorStatus", endpoint := "GET /api/v1/status/operator",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
-        "degraded", "acceptsDeploys", "pool",
+        "proposer", "degraded", "acceptsDeploys", "pool",
         "adminHttp",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
         "autoproposeTimerHaltEpisodes", "autoproposeHalt", "autoproposeTapSuppressed",
@@ -87,7 +87,15 @@ def envelopeCatalog : List EnvelopeRow :=
         "undeliveredSends", "undeliveredSendsScope",
         "shards", "resources"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
-      keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet", "faucetRemaining"] }
+      keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode",
+        "proposer", "nodeList", "faucet", "faucetRemaining"] }
+  -- **The deploy hostlist** (Law 90): the response a client spreads deploys over. Declared here so
+  -- the shape a wallet parses is the shape this node serves, not a coincidence of two writers.
+  , { name := "NodeListResponse", endpoint := "GET /api/v1/nodes",
+      keys := ["networkId", "primaryShard", "generatedAt", "ownLatestBlockNumber", "nodes"] }
+  , { name := "NodeListEntry", endpoint := "the `nodes` entries of GET /api/v1/nodes",
+      keys := ["nodeId", "httpUrl", "networkId", "shardId", "nodeVersion", "latestBlockNumber",
+        "proposer", "acceptsDeploys", "self"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",
       keys := ["version", "shardId", "blockHash", "blockNumber", "sender", "seqNum", "preStateHash",
         "postStateHash", "justifications", "bonds", "sigAlgorithm", "sig", "blockSize", "deployCount",
@@ -135,7 +143,7 @@ theorem envelopeCatalog_decide :
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def envelopeCaseCount : Nat := 12
+def envelopeCaseCount : Nat := 14
 
 /-- The catalog carries exactly `envelopeCaseCount` rows. -/
 theorem envelopeCatalog_length : envelopeCatalog.length = envelopeCaseCount := by decide

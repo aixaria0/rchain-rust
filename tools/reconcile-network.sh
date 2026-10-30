@@ -69,6 +69,10 @@
 #   or `docker` (the devnet: stop/start the container, and its data hangs off a volume, so "aside" is a
 #   tar on the host kept beside the volume rather than a rename).
 #
+# Built-in endpoints are intended for planning only; a systemd --apply or
+# --restore-from-master requires RECONCILE_NODES=<reviewed live host table>.
+# Always verify hosts and units immediately before a destructive operation.
+#
 # Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
 #           [--apply | --restore-from-master] [--master NAME]
 #   and, when no node has a finalised block to attest at all:
@@ -87,8 +91,8 @@ set -uo pipefail
 # host  api-port  unit  name  master?
 DEFAULT_NODES='164.90.140.144 40403 rnode    A master
 164.90.140.144 41403 rnode-d  D
-104.131.176.164 40403 rnode   B
-104.131.176.164 41403 rnode-c C'
+167.99.43.214 40403 rnode   B
+167.99.43.214 41403 rnode-c C'
 
 if [ -n "${RECONCILE_NODES:-}" ]; then NODES="$(cat "$RECONCILE_NODES")"; else NODES="$DEFAULT_NODES"; fi
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_droplet}
@@ -116,6 +120,33 @@ while [ $# -gt 0 ]; do case "$1" in
   --restore-from-master) RESTORE=1; APPLY=1;;
   --master) MASTER=$2; shift;;
 esac; shift; done
+
+# Never allow service stops or data-directory moves based on a compiled-in
+# address inventory. A published testnet host may be replaced while this
+# script remains at an older revision. Planning uses the documented defaults;
+# mutations require a separately inspected, operator-provided inventory.
+# The controller's operation branches treat every non-Docker value as
+# systemd. Reject unrecognised values before the live-target guard, so a
+# typo cannot bypass it while still reaching the systemd stop/move paths.
+case "$CONTROL" in
+  docker|systemd) ;;
+  *) echo "REFUSING: unsupported RECONCILE_CONTROL=$CONTROL" >&2; exit 2 ;;
+esac
+
+if [ "$APPLY" = "1" ] && [ "$CONTROL" = "systemd" ] && [ -z "${RECONCILE_NODES:-}" ]; then
+  echo "REFUSING: live apply requires RECONCILE_NODES pointing to the verified current host table." >&2
+  echo "          Built-in endpoints are for planning only; no node has been stopped." >&2
+  exit 2
+fi
+
+# Invalid or unreadable inventories must never silently fall back to a
+# built-in table when a service controller is about to be used.
+if [ -n "${RECONCILE_NODES:-}" ]; then
+  if [ ! -f "$RECONCILE_NODES" ] || [ ! -r "$RECONCILE_NODES" ] || [ -z "$NODES" ]; then
+    echo "REFUSING: RECONCILE_NODES is missing, unreadable, or empty: $RECONCILE_NODES" >&2
+    exit 2
+  fi
+fi
 
 is_local() { case "$1" in local|127.0.0.1|localhost) return 0;; esac; return 1; }
 
@@ -146,7 +177,7 @@ blocks_at() { # host port height
   # answer and a live one are the same answer. Falls back to a single-height request when the range was
   # not cached (a node that refused it, or `RECONCILE_NO_CACHE=1`).
   local range_file="${CACHE_DIR:-}/blocks_${1}_${2}.json"
-  if [ -n "${CACHE_DIR:-}" ] && [ -s "$range_file" ]; then
+  if [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "${CACHE_DIR:-}" ] && [ -s "$range_file" ]; then
     cat "$range_file"
   else
     api "$1" "$2" "/api/blocks/$3/$3"
@@ -164,6 +195,36 @@ for x in b:
     rejected=json.dumps([str(d) for d in (x.get('rejectedDeploys') or [])], separators=(',',':'))
     print('%s %s %s %s %s' % (x.get('blockHash',''), x.get('sender',''),
                               x.get('postStateHash',''), x.get('deployCount',0), rejected))"
+}
+
+# A range is a snapshot of one node's block inventory, not immutable data for this endpoint.
+# Refresh it after recovery and on every verification round: blocks already present do not change,
+# but the set a recovering node holds does. Failed/invalid refreshes discard the previous snapshot
+# and use live per-height requests instead of presenting stale or partial data as a current answer.
+refresh_block_ranges() { # inclusive upper height for this phase
+  [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "${CACHE_DIR:-}" ] || return 0
+  local upper="$1" n range_file pending
+  for n in "${NAMES[@]}"; do
+    range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
+    pending="$range_file.pending"
+    rm -f -- "$range_file" "$pending"
+    if api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$upper" > "$pending" 2>/dev/null \
+      && python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+    valid=isinstance(data,list) and bool(data) and all(isinstance(b,dict) and type(b.get("blockNumber")) is int for b in data)
+except (ValueError,TypeError):
+    valid=False
+sys.exit(0 if valid else 1)
+' < "$pending"; then
+      mv -- "$pending" "$range_file"
+    else
+      rm -f -- "$pending"
+      echo "  NOTE: range snapshot unavailable or invalid for ${HOST[$n]}:${PORT[$n]}; using live per-height requests" >&2
+    fi
+  done
+  return 0
 }
 # The last-finalised endpoint answers with an *error string* rather than an object when there is no
 # finalised fringe yet (`"Finalized fringe is not available."`) — which is the state a diverged net is in,
@@ -409,10 +470,16 @@ trigger_block() {
     || { echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2; return 1; }
 }
 
+SNAPSHOT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NAMES=()
 echo "== 1. what each node is showing =="
 while read -r host port unit name master; do
   [ -z "${name:-}" ] && continue
+  if [ -n "${HOST[$name]:-}" ]; then
+    echo "  REFUSING: node name '$name' appears more than once in the table." >&2
+    echo "            A table that repeats a name weights one validator twice and is not an audit." >&2
+    exit 2
+  fi
   NAMES+=("$name"); HOST[$name]=$host; PORT[$name]=$port; UNIT[$name]=$unit
   LFB[$name]=$(lfb_num "$host" "$port"); LFH[$name]=$(lfb_hash "$host" "$port")
   HGT[$name]=$(height_of "$host" "$port")
@@ -420,8 +487,43 @@ while read -r host port unit name master; do
   printf "  %-2s h=%-6s finalised=%-6s %s\n" "$name" "${HGT[$name]:-?}" "${LFB[$name]:-?}" "${LFH[$name]:0:44}"
 done <<< "$NODES"
 
+# **An audit of a subset is not an audit.** `ssh` reads stdin by default, so a transport without `-n`
+# consumes the remaining rows and ends the loop after the first node — the tool then reports the
+# first node's silence as the chain's ("no strict supermajority …"), which is the most dangerous
+# failure mode it has. The row count is the guard that turns that from a silent one-node audit into
+# a named refusal.
+EXPECTED_ROWS=$(awk 'NF { n++ } END { print n + 0 }' <<< "$NODES")
+if [ "${#NAMES[@]}" -ne "$EXPECTED_ROWS" ]; then
+  echo "  REFUSING: read ${#NAMES[@]} of $EXPECTED_ROWS node row(s) from the table." >&2
+  echo "            A transport that consumes the table's stdin (ssh without -n) ends this loop early," >&2
+  echo "            and an audit of a subset is not an audit. No node was touched." >&2
+  exit 2
+fi
 if [ "${#NAMES[@]}" -eq 0 ]; then echo "no nodes in the table — nothing to reconcile" >&2; exit 2; fi
 MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null && MAXH=${HGT[$n]}; done
+echo "  snapshot: MAXH=$MAXH taken at $SNAPSHOT_TS (the highest latestBlockNumber in this sample)."
+echo "  Sections 2 and 4 are bounded by this snapshot; a producing chain may advance past it."
+
+# A producing chain is legitimate. The audit is a snapshot; movement during it is reported, not fatal,
+# and it does not widen what the audit above claims. §10 says when it reads above the snapshot.
+report_movement() {
+  local n now moved=0
+  for n in "${NAMES[@]}"; do
+    now=$(height_of "${HOST[$n]}" "${PORT[$n]}")
+    case "$now" in ''|*[!0-9]*) continue ;; esac
+    case "${HGT[$n]:-}" in ''|*[!0-9]*) continue ;; esac
+    if [ "$now" -gt "${HGT[$n]}" ]; then
+      moved=1
+      printf '  NOTE: %s advanced %s → %s since the snapshot; the audit above covers only heights 0..%s\n' \
+        "$n" "${HGT[$n]}" "$now" "$MAXH"
+    fi
+  done
+  if [ "$moved" = "1" ]; then
+    echo "  Movement during an audit is normal on a producing chain, not a failure: the plan is bounded"
+    echo "  to the snapshot above, and section 10 states any range it reads above it."
+  fi
+  return 0
+}
 
 # **One range request per node, not one request per height.** `/api/blocks/{start}/{end}` is a range
 # route (`node/src/web/http.rs`), and the two scans below ask about every height in 0..MAXH — 0..MAXH for
@@ -430,15 +532,7 @@ MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null &
 # so the 3122-block chain this tool exists for would have taken most of a day. A block never changes
 # after it is created, so one fetch per node answers every height, and `blocks_at` filters locally with
 # the parsing it already had. `RECONCILE_NO_CACHE=1` restores the per-height path.
-if [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "$CACHE_DIR" ]; then
-  for n in "${NAMES[@]}"; do
-    range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
-    api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$MAXH" > "$range_file" 2>/dev/null
-    # A node that cannot serve the range is not cached, so its heights fall back to live single-height
-    # requests: the fallback costs time, never correctness.
-    [ -s "$range_file" ] || rm -f "$range_file"
-  done
-fi
+refresh_block_ranges "$MAXH"
 
 # --- 2. reported equivocation -------------------------------------------------
 # **A report, not a proof, and it decides nothing.** A sender is flagged when two *distinct* blocks by it
@@ -942,6 +1036,7 @@ echo "== 4. what is above the point =="
 echo "  The survivor is ${MASTER}'s DAG, not a chain: every validator proposes its own block each round, so"
 echo "  a height legitimately holds one sibling per validator and there is no single line to extract. The"
 echo "  joiners resync onto this DAG; the writers re-submit what they can see is missing."
+echo "  (heights $((MEET + 1))..$MAXH; snapshot $MAXH taken at ${SNAPSHOT_TS:-unknown})"
 REPORT="${RECONCILE_REPORT:-/tmp/reconcile-deploys.jsonl}"
 : > "$REPORT"
 total=0; ublocks=0; nobs=0
@@ -999,6 +1094,10 @@ done
 echo "  $total deploy(s) above the point across $ublocks unique block(s); the per-block record is $REPORT"
 echo "  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights"
 echo "   route carries counts. The owners re-submit; this tool does not claim to replay them.)"
+
+# --- movement: report nodes that advanced past the snapshot -----------------
+# Before the plan/apply split, so plan-only and apply both see it and nothing has been stopped.
+report_movement
 
 if [ "$APPLY" != "1" ]; then
   echo "== plan only =="
@@ -1120,6 +1219,7 @@ for i in $(seq 1 40); do
   sleep 15
   ok=1; line=""
   for n in "${NAMES[@]}"; do line="$line $n=$(height_of "${HOST[$n]}" "${PORT[$n]}")"; done
+  refresh_block_ranges "$MAXH"
   for (( h=MEET; h<=MAXH; h++ )); do
     # **A height nobody has produced is not a disagreement.** `MAXH` is `/api/status`'s
     # `latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest
@@ -1212,6 +1312,21 @@ for i in $(seq 1 "${RECONCILE_FINALITY_ROUNDS:-40}"); do
     done
   fi
   if [ "$adv_ok" = "1" ]; then
+    # Finality may now be above the original plan's MAXH. Read a fresh inventory through every
+    # height this round will check, rather than asking the pre-recovery snapshot about new blocks.
+    range_top="$MAXH"
+    for n in "${NAMES[@]}"; do
+      for candidate_height in "${FINH[$n]}" "${NOWH[$n]:-}"; do
+        if [[ "$candidate_height" =~ ^[0-9]+$ ]] && [ "$candidate_height" -gt "$range_top" ]; then
+          range_top="$candidate_height"
+        fi
+      done
+    done
+    if [ "$range_top" -gt "$MAXH" ] && [ "${RANGE_WIDEN_NOTED:-0}" = "0" ]; then
+      echo "  (verifying up to $range_top, above the $MAXH snapshot; this round re-reads 0..$range_top)"
+      RANGE_WIDEN_NOTED=1
+    fi
+    refresh_block_ranges "$range_top"
     for n in "${NAMES[@]}"; do
       fh="${FINH[$n]}"; fb="${FINB[$n]}"
       for m in "${NAMES[@]}"; do

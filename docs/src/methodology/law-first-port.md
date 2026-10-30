@@ -10,7 +10,7 @@
 
 We ported a consensus node from Scala to Rust and inverted the usual relationship between a port and its
 reference. The reference implementation is not the oracle: the oracle is a register of
-<!-- counts:laws -->87 laws<!-- counts:end -->, machine-checked in Lean 4 and Coq, from which conformance
+<!-- counts:laws -->91 laws<!-- counts:end -->, machine-checked in Lean 4 and Coq, from which conformance
 corpora are **emitted** and run 1:1 through the node. The reference's surviving contribution is not truth
 but *vectors* — a 165-file differential corpus of its own contracts. Around this inversion sits a wider
 assurance apparatus: an authored findings register whose rows close only when the bad state is no longer
@@ -115,7 +115,7 @@ Documentation drift is treated as a defect class, not a documentation problem. T
 register total must mark it —
 
 ```
-... the register holds <!-- counts:laws -->87 laws<!-- counts:end --> ...
+... the register holds <!-- counts:laws -->91 laws<!-- counts:end --> ...
 ```
 
 — and [`tools/emit-lean-counts.sh`](../../../tools/emit-lean-counts.sh) rewrites every marked span from
@@ -214,7 +214,7 @@ register archaeology away.
 
 - `spec/INVENTORY.md`, `spec/TYPE-SYSTEM.md`, `spec/AUDIT.md`, `spec/findings.tsv`, `spec/audit/passes.md`
 - `docs/src/spec/failure-hazop.md`, `docs/src/spec/adversary.md`, `docs/src/spec/testnet-acceptance.md`
-- [`docs/src/contributor/spec.md`](../contributor/spec.md) — the gates index
+- [`spec/README.md`](../../../spec/README.md) — the specification tree and its gates
 - [Kaizen: Building a Performant Blockchain System Verified for Consensus and Integrity](https://dprg.cs.uiuc.edu/data/files/2019/FMCAD%20Slides.pdf) (FMCAD 2019)
 - [Formal Methods for Blockchains (FMBC 2019)](https://link.springer.com/book/10.1007/978-3-030-54994-7?page=2) — the Algorand Coq model, Mi-Cho-Coq, and companion work
 - [Making Tezos smart contracts more reliable with Coq](http://export-test.arxiv.org/pdf/2106.12973)

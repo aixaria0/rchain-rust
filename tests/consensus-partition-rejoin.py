@@ -38,8 +38,13 @@ class WorkloadDrill(a.Drill):
             statuses = []
             for i in range(self.args.validators):
                 operator = a.get(i, "/api/v1/status/operator", admin=True)
+                health = a.get(i, "/health")
                 statuses.append({
                     "node": i,
+                    "ready": health.get("ready"),
+                    "orphan_bodies": health.get("orphanBodies"),
+                    "pipeline_faults": health.get("pipelineFaults"),
+                    "proposal_halted": health.get("proposalHalted"),
                     "latest": operator.get("latestBlockNumber"),
                     "peers": operator.get("peers"),
                     "finality_stall": operator.get("finalityStall"),
@@ -48,13 +53,28 @@ class WorkloadDrill(a.Drill):
                     "undelivered_sends": operator.get("undeliveredSends"),
                 })
             self.record(phase="healing_probe", target_min_height=min_height, nodes=statuses)
-            bad = [x for x in statuses if (x["unrestorable_records"] or 0) > 0]
+            # A missing counter is unknown, not proof of zero divergence.
+            if any(type(x["unrestorable_records"]) is not int for x in statuses):
+                return None
+            bad = [x for x in statuses if x["unrestorable_records"] > 0]
             if bad:
                 details = [(x["node"], x["unrestorable_block"]) for x in bad]
                 raise RuntimeError(
                     f"PERMANENT_DIVERGENCE: {details}; finalized agreement cannot be"
                     " certified by extending the wait. See healing_probe evidence."
                 )
+        # A finalized hash match is not deployment readiness. The PR497 gate
+        # must also certify every node is healthy with no orphaned bodies.
+        # Absent health fields fail closed instead of silently passing.
+        if getattr(self, "events", None) is not None:
+            if any(
+                x["ready"] is not True
+                or x["orphan_bodies"] != 0
+                or x["pipeline_faults"] != 0
+                or x["proposal_halted"] is not False
+                for x in statuses
+            ):
+                return None
         # Retaining the marker at different finalized heads is not yet rejoin
         # agreement. Keep waiting inside the existing 150-second healing bound.
         identities = self.finalized_marker(min_height, required=True)

@@ -14,7 +14,7 @@ is right.
 | [`spec/Rchain/LawsMain.lean`](../../../spec/Rchain/LawsMain.lean) | **The checks.** Numbering `1..lawCeiling` with no gaps, `entryCeiling`, reference integrity, axiom accounting, a falsifier on every proved row, a real file behind every `rust` anchor, `fn <symbol>` behind every `rustWitness`. Runs at compile time. | a person, by hand |
 | [`spec/laws.tsv`](../../../spec/laws.tsv) | **The emitted data.** One row per **entry**; columns: `number`, `clause`, `layer`, `status`, `declarations`, `axioms`, `corpus`, `rust`, `coq`, `witness`, `falsifiable`, `statement`, `note`, `rustWitness`. | `tools/emit-lean-laws.sh` |
 | [`spec/LAWS.md`](../../../spec/LAWS.md) | **The rendered tables**, with a header summary of the status decomposition. | `tools/emit-lean-laws.sh` |
-| [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) | The long-form catalogue: source of truth → theorem → Rust test, per law. Its table ends at **Law 77**; the register is the authority for 1–87. | a person, by hand |
+| [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) | The long-form catalogue: source of truth → theorem → Rust test, per law. Its table ends at **Law 77**; the register is the authority for 1–91. | a person, by hand |
 | [`spec/findings.tsv`](../../../spec/findings.tsv) → [`spec/AUDIT.md`](../../../spec/AUDIT.md) | The audit check-off: one row per finding, with its pass section and the law it instantiates. | a person; rendered by `tools/emit-findings-register.sh` |
 | [`spec/audit/passes.md`](../../../spec/audit/passes.md) | The audit's evidence record, one `## N.` section per pass. **A record of what was true then** — do not rewrite its history. | a person |
 
@@ -28,9 +28,9 @@ citation error.
 
 | Form | Means | Lives in |
 |---|---|---|
-| `Law N` | a stable law number, 1–87. Numbers are never reused. | the register |
+| `Law N` | a stable law number, 1–91. Numbers are never reused. | the register |
 | `Law Nx` | a **clause** of a law whose parts differ in status or support (`14a`, `16b`). | the register |
-| an **entry** | one row of the register; a law with clauses has one row per clause. <!-- counts:laws-entries -->87 laws and 119 entries<!-- counts:end -->. | `spec/laws.tsv` |
+| an **entry** | one row of the register; a law with clauses has one row per clause. <!-- counts:laws-entries -->91 laws and 131 entries<!-- counts:end -->. | `spec/laws.tsv` |
 | `C###` | an **audit finding** (`C1`, `C337`). Never a law. | `spec/findings.tsv` |
 | `S#`, `F#`, `H#`, `M#`, `R#`, `TS#` | earlier finding series in the same register (for example `TS` is the type-system pass). Same file, same `todo`/`in progress`/`done` states as `C###`. | `spec/findings.tsv` |
 | `F-U<n>-<m>` | a **HAZOP deviation row**: guide word, study node `U<n>`, row `m` (`F-U5-03`). | [`failure-mode HAZOP`](../spec/failure-hazop.md) |
@@ -148,5 +148,5 @@ honest about it, is a reading — and the falsifier is where that reading is rec
 - [`spec/LAWS.md`](../../../spec/LAWS.md) — every entry's status, declarations, axioms and falsifier.
 - [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) — the long-form catalogue (through Law 77).
 - [The laws → Rust code](../contributor/laws-to-rust.md) — per-law Lean and Rust anchors (Laws 1–29).
-- [Formal specification & audit](../contributor/spec.md) — the tree and every gate.
+- [The formal specification tree](../../../spec/README.md) — the oracle and every gate.
 - [Navigation for AI agents](../ai-entrypoint.md) — the goal-indexed map of the book.

@@ -113,14 +113,13 @@ FILES=(
   "$ROOT/docs/src/introduction.md"
   # **And every other page that states a total by hand, added 2026-09-26 the same way** (AUDIT C106):
   # each of these carried a stale "29 laws" — `quantum-to-rho.md`, `why-rust.md` (twice),
-  # `laws-to-rust.md` (twice), `rholang/reference.md`, `contributor/spec.md`, `RHO-CALCULUS.md`,
+  # `laws-to-rust.md` (twice), `rholang/reference.md`, `RHO-CALCULUS.md`,
   # `RUST-VS-SCALA.md` and `TEST-COVERAGE.md` (twice) — and all of them were outside this list, which
   # is exactly why they drifted. The rule this list grows by is the finding: a count stated outside it
   # is one nothing recomputes.
   "$ROOT/docs/src/qucalc/quantum-to-rho.md"
   "$ROOT/docs/src/contributor/why-rust.md"
   "$ROOT/docs/src/contributor/laws-to-rust.md"
-  "$ROOT/docs/src/contributor/spec.md"
   "$ROOT/docs/src/rholang/reference.md"
   "$SPEC/RHO-CALCULUS.md"
   "$SPEC/RUST-VS-SCALA.md"

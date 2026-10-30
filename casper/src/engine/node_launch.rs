@@ -32,6 +32,7 @@ use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::{BlockHeight, NonNegI64};
 use tokio::sync::mpsc;
 
+use crate::block_disposition::BlockDispositionStore;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
 use crate::conf::ShardSpec;
@@ -122,6 +123,11 @@ pub async fn create_genesis_block(
     system_contract_pub_key: &str,
     dev_tax_address: &str,
     dev_tax_vesting_blocks: i64,
+    liveness_absence_threshold: i64,
+    liveness_jail_after_boundaries: i64,
+    liveness_jail_epochs: i64,
+    liveness_vote_window: i64,
+    liveness_slash_severity: i64,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
     // Initial REV vaults, with the developer allocation derived from their total (Law 78). This is
@@ -174,6 +180,12 @@ pub async fn create_genesis_block(
             dev_tax_vesting_blocks: NonNegI64::try_from(dev_tax_vesting_blocks).map_err(|e| {
                 format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
             })?,
+
+            liveness_absence_threshold,
+            liveness_jail_after_boundaries,
+            liveness_jail_epochs,
+            liveness_vote_window,
+            liveness_slash_severity,
         },
         registry: Registry {
             system_contract_pub_key: system_contract_pub_key.to_string(),
@@ -182,6 +194,11 @@ pub async fn create_genesis_block(
         dev_vesting,
     };
 
+    // The liveness config is all-or-nothing, and this is the other path that turns config into
+    // consensus state: refuse an incoherent one before the genesis block is signed.
+    crate::genesis::build_pos_genesis(&genesis.proof_of_stake, genesis.dev_vesting.clone())
+        .params
+        .validate()?;
     crate::genesis::create_genesis_block(&ceremony, &genesis, runtime).await
 }
 
@@ -243,6 +260,11 @@ pub async fn create_genesis_block_from_config(
         &gbd.system_contract_pub_key,
         &gbd.dev_tax_address,
         gbd.dev_tax_vesting_blocks,
+        gbd.liveness_absence_threshold,
+        i64::from(gbd.liveness_jail_after_boundaries),
+        i64::from(gbd.liveness_jail_epochs),
+        i64::from(gbd.liveness_vote_window),
+        i64::from(gbd.liveness_slash_severity),
         runtime,
     )
     .await
@@ -345,11 +367,19 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     block_store: BlockStore,
     approved_store: ApprovedStore,
     dag: Arc<dyn BlockDagStorage>,
+    block_disposition: BlockDispositionStore,
+    to_processor: mpsc::Sender<BlockMessage>,
     importer: I,
     exporter: E,
+    phase: crate::engine::node_phase::NodePhaseCell,
     log: Arc<dyn Log>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeLaunch");
+    // **The phase cell is written by this shard's launch and only by it** (B47). A restart begins
+    // at `Starting`; the sync branch below moves to `Syncing`, and the transition to the running
+    // engine at the end of this function moves to `Running`. The disposition loops hold a clone and
+    // wait for `Running`, so a start-up re-offer cannot race a recovery into the live DAG.
+    phase.set_phase(crate::engine::node_phase::NodePhase::Starting);
 
     // **The operator's anchor, parsed once** (C259): the sync phase names it in its fringe request, and
     // the running phase walks to it. Parsed here rather than in the branch because a `--sync-anchor` typo
@@ -376,6 +406,22 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .into_iter()
         .next()
         .flatten();
+    // **A body count above the DAG count is an orphan signal, not a fact to ignore.** This is a
+    // cheap boot observation (no body decode): a store with bodies the DAG does not hold is the
+    // shape the live testnet showed on B/C/D. The periodic audit waits for three runtime samples;
+    // a mismatch seen at boot is already evidence and must block readiness immediately.
+    let stored_bodies = block_store.count().await?;
+    if crate::block_disposition::observe_boot_orphan_gap(stored_bodies, repr.dag_set.len()) > 0 {
+        log.warn(
+            source,
+            &format!(
+                "boot: the block store holds {stored_bodies} bodies but the DAG holds {}; {} \
+                 stored body(ies) have no DAG entry — possible orphans (U19/B46)",
+                repr.dag_set.len(),
+                stored_bodies.saturating_sub(repr.dag_set.len())
+            ),
+        );
+    }
     if repr.dag_set.is_empty() && standalone && pending_recovery.is_none() {
         if expected_genesis_hash.is_some() {
             return Err(
@@ -415,6 +461,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .await?;
     } else if repr.dag_set.is_empty() || pending_recovery.is_some() {
         log.info(source, "Starting from bootstrap node, syncing LFS...");
+        phase.set_phase(crate::engine::node_phase::NodePhase::Syncing);
         let engine = Arc::new(tokio::sync::Mutex::new(
             NodeSyncing::new(
                 transport.clone(),
@@ -534,6 +581,9 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
                              chain it never synced"
                         .to_string(),
                 };
+                    phase.set_phase(crate::engine::node_phase::NodePhase::Blocked(
+                        "LFS state sync is terminal".to_string(),
+                    ));
                     return Err(message);
                 }
             }
@@ -705,7 +755,36 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     let block_range_door: crate::engine::node_running::BlockRangeDoor =
         Arc::new(tokio::sync::Mutex::new(tokio::sync::mpsc::channel(4).0));
 
-    // Transition to running mode.
+    // Transition to running mode. **The start-up disposition audit runs first**, and the phase
+    // moves to `Running` when its bounded drain closes; a row that cannot be settled stays visible
+    // rather than holding boot. The phase still moves before the engine is constructed, so a
+    // disposition loop waiting on `Running` cannot start between construction and the first packet.
+    let audit = crate::block_disposition::startup_audit_then_running(
+        &phase,
+        &block_disposition,
+        &block_store,
+        &dag,
+        &to_processor,
+        crate::block_disposition::STARTUP_AUDIT_DRAIN_TIMEOUT,
+        &log,
+    )
+    .await;
+    log.info(
+        source,
+        &format!(
+            "start-up disposition audit: {} pre-ledger body/bodies adopted, {} re-offered, {} \
+             skipped for missing parents, {} still pending when the drain closed{}",
+            audit.scan.as_ref().map(|scan| scan.adopted).unwrap_or(0),
+            audit.reoffer.reoffered,
+            audit.reoffer.skipped_missing_parents,
+            audit.drain.still_pending,
+            if audit.drain.timed_out {
+                " (bounded window)"
+            } else {
+                ""
+            }
+        ),
+    );
     let engine = NodeRunning::new(
         transport.clone(),
         rp_conf.clone(),

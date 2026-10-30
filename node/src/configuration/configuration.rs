@@ -137,6 +137,16 @@ impl Configuration {
         check_inert_config(&node_conf, &defaults_conf)?;
         check_resource_guard(&node_conf)?;
 
+        // The hostlist's own bounds. Checked whether or not the route is mounted, so a configuration
+        // that would be refused the moment the route is enabled is refused now rather than at the
+        // restart that enables it.
+        crate::web::node_list::NodeListConfig {
+            probe_interval: node_conf.api_server.node_list_probe_interval,
+            probe_timeout: node_conf.api_server.node_list_probe_timeout,
+            max_entries: node_conf.api_server.node_list_max_entries,
+        }
+        .validate()?;
+
         // AUDIT §6: the Kamon reporter switches. Checked here, where the operator-facing
         // configuration errors already live (`check_shard_config_exclusivity`, the shard quorum
         // check), so a `run` asking for a reporter this port does not have fails at startup instead
@@ -791,6 +801,10 @@ mod tests {
                 port_admin_http: 40405,
                 max_blocks_limit: 50,
                 enable_reporting: false,
+                publish_node_list: false,
+                node_list_probe_interval: secs(60),
+                node_list_probe_timeout: secs(2),
+                node_list_max_entries: 32,
                 enable_txn_api: false,
                 enable_devnet_cors: false,
                 enable_devnet_admin_public: false,
@@ -845,6 +859,12 @@ mod tests {
                         system_contract_pub_key: String::new(),
                         dev_tax_address: String::new(),
                         dev_tax_vesting_blocks: 18_934_560,
+
+                        liveness_absence_threshold: 0,
+                        liveness_jail_after_boundaries: 0,
+                        liveness_jail_epochs: 0,
+                        liveness_vote_window: 0,
+                        liveness_slash_severity: 0,
                     },
                     5,
                 ),
@@ -1244,6 +1264,51 @@ mod tests {
         assert_eq!(config.casper.shards.primary().shard_id.to_string(), "/root");
     }
 
+    /// **The hostlist is off unless an operator turns it on**, and its bounds are refused where every
+    /// other operator-facing configuration error is. The bounds are checked whether or not the route
+    /// is mounted, so a configuration that would be refused at the restart that enables it is refused
+    /// now.
+    #[test]
+    fn publish_node_list_defaults_off_parses_on_and_validates_its_bounds() {
+        let off = node_conf_from_hocon(&parse_defaults("/var/lib/rnode").unwrap()).unwrap();
+        assert!(!off.api_server.publish_node_list);
+        assert_eq!(off.api_server.node_list_max_entries, 32);
+        assert_eq!(
+            off.api_server.node_list_probe_interval,
+            std::time::Duration::from_secs(60)
+        );
+
+        let on = node_conf_from_hocon(&merge(
+            parse_hocon_str("api-server { publish-node-list = true }"),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .unwrap();
+        assert!(on.api_server.publish_node_list);
+
+        let bad = |body: &str| {
+            let conf = node_conf_from_hocon(&merge(
+                parse_hocon_str(body),
+                parse_defaults("/var/lib/rnode").unwrap(),
+            ))
+            .unwrap();
+            crate::web::node_list::NodeListConfig {
+                probe_interval: conf.api_server.node_list_probe_interval,
+                probe_timeout: conf.api_server.node_list_probe_timeout,
+                max_entries: conf.api_server.node_list_max_entries,
+            }
+            .validate()
+        };
+        for body in [
+            "api-server { node-list-max-entries = 0 }",
+            "api-server { node-list-max-entries = 129 }",
+            // A probe that outlives its cycle starts the next one on top of the last.
+            "api-server { node-list-probe-interval = 1s, node-list-probe-timeout = 5s }",
+            "api-server { node-list-probe-timeout = 0s }",
+        ] {
+            assert!(bad(body).is_err(), "{body} must be refused");
+        }
+    }
+
     /// The transaction API is off unless an operator turns it on: a gateway node must not serve the
     /// routes by virtue of being a gateway.
     #[test]
@@ -1387,6 +1452,10 @@ mod tests {
                 port_admin_http: 111111,
                 max_blocks_limit: 111111,
                 enable_reporting: true,
+                publish_node_list: false,
+                node_list_probe_interval: secs(60),
+                node_list_probe_timeout: secs(2),
+                node_list_max_entries: 32,
                 enable_txn_api: false,
                 enable_devnet_cors: false,
                 enable_devnet_admin_public: false,
@@ -1444,6 +1513,12 @@ mod tests {
                         system_contract_pub_key: default_system_contract_pub_key(),
                         dev_tax_address: String::new(),
                         dev_tax_vesting_blocks: 18_934_560,
+
+                        liveness_absence_threshold: 0,
+                        liveness_jail_after_boundaries: 0,
+                        liveness_jail_epochs: 0,
+                        liveness_vote_window: 0,
+                        liveness_slash_severity: 0,
                     },
                     111111,
                 ),
