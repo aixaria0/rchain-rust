@@ -49,7 +49,8 @@ jobs:
       - name: Rust regressions and counterfactual scheduling control
         run: |
           set -euo pipefail
-          docker run --rm -e CARGO_BUILD_JOBS=4 quiet-safety:local \
+          docker run --rm -e CARGO_BUILD_JOBS=4 \
+            -v "$PWD/spec/conformance:/app/spec/conformance:ro" quiet-safety:local \
             bash tests/verify-quiet-finality-safety.sh \
             2>&1 | tee target/verified-image/rust-regressions.log
       - name: Package the tested node for every acceptance arm
