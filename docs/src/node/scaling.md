@@ -178,6 +178,8 @@ Ranked by leverage against cost, honestly:
    specified rather than implemented.
 
 One non-lever worth naming: **the fee schedule does not track work.** A 229 KB deploy was measured
-buying roughly 98 CPU-seconds for 13 phlo ([Security audit](security-audit.md), since bounded). Until
-gas is cost-linked, "contract throughput" is not a single number — it is whatever the mispricing
-admits, which matters more for the credibility of an estimate than for its magnitude.
+buying roughly 98 CPU-seconds for 13 phlo ([Security audit](security-audit.md) §9, as measured in
+September; the union instance is since bounded). The October re-audit found the *class* still live in
+the collection conversions — a sort for a flat 18 phlo — so the sentence still stands: until gas is
+cost-linked, "contract throughput" is not a single number, it is whatever the mispricing admits, which
+matters more for the credibility of an estimate than for its magnitude.

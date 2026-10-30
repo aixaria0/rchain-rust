@@ -207,9 +207,9 @@ assurance ends where the review says it does — the language and calculus are s
 partly proved, the chain layer's authority distribution is access control by another name, and
 unforgeability is axiomatised at the crypto boundary (law 19) rather than proved.
 
-**The September review in full — every citation, the reverted fixes, the open questions, and the ten
-candidate findings it refuted, including the one it opened expecting to lead with:
-[`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
+**The October 2026 re-audit in full — the cost-model class found live again, the new ingress surface,
+the referee verdicts, and the three-chain comparison at pinned revisions; the September 2026 pass is
+kept at §9: [`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
 **How the apparatus was built is written up too, because the method is the part that is unusual here.**
 Two draft papers in the book state it and its own limits:

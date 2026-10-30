@@ -11888,3 +11888,54 @@ the Lean witnesses.
 restart/expiry, exact threshold); no mainnet arming (#428); no unban; the inactivity leak remains #149
 and @aixaria0's; a boundary block can omit `CloseBlock`, so the epoch transition is skippable until a
 validity rule lands. §6 records the hard fork; C344 stays `in progress`.
+
+## 148. The October 2026 re-audit: cost, new ingress and the OCapN surface (C345–C352)
+
+**Found.** A full pass over `dev@be5016682` (2026-10-30), report-only, in the shape of the September
+2026 audit: three independent lenses (work/block path; network ingress and the new surface;
+consensus/recovery/liveness and the assurance claims), every candidate handed to a separate referee,
+four verdicts with positive-artifact refutations only. Twelve candidates were refereed: nine were
+confirmed — one of them the control its author expected a referee to reject — one was not
+re-established, and one was refuted (the control lesson: confidence is not a control).
+
+The principal finding is a **live instance of the cost-model class the September pass opened**:
+`toSet`/`toMap` and set/map literal evaluation run a canonicalisation sort for a flat charge
+(measured: **18 phlo at N = 500…40 000** while wall time grew 7 → 724 ms), `Map.set` charges a flat 22
+for clone+scan+re-sort, `keys` a flat method charge for a full sort, and `++`/`.union` charge only the
+right operand (3 phlo for a re-sort of the whole union). `rho:gov:censure` charges N² for Θ(U³) work —
+the code's own comment concedes the cubic path "was not measured at the bound" — with internal U up to
+2N. The block caps bound declared phlo and counts, never CPU; the 600 s validation deadline aborts the
+awaiting task but cannot interrupt a synchronous builtin.
+
+Three defects are outside the cost class and were confirmed with mechanisms: the **OCapN greeter**
+dials on a peer's handoff without drawing from the dial reserve (capped at 256 peers, not 16); the
+**transaction API's** leg amount is bounded only by the coordinator's whole vault (the C121 residual,
+behind two or three operator opt-ins); and the **proposal finality bound is skipped when no finalised
+block exists** (`if let Some(finalized)`), which is the Lean model's own
+`a_gate_without_the_bound_admits_a_private_chain` in the code. Two crash/consistency findings: the body
+store and the disposition row are different LMDB environments, so a crash between them orphans the
+body; and a websocket client can hold that transport's accept loop for 40 s. Two assurance findings:
+B46 names `Running` where the code gates readiness, and the collection charges are invisible to every
+gate. One candidate (the deploy relay's fan-out and seen-set) was **not re-established** as a security
+primitive; one (string `length`) was **refuted** with a positive artifact.
+
+**Why believed.** Measurements in `spec/audit/evidence/n20261030-reaudit/gas-probe.log` (release,
+env-gated probe `rholang/tests/gas_amplification.rs`); the referee verdicts and their artifacts in
+`verdicts.md`; the three-chain refresh pinned in `three-chain.json` (Agave `v4.4.0`/`9ef63128`, Sui
+`testnet-v1.83.0`/`16d2dc1e`, BSV `v1.2.3`/`6504a3af`). Every confirmed finding names a mechanism
+(`path::symbol`) and the test or measurement that would kill it.
+
+**How it is falsified.** A charge site that grows with N in the `toSet`/`toMap`/`set`/`keys` arms
+refutes C345; a timing of the full censure path at the bound under a second refutes C346 (the code's
+recorded quadratic number makes minutes the expected order); a `try_acquire_owned` in the greeter
+refutes C347; a sub-balance cap on a txn leg refutes C348; deferring the websocket handshake to the
+session task refutes C349; adopting a body that has no row refutes C350; a `None`-finality arm that
+refuses at `MAX_PROPOSAL_FINALITY_LAG + 1` refutes C351; naming readiness in B46 closes C352.
+
+**What it does not claim.** No live multi-node attack; no external audit; no mutation score; no
+coverage re-measure; no full reading of the three chain trees; no proof the cost class is closed (no
+gate is about cost); no 600 s wall-clock demonstration (the projection is from measured per-call time);
+no 100 000-entry relay exhaustion; no market-cap measurement; and no claim that the OCapN surface is
+safe — only that its defaults, guards and bounds were measured. The September pass's own findings are
+re-derived, not reopened: most closed, two are wording/partial residuals, one (quadratic DAG residency)
+remains an accepted decision.

@@ -102,20 +102,26 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 4 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 8 · IN PROGRESS 4 · DONE 375** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  173 of 379 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  181 of 387 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (8)
 
-All 379 are settled: **315 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C345` | Cost-model: the collection conversions and set/map operations charge flat or sublinear for superlinear work — `toSet`/`toMap` 18 phlo at every N (500..40 000) while wall time grew 7→724 ms, `set` a flat 22, `keys` a flat method charge, and `++`/`.union` only the right operand | a charge proportional to the output size for the conversions and to both operands for union, measured against the block budget | §148 |
+| `C346` | `rho:gov:censure` charges N² for Θ(U³) work; the cubic path is unmeasured at the bound and U can reach 2N | a timing of the full censure path at the bound and a charge that tracks U³ | §148 |
+| `C347` | The OCapN greeter dials on a peer's handoff without drawing from the MAX_DIALED_SESSIONS reserve, so the node can be made to hold up to MAX_PEERS sessions against the documented 64 | draw the greeter's dials from the dial reserve, or record the 256 cap as the budget | §148 |
+| `C348` | The transaction API's per-leg amount is bounded only by the coordinator's full vault balance (the C121 residual, behind two or three operator opt-ins) | a sub-balance amount bound, or an operator-facing cap and warning | §148 |
+| `C349` | A websocket client that completes the upgrade and then goes silent holds that transport's accept loop for up to 40 s (10 s upgrade + 30 s challenge) | defer the upgrade and challenge to the session task, as the noise transport does | §148 |
+| `C350` | The receiver stores the body and writes its disposition row in two different LMDB environments, so a crash between them orphans the body with no row to re-offer | adopt a stored body with no row at boot, or make the two writes atomic | §148 |
+| `C351` | The proposal finality bound and its isolation latch are skipped entirely when the view has no finalised block (`if let Some(finalized)`), which the Lean model's own no-bound falsifier exhibits | a no-finality arm that treats genesis as the floor, as rewind_plan already does | §148 |
+| `C352` | Barrier B46 says `Running` requires no unresolved orphan; the code gates readiness (`/health`, `orphan_bodies`), not the phase | name readiness in B46, or gate Running on the settled audit | §148 |
 
 ### T1 coverage — closed
 

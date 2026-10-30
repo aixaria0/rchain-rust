@@ -225,8 +225,10 @@ the [resource-safety case](../spec/resource-safety-case.md).
 
 ## September 2026 audit close-out
 
-The report is [the security audit](security-audit.md); this is its close-out, kept apart so the
-report stays a photograph.
+The report is [the security audit](security-audit.md) §9; this is its close-out, kept apart so the
+report stays a photograph. The **October 2026 re-audit** (§1–§8 of the same page, pass §148) is the
+next pass: it re-derived this close-out, found the cost-model class live again in the collection
+conversions, and opened C345–C352.
 
 - The three P1s were one root cause — the gas model did not bound work — closed by a per-block phlo
   cap, charging the operations that charged less than their work, and charging the parse. The

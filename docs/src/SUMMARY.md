@@ -53,7 +53,7 @@
 - [The public testnet](node/testnet.md)
 - [Running a public testnet of your own](node/running-a-public-testnet.md)
 - [The history chain](node/history-chain.md)
-- [Security audit (September 2026)](node/security-audit.md)
+- [Security audit (October 2026)](node/security-audit.md)
 - [Incident history](node/incident-history.md)
 
 # Part IV — Building applications
