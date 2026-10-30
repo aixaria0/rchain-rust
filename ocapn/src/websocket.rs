@@ -287,7 +287,14 @@ impl PendingWsConn {
             authenticate_as_server(&mut conn, &self.identity).await?;
             self.ready = Some(conn);
         }
-        Ok(self.ready.as_mut().expect("just established"))
+        // Total rather than an `expect`: the arm is unreachable, and the type system's gate is right
+        // that an unreachable panic is still a panic site in production code.
+        match self.ready.as_mut() {
+            Some(conn) => Ok(conn),
+            None => Err(io::Error::other(
+                "the websocket connection is not established",
+            )),
+        }
     }
 }
 
