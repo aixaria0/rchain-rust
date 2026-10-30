@@ -389,7 +389,7 @@ condition and the `edecimal` payload. The wire's minimal bytes and tag 35, serde
 literal surface, reducer dispatch and the cost model remain outside the law and Rust-tested;
 AC10 (operator/new-genesis acceptance) remains a release step.
 | **Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).** | Pos.rhox has no liveness jail, vote or ejection; the port adds five genesis parameters, five `pos:` leaves and the `voteSlash`/`unvoteSlash`/`getLiveness`/`getVotes` methods. | A chain that arms liveness enforcement changes its boundary post-state: a jailed validator is not drawn and earns nothing, and a passing >2/3 active-stake vote slashes and bans. Default-off and the format-2 params encoding keep unarmed chains byte-identical; arming requires a new genesis and is a hard fork. Pre-launch category A; every validator must run the binary; no live evidence yet. RCHIP #55, HAZOP U21, C344 |
-| **Cost charges track the work of collection canonicalisation, union and `rho:gov:censure`.** | Archived `legacy/rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala` at `1b7583649` charges `unionCost(other.size)` — the right operand only — a flat `KEYS_METHOD_COST = 10`, and no canonicalisation charge beyond the method call; the Rust-native `rho:gov:*` folds have no Scala oracle. | Rust charges `canonicalization_cost(n) = 3n` for the conversions, `set` and `keys` output, both union operands, and `(u+1)^3` for censure (Law 91, `spec/Rchain/Cost.lean`; C345/C346, pass §149). **Hard fork (#51 category A):** `refund_amount`/`burned_amount` and every post-state hash move; a pre-fork block containing a conversion or a censure does not replay under the new code (`replay_cost_mismatch`); every network's genesis post-state hash moves; the block-version activation gate is owed. |
+| **Cost charges track the work of collection canonicalisation, union, set insertion, the tallies and `rho:gov:censure`.** | Archived `legacy/rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala` at `1b7583649` charges `unionCost(other.size)` — the right operand only — a flat `KEYS_METHOD_COST = 10`, a flat `ADD_COST` for a set insertion that re-canonicalises the set, no charge on a tally's option lists at all, and no canonicalisation charge beyond the method call; the Rust-native `rho:gov:*` folds have no Scala oracle. | Rust charges `canonicalization_cost(n) = 3n` for the conversions, `set`, `keys` and `add` output, both union operands, `(u+1)^3` for censure and the scanned entries for a tally (Law 91, `spec/Rchain/Cost.lean`; C345/C346, pass §149, and C353/C354, pass §150, whose cost register found the last two). **Hard fork (#51 category A):** `refund_amount`/`burned_amount` and every post-state hash move; a pre-fork block containing a conversion, a set insertion, a tally or a censure does not replay under the new code (`replay_cost_mismatch`); every network's genesis post-state hash moves; the block-version activation gate is owed. |
 
 ## 7. Verification
 
@@ -12085,10 +12085,11 @@ is now written beside the work in one table a reviewer reads. The **constant** i
 one phlo per operation is a count, not a calibrated unit, and `resolveWeights` is the measured
 example (41 ms for a quadratic charge that matches its quadratic shape).
 
-**This unit's own §6 row is owed, for the reason §149 gave one unit ago.** The inventory pins every
-row by digest and pins `source_dev_sha`, so a row for C353/C354 pinned to the #514 merge commit would
-point at a `passes.md` that does not contain it, and pinning it to this branch would drag a branch
-commit into an audit artifact. The row and the inventory, matrix and ledger re-pin are owed **after
-this PR merges**, against the new dev SHA. What *can* be done now is the ledger, which is authored and
-not digest-pinned: `Audit:cost-tracks-work` reads `merged` on dev (the post-#514 closeout landed that
-with its §6 row), and this unit's charges are a new `open` item.
+**The §6 row, recorded.** The inventory pins every row by digest and pins `source_dev_sha`, so the
+deviation row could not be added on the branch: a row for C353/C354 pinned to the #514 merge commit
+would point at a `passes.md` that would not contain it, and pinning it to the branch would drag a
+branch commit into an audit artifact. It is recorded here instead, in the operation §149 also deferred
+and the post-#514 closeout performed for that unit: the cost-deviation row in §6 is **extended** to
+cover the set-insertion and tally charges, and the inventory, matrix and ledger are re-pinned to the
+merge commit `9e93c3d1f`, with the inventory's digests, lines and URLs regenerated. The ledger's
+`Audit:cost-insert-and-tally` reads `merged` (#518).
