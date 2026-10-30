@@ -61,7 +61,7 @@ The LMDB environments are sized in `casper/src/storage.rs` (`rnode_db_mapping`):
 
 | Store | LMDB map size |
 |---|---|
-| `blockstorage` (blocks) | 1 TB |
+| `blockstorage` (blocks, and the block-disposition ledger) | 1 TB |
 | `dagstorage` (DAG / metadata / deploy index) | 100 GB |
 | `rspace/history` + `rspace/cold` (tuple-space trie) | 1 TB each |
 | `eval/history` + `eval/cold` (REPL eval store) | 1 TB each |

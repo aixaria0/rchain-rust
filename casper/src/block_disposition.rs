@@ -1,5 +1,4 @@
-//! **The durable disposition of a received block** (HAZOP U19, law candidate
-//! `block-disposition-and-isolation`).
+//! **The durable disposition of a received block** (HAZOP U19, Law 88a).
 //!
 //! The live private-chain incident had a state the node could not represent: a block body in the
 //! block store, no DAG entry, no lease, no retry and no fault. The receiver's pending set and the
@@ -23,15 +22,21 @@
 //!
 //! **What this cannot do, said rather than implied:** rows are written only by this build. A body
 //! stored by an older binary has no row, and finding it would mean decoding the whole block store at
-//! boot — the memory cost the resource work exists to avoid. Such a body is still reported by the
-//! boot count warning (`NodeLaunch`), and only an operator reset or a peer's re-delivery recovers it.
-//! The one-time legacy scan remains owed (F-U19-07).
+//! boot — the memory cost the resource work exists to avoid. The one-time legacy scan
+//! (`scan_legacy_bodies`, F-U19-07) walks the store's **keys** and adopts each body the DAG does not
+//! hold, without decoding a single body; it runs once per store, marker-gated, and re-runs on a
+//! `LEGACY_BODY_SCAN_VERSION` bump — which is what carried the ledger across the C350 move into the
+//! body's LMDB environment.
+//!
+//! **The body and the first row are one write** (C350): [`BodyDispositionWriter`] commits both in one
+//! LMDB transaction, which is why the ledger shares the `blockstorage` environment.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rchain_block_storage::block_store::BlockStore;
+use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::dag::dag_storage::LEGACY_BODY_SCAN_VERSION;
 use rchain_models::block_hash::BlockHash;
@@ -312,6 +317,72 @@ impl<'a> Cursor<'a> {
 pub struct BlockDispositionStore {
     store: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>>,
     mutation: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// **The body and its disposition, in one transaction** (C350).
+///
+/// The receiver used to store the body and then write the `Pending` row: two databases, two
+/// transactions, and a crash between them left a body nothing owed. Both live in the block-storage
+/// environment now, so `LmdbDirStoreManager::put_across` writes them together — either the body is
+/// stored *and* owed, or neither changed.
+///
+/// **What this does not do**: it does not make the later stage transitions atomic. Those are row-only
+/// writes over a body that is already stored and already owed, which is exactly the state the ledger
+/// exists to make durable.
+#[derive(Clone)]
+pub struct BodyDispositionWriter {
+    manager: rchain_shared::lmdb::LmdbDirStoreManager,
+}
+
+impl BodyDispositionWriter {
+    pub fn new(manager: rchain_shared::lmdb::LmdbDirStoreManager) -> Self {
+        Self { manager }
+    }
+
+    /// Store `block`'s body and record that this shard owes it an outcome, in one write.
+    ///
+    /// The row keeps an existing `Faulted` record (a fault is a stronger fact than a re-delivery) and
+    /// an existing `Pending` row's first-sighting stamp, exactly as [`BlockDispositionStore::mark_pending`]
+    /// does — the difference is that the read happens inside the transaction that writes the body, so
+    /// there is no window for a second writer to interleave.
+    pub async fn store_body_and_mark_pending(
+        &self,
+        block: &BlockMessage,
+        stage: PendingStage,
+    ) -> Result<(), String> {
+        let key = BlockHashCodec.encode(&block.block_hash);
+        let body = BlockMessageCodec.encode(block);
+        let block_number = block.block_number;
+        let since_unix_ms = now_unix_millis();
+        self.manager
+            .put_across(
+                rchain_block_storage::block_store::BLOCKS_DB,
+                &[(key, body)],
+                crate::storage::BLOCK_DISPOSITION_DB,
+                move |_key, existing| {
+                    let next = match existing
+                        .map(|bytes| BlockDispositionCodec.decode(bytes))
+                        .transpose()?
+                    {
+                        Some(BlockDisposition::Faulted { .. }) => return Ok(None),
+                        Some(BlockDisposition::Pending { since_unix_ms, .. }) => {
+                            BlockDisposition::Pending {
+                                block_number,
+                                stage,
+                                since_unix_ms,
+                            }
+                        }
+                        None => BlockDisposition::Pending {
+                            block_number,
+                            stage,
+                            since_unix_ms,
+                        },
+                    };
+                    Ok(Some(BlockDispositionCodec.encode(&next)))
+                },
+            )
+            .await
+    }
 }
 
 impl BlockDispositionStore {
@@ -1404,6 +1475,99 @@ mod tests {
         .await
         .unwrap();
         BlockDispositionStore::from_store(Arc::new(kv))
+    }
+
+    /// An LMDB manager whose body and disposition databases share an environment, as the node's own
+    /// mapping makes them (C350).
+    fn shared_env_manager() -> rchain_shared::lmdb::LmdbDirStoreManager {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rchain-disposition-c350-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        rchain_shared::lmdb::LmdbDirStoreManager::new(
+            &dir,
+            vec![
+                (
+                    rchain_shared::store_manager::Db::new(
+                        rchain_block_storage::block_store::BLOCKS_DB,
+                    ),
+                    rchain_shared::store_manager::LmdbEnvConfig::new(
+                        "blockstorage",
+                        64 * 1024 * 1024,
+                    ),
+                ),
+                (
+                    rchain_shared::store_manager::Db::new(crate::storage::BLOCK_DISPOSITION_DB),
+                    rchain_shared::store_manager::LmdbEnvConfig::new(
+                        "blockstorage",
+                        64 * 1024 * 1024,
+                    ),
+                ),
+            ],
+        )
+    }
+
+    /// **The body and its pending row are one write, and a fault outranks re-pending** (C350).
+    ///
+    /// Before this, the row was a second transaction in a second LMDB environment: a crash between
+    /// the two left a stored body nothing owed. The pair is now committed together, and a row that
+    /// already records a fault is kept — a re-delivery is not evidence the fault was handled.
+    #[tokio::test]
+    async fn the_writer_stores_the_body_and_its_row_together() {
+        let manager = shared_env_manager();
+        let writer = BodyDispositionWriter::new(manager.clone());
+        let ledger = BlockDispositionStore::from_store(Arc::new(
+            database(
+                &manager,
+                crate::storage::BLOCK_DISPOSITION_DB,
+                Arc::new(BlockHashCodec),
+                Arc::new(BlockDispositionCodec),
+            )
+            .await
+            .expect("open the ledger"),
+        ));
+        let bodies = block_store::create(&manager)
+            .await
+            .expect("open the block store");
+        let block = sample_block(hash(41));
+
+        writer
+            .store_body_and_mark_pending(&block, PendingStage::Stored)
+            .await
+            .expect("one write");
+        assert_eq!(
+            bodies.get(&[block.block_hash]).await.expect("read body"),
+            vec![Some(block.clone())],
+            "the body is in the store"
+        );
+        assert!(
+            matches!(
+                ledger.get(&block.block_hash).await.expect("read row"),
+                Some(BlockDisposition::Pending {
+                    stage: PendingStage::Stored,
+                    ..
+                })
+            ),
+            "and so is the obligation"
+        );
+
+        // A fault is a stronger record than a re-delivery's pending row; the body is still written.
+        ledger
+            .mark_faulted(block.block_hash, block.block_number, "retry", "boom")
+            .await
+            .expect("fault");
+        writer
+            .store_body_and_mark_pending(&block, PendingStage::Stored)
+            .await
+            .expect("re-delivery");
+        assert!(matches!(
+            ledger.get(&block.block_hash).await.expect("read row"),
+            Some(BlockDisposition::Faulted { .. })
+        ));
     }
 
     #[test]

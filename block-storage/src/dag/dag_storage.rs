@@ -180,7 +180,13 @@ pub const HEALTH_COUNTERS_KEY: &[u8] = b"shard-health-counters";
 pub const LEGACY_BODY_SCAN_KEY: &[u8] = b"legacy-body-scan";
 
 /// The scan's meaning. Bump this if a later scan must run again on a store already marked.
-pub const LEGACY_BODY_SCAN_VERSION: u8 = 1;
+///
+/// **Version 2 is the move to the block-storage environment** (C350). The ledger's rows moved with
+/// `STORE_FORMAT_VERSION` 4, so an upgraded node opens an empty ledger over a populated body store;
+/// the scan adopts every body the DAG does not hold — exactly the unsettled set — and writes the new
+/// marker. What is lost is a `Faulted` row on an unsettled body: it comes back as `Pending` with its
+/// attempt count reset, which retries a body that had failed rather than dropping one.
+pub const LEGACY_BODY_SCAN_VERSION: u8 = 2;
 
 impl HealthCounters {
     /// Three big-endian u64s, 24 bytes. Fixed width, so a decode cannot be ambiguous and a truncated
