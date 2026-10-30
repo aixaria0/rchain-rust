@@ -2936,6 +2936,40 @@ def lawsB : List Law := [
       <reason>` — the register's own `status` discipline applied to a table that is prose. Two rows are \
       honestly `not modelled`: the join rule (`spec/Rchain/Silence.lean` already records that boundary, and \
       a half-filled join is silence there as it is in the node) and the inactivity leak above" },
+  { number := 51, clause := "d", layer := "Progress",
+    rustWitness := [
+      "casper/src/blocks/proposer/proposer.rs:round_escape_permit_is_consumed_even_when_the_round_stays_open",
+      "casper/src/blocks/proposer/proposer.rs:late_escape_and_repeated_ticks_do_not_bank_unused_permits"],
+    statement := "**A time-gated action consumes its permit.** The proposer's escape from a round \
+      that is not closing may fire only after a full `ROUND_STALL_ESCAPE` interval, and firing it \
+      re-arms the sighting: a still-open round must wait another full interval. A banked permit — \
+      the defect shape, `banked` — licenses every later tick once the first interval elapsed, so the \
+      bound stops pacing anything and a fast producer can exhaust the finality-lag bound while its \
+      peers are still assembling the next shared justification layer",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Pacing.Permit, `Rchain.Pacing.take, `Rchain.Pacing.banked,
+      `Rchain.Pacing.a_permit_is_consumed, `Rchain.Pacing.the_banked_gate_fires_every_tick,
+      `Rchain.Pacing.the_correct_gate_waits_a_full_interval],
+    axioms := [],
+    rust := ["casper/src/blocks/proposer/proposer.rs"],
+    witness := [`Rchain.Pacing.a_permit_is_consumed,
+      `Rchain.Pacing.the_banked_gate_fires_every_tick,
+      `Rchain.Pacing.the_correct_gate_waits_a_full_interval],
+    falsifiable := some "Deleting the sighting reset in `take_round_escape` makes \
+      `round_escape_permit_is_consumed_even_when_the_round_stays_open` fire: the second tick at +1 ms \
+      escapes. `late_escape_and_repeated_ticks_do_not_bank_unused_permits` pins the late sighting \
+      (90 s) and the burst after it. The corpus row `pace 15000 15001` expects no escape and fires \
+      under the banked model, while `the_banked_gate_fires_every_tick` exhibits that model's defect \
+      as a theorem",
+    note := "The code was adopted from candidate `b26bda1a` (branch \
+      `aixaria0:verify/quiet-finality-integrated-20261030`): `proposer.rs` is byte-identical between \
+      that branch's merge-base and this tree, so only the proposer hunk was taken. The fix is \
+      **consensus-neutral** — it gates `AlreadyProposedThisRound`, not block validity, the state \
+      hash or the wire — and `ROUND_STALL_ESCAPE` is unchanged at 15 s. The model's `bound` is 15 000 \
+      ms; the corpus (`spec/conformance/recovery.tsv`) is the tie to `take_escape_permit`. The layer \
+      is named `recovery` because the decline of an escape storm is a recovery property; later \
+      clauses (the receiver re-offer and the fault classification) extend it." },
   { number := 52, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/blocks/proposer/proposer.rs:the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one"],
@@ -4893,6 +4927,88 @@ def lawsC : List Law := [
       `candidate:block-disposition-and-isolation`. The model does not prove a peer accepted the \
       chain — it bounds the private chain a node can build; the finality algorithm and slashing \
       are outside it." },
+
+  { number := 88, clause := "c", layer := "Disposition",
+    statement := "**An overflow refusal is a deferral, not an orphan.** The receiver stores the \
+      body and writes the `Pending` row before it can refuse for capacity, so the refusal changes \
+      no row: the obligation survives by construction. A runtime sweep re-offers an aged `Stored` \
+      row once every justification is in the DAG; a row already in flight (`Validating`/`Retry`) is \
+      never eligible; a held body's claim is taken once; and a re-offered row moves to `Retry`, so \
+      a second sweep dispatches nothing",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Disposition.Recovery.Row, `Rchain.Disposition.Recovery.eligible,
+      `Rchain.Disposition.Recovery.refuse,
+      `Rchain.Disposition.Recovery.an_overflow_refusal_keeps_the_row,
+      `Rchain.Disposition.Recovery.Receiver, `Rchain.Disposition.Recovery.claim,
+      `Rchain.Disposition.Recovery.a_claim_is_taken_once,
+      `Rchain.Disposition.Recovery.reoffer,
+      `Rchain.Disposition.Recovery.reoffer_is_not_eligible,
+      `Rchain.Disposition.Recovery.the_age_floor_gates_eligibility,
+      `Rchain.Disposition.Recovery.an_inflight_row_is_not_eligible],
+    axioms := [],
+    rust := ["casper/src/block_disposition.rs", "casper/src/blocks/block_receiver.rs",
+      "node/src/runtime/node_runtime.rs"],
+    rustWitness := ["casper/src/block_disposition.rs:a_refused_stored_body_is_reoffered_by_the_runtime_sweep",
+      "casper/src/block_disposition.rs:a_pending_body_waits_for_its_parent",
+      "casper/src/block_disposition.rs:the_sweep_is_idempotent",
+      "casper/src/blocks/block_receiver.rs:a_reoffer_claim_is_taken_once_and_never_steals_an_inflight_block"],
+    witness := [`Rchain.Disposition.Recovery.an_overflow_refusal_keeps_the_row,
+      `Rchain.Disposition.Recovery.a_claim_is_taken_once,
+      `Rchain.Disposition.Recovery.reoffer_is_not_eligible,
+      `Rchain.Disposition.Recovery.the_age_floor_gates_eligibility,
+      `Rchain.Disposition.Recovery.an_inflight_row_is_not_eligible],
+    falsifiable := "Removing the age floor makes the sweep race the receiver's own release and the \
+      boot sweep (`the_age_floor_gates_eligibility` flips); dropping the `Validating`/`Retry` \
+      exclusion makes a second sweep duplicate an in-flight body (`an_inflight_row_is_not_eligible`, \
+      `the_sweep_is_idempotent`); dropping the claim lets the sweep and the receiver dispatch the \
+      same held body (`a_reoffer_claim_is_taken_once...`); and a sweep that does not move the row \
+      in flight fails `a_refused_stored_body_is_reoffered_by_the_runtime_sweep`'s `Retry` \
+      assertion.",
+    note := "The code was adopted from candidate `ac41fe7d`/`4d9883a4`/`20ef2505` and re-homed on \
+      #499's `NodePhaseCell` (the candidate calls the pre-#499 free `wait_until_running`), with the \
+      receiver claim added: the candidate's sweep could race the receiver's own release, because the \
+      in-memory state is shared through the `Arc<Mutex<…>>`. **Liveness only** — the sweep dispatches \
+      the same `block_processor` validation path as the boot audit, and no validity, state-hash or \
+      wire rule changes. The model abstracts the store I/O, the missing-body arm and the queue. \
+      Named residual: a just-released block is briefly neither held nor in the DAG; the 60 s floor \
+      makes the window small, and the restart-under-load arm is the place to look for duplicate \
+      proposals before adding an in-flight hash set." },
+
+  { number := 88, clause := "d", layer := "Disposition",
+    statement := "**An unresolvable justification is named, not silently passed into an \
+      unclassified fault.** The regression check cannot be evaluated when a justification is absent \
+      from the DAG message map; the current rule **passes** (the Scala's own `None`), and that \
+      verdict is deliberate — only a detected regression refuses. What the outcome must carry is its \
+      name: `Unresolved` is distinct from `Pass`, `NoOwnJustification` from both, and a later \
+      height/sequence failure is recorded under the stage `missing justification`, not \
+      `validation internal`",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Disposition.Recovery.Outcome,
+      `Rchain.Disposition.Recovery.classify, `Rchain.Disposition.Recovery.refuses,
+      `Rchain.Disposition.Recovery.outcomeName,
+      `Rchain.Disposition.Recovery.unresolved_does_not_refuse,
+      `Rchain.Disposition.Recovery.regression_refuses,
+      `Rchain.Disposition.Recovery.pass_does_not_refuse],
+    axioms := [],
+    rust := ["casper/src/validate.rs", "casper/src/blocks/block_processor.rs"],
+    rustWitness := ["casper/src/validate.rs:an_unknown_justification_passes_the_regression_check_and_is_named",
+      "casper/src/blocks/block_processor.rs:a_missing_justification_is_recorded_under_its_own_stage"],
+    witness := [`Rchain.Disposition.Recovery.unresolved_does_not_refuse,
+      `Rchain.Disposition.Recovery.regression_refuses,
+      `Rchain.Disposition.Recovery.pass_does_not_refuse],
+    falsifiable := "Making `Unresolved` a refusal flips `unresolved_does_not_refuse` and the \
+      corpus `classify false true unresolved` row — and is a consensus change, which is why the test \
+      `an_unknown_justification_passes_the_regression_check_and_is_named` pins the passing verdict. \
+      Folding the reason back into `validation internal` fails \
+      `a_missing_justification_is_recorded_under_its_own_stage`.",
+    note := "The verdicts are **unchanged**: a block that passed the regression check still passes \
+      it, and one that failed still refuses with `JustificationRegression`. The later failure is the \
+      height/sequence check's `Err(\"missing justification <hex>\")`, which the processor now records \
+      under its own stage; the retry semantics are the same durable `Faulted` row. This is \
+      classification and observability, not a validity rule — a design pass corrected an earlier \
+      reading that called it a live drop (the processor already records and retries the fault)." },
 
   { number := 89, layer := "PoS",
     statement := "**Liveness enforcement is jail first; only a vote reaches the bond.** A validator \

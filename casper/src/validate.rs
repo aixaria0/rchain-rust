@@ -363,25 +363,70 @@ pub async fn sequence_number(
     }
 }
 
+/// **The regression check's answer** (Law 88d). `Unresolved` is not a verdict on the block: the
+/// check cannot be evaluated because a justification is absent from the DAG message map, and the
+/// current rule **passes** (the Scala's own `None`). It is carried so the reason is named rather
+/// than folded into "the check said yes" — the later height/sequence check is where such a block
+/// fails, and it already names the missing hash. `NoOwnJustification` is the second, different
+/// unresolved shape: the sender is absent from its own justification set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JustificationOutcome {
+    Pass,
+    Regression,
+    Unresolved(Vec<BlockHash>),
+    NoOwnJustification,
+}
+
+impl JustificationOutcome {
+    /// **The classification as a pure function** (Law 88d), for the conformance corpus. Unresolved
+    /// when the justification is absent from the message map; otherwise the regression relation's
+    /// answer. It carries no hash, because the corpus is about the classification, not the id.
+    pub fn classify(in_msg_map: bool, regression: bool) -> Self {
+        if !in_msg_map {
+            JustificationOutcome::Unresolved(Vec::new())
+        } else if regression {
+            JustificationOutcome::Regression
+        } else {
+            JustificationOutcome::Pass
+        }
+    }
+
+    /// Whether the outcome refuses the block. **Only `Regression` does**; `Unresolved` is not a
+    /// verdict, which is what keeps this clause free of a consensus change.
+    pub fn refuses(&self) -> bool {
+        matches!(self, JustificationOutcome::Regression)
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            JustificationOutcome::Pass => "pass",
+            JustificationOutcome::Regression => "regression",
+            JustificationOutcome::Unresolved(_) => "unresolved",
+            JustificationOutcome::NoOwnJustification => "no_own",
+        }
+    }
+}
+
 /// Validate there is no justification regression (port of `justificationRegressions`).
+///
+/// **Verdicts are unchanged.** `Pass`, `Unresolved` and `NoOwnJustification` all admit to the next
+/// check; only `Regression` refuses. Making `Unresolved` a refusal would be a consensus change.
 pub async fn justification_regressions(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
 ) -> Result<ValidBlockProcessing, String> {
-    let valid = check_justification_regression(dag, b)
-        .await?
-        .unwrap_or(true);
-    if valid {
-        Ok(Ok(()))
-    } else {
-        Ok(Err(BlockStatus::JustificationRegression))
+    match check_justification_regression(dag, b).await? {
+        JustificationOutcome::Regression => Ok(Err(BlockStatus::JustificationRegression)),
+        JustificationOutcome::Pass
+        | JustificationOutcome::Unresolved(_)
+        | JustificationOutcome::NoOwnJustification => Ok(Ok(())),
     }
 }
 
 async fn check_justification_regression(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
-) -> Result<Option<bool>, String> {
+) -> Result<JustificationOutcome, String> {
     let repr = dag.get_representation().await;
     let msg_map: &BTreeMap<BlockHash, Message<BlockHash, Validator>> =
         &repr.dag_message_state.msg_map;
@@ -394,12 +439,20 @@ async fn check_justification_regression(
         .collect();
     let justifications = match justifications {
         Some(js) => js,
-        None => return Ok(None),
+        None => {
+            let missing = b
+                .justifications
+                .iter()
+                .filter(|j| !msg_map.contains_key(*j))
+                .cloned()
+                .collect();
+            return Ok(JustificationOutcome::Unresolved(missing));
+        }
     };
 
     let prev_msg = match justifications.iter().find(|m| m.sender == b.sender) {
         Some(m) => m,
-        None => return Ok(None),
+        None => return Ok(JustificationOutcome::NoOwnJustification),
     };
 
     let res = justifications.iter().all(|just| {
@@ -413,7 +466,11 @@ async fn check_justification_regression(
             None => true,
         }
     });
-    Ok(Some(res))
+    Ok(if res {
+        JustificationOutcome::Pass
+    } else {
+        JustificationOutcome::Regression
+    })
 }
 
 /// Validate that a block does not neglect an invalid-but-still-bonded justification (port of
@@ -2197,6 +2254,26 @@ mod effectful_tests {
         assert!(
             EquivocationEvidence::decode(&fat_header).is_ok(),
             "and it round-trips"
+        );
+    }
+    /// **An unresolvable justification is named, and the verdict is unchanged** (Law 88d). The
+    /// regression check cannot evaluate a justification absent from the message map; the current
+    /// rule passes (Scala fidelity), so the block reaches the height check, where it fails naming
+    /// the hash. Turning this into a refusal would be a consensus change and fails this test.
+    #[tokio::test]
+    async fn an_unknown_justification_passes_the_regression_check_and_is_named() {
+        let dag = mock(BTreeMap::new());
+        let b = block(9, 1, 1, vec![hash(7)]);
+
+        assert_eq!(
+            check_justification_regression(&dag, &b).await.unwrap(),
+            JustificationOutcome::Unresolved(vec![hash(7)]),
+            "the unresolved shape carries the hash the node could not resolve"
+        );
+        assert_eq!(
+            justification_regressions(&dag, &b).await.unwrap(),
+            Ok(()),
+            "the verdict is unchanged: the rule passes, exactly as the Scala's `None` did"
         );
     }
 }

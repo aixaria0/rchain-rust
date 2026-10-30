@@ -38,6 +38,18 @@ pub enum RecvStatus {
     Requested,
 }
 
+/// The result of [`BlockReceiverState::claim_reoffer`]: whether the runtime sweep may dispatch a
+/// stored pending body, and whether the claim moved the receiver's own state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReofferClaim {
+    /// The receiver held the body at `EndStoreBlock`; the sweep now owns the dispatch.
+    Claimed,
+    /// The receiver holds no in-memory claim; the sweep owns the dispatch.
+    NotHeld,
+    /// The receiver already has it in flight (or in a state the sweep must not touch).
+    Owned,
+}
+
 /// Block receiver state (port of `BlockReceiverState`).
 ///
 /// It consists of three events: two to store blocks (begin and end) to prevent a race when storing
@@ -104,6 +116,29 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
             }
         }
         next
+    }
+
+    /// **Claim a stored body for the runtime re-offer sweep** (Law 88c), under the receiver's own
+    /// lock, so a sweep cannot dispatch a body the receiver is about to release.
+    ///
+    /// * `NotHeld` — the receiver has no in-memory claim (the overflow refusal path dropped it, or
+    ///   this is a post-restart row). The sweep owns the dispatch.
+    /// * `Claimed` — the receiver holds it at `EndStoreBlock`; this moves it to
+    ///   `PendingValidation`, which is the state `begin_stored` refuses, so a concurrent delivery
+    ///   cannot dispatch it a second time.
+    /// * `Owned` — already in flight, requested, or otherwise not the sweep's to take.
+    pub fn claim_reoffer(&mut self, id: &MId) -> ReofferClaim {
+        if !self.blocks_st.contains_key(id) {
+            return ReofferClaim::NotHeld;
+        }
+        match self.receive_st.get(id) {
+            Some(RecvStatus::EndStoreBlock) => {
+                self.receive_st
+                    .insert(id.clone(), RecvStatus::PendingValidation);
+                ReofferClaim::Claimed
+            }
+            _ => ReofferClaim::Owned,
+        }
     }
 
     /// Storing of the block is done, waiting validation. Returns the updated state and the unseen
@@ -1279,6 +1314,34 @@ mod tests {
         let (released, ready) = admitted.finished(parent.clone(), BTreeSet::new()).unwrap();
         assert_eq!(ready.len(), MAX_PENDING_BLOCKS);
         assert!(!released.blocks_st.contains_key(&parent));
+    }
+
+    /// **A re-offer claim is taken once** (Law 88c). A held `EndStoreBlock` body moves to
+    /// `PendingValidation`, which `begin_stored` refuses, so a concurrent delivery cannot dispatch
+    /// it a second time; an unheld body is the sweep's (`NotHeld`), and an in-flight one is not.
+    #[test]
+    fn a_reoffer_claim_is_taken_once_and_never_steals_an_inflight_block() {
+        let state = BlockReceiverState::<MId>::new();
+        let (state, _) = state.begin_stored("held".to_string());
+        let (mut state, _) = state.end_stored("held".to_string(), Vec::new()).unwrap();
+        assert_eq!(
+            state.claim_reoffer(&"held".to_string()),
+            ReofferClaim::Claimed
+        );
+        assert_eq!(
+            state.receive_st.get("held"),
+            Some(&RecvStatus::PendingValidation),
+            "the claim moves the receiver's own state"
+        );
+        assert_eq!(
+            state.claim_reoffer(&"held".to_string()),
+            ReofferClaim::Owned
+        );
+        assert_eq!(
+            state.claim_reoffer(&"absent".to_string()),
+            ReofferClaim::NotHeld,
+            "an overflow-refused body has no in-memory claim"
+        );
     }
 
     #[test]
