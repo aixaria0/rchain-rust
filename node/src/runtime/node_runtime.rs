@@ -1060,6 +1060,15 @@ fn wire_block_processing_observed(
         processor_input_tx_disposition.clone(),
         disposition_log.clone(),
     ));
+    // Stored bodies skipped at boot for missing parents must be retried when
+    // the parents arrive; faulted rows continue through the separate backoff loop.
+    tokio::spawn(rchain_casper::block_disposition::retry_ready_stored_pending(
+        parts.block_disposition.clone(),
+        parts.block_store.clone(),
+        parts.dag.clone(),
+        processor_input_tx_disposition.clone(),
+        disposition_log.clone(),
+    ));
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
         parts.block_disposition.clone(),
         parts.block_store.clone(),
