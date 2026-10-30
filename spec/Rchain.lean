@@ -74,6 +74,7 @@ import Rchain.Bounded
 import Rchain.Admission
 import Rchain.Decimal
 import Rchain.Disposition
+import Rchain.HostList
 import Rchain.Namespace
 import Rchain.Charging
 import Rchain.Crypto.Random

@@ -68,6 +68,12 @@ pub struct Capabilities {
     pub admin_http: bool,
     /// Dev mode is on (`--dev-mode`).
     pub dev_mode: bool,
+    /// **This node holds a validator identity for the shard and can propose at all.** Not a claim of
+    /// being bonded or in the active set — that is a consensus read, and `manual_propose` cannot
+    /// stand in for it: an unkeyed observer with no `--autopropose` computes
+    /// `manual_propose = true`, exactly like a manual-mode validator. A client that wants to know
+    /// whether a node can include a deploy reads this, not `manual_propose`.
+    pub proposer: bool,
 }
 
 /// **The shard's autopropose halt, as the surface reads it** (W-N10-01, F-U10-02).

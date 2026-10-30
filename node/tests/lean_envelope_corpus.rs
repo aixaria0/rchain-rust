@@ -31,10 +31,11 @@ use rchain_node::api::dto::{
     NodeCapabilities, OperatorStatus, PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
+use rchain_node::web::node_list::{NodeListEntry, NodeListResponse};
 use serde_json::Value;
 
 /// The catalog's declared size (`Rchain/Envelope.lean`'s `envelopeCaseCount`).
-const ENVELOPE_CASES: usize = 12;
+const ENVELOPE_CASES: usize = 14;
 
 #[tokio::test]
 async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
@@ -264,6 +265,7 @@ fn dto_by_name(name: &str) -> Value {
             propose_on_deploy: false,
             manual_propose: false,
             dev_mode: false,
+            proposer: false,
             degraded: "normal".to_string(),
             accepts_deploys: true,
             pool: DeployPoolStatus {
@@ -293,6 +295,7 @@ fn dto_by_name(name: &str) -> Value {
                 propose_on_deploy: false,
                 manual_propose: false,
                 dev_mode: false,
+                proposer: false,
                 degraded: "normal".to_string(),
                 accepts_deploys: true,
                 pool: DeployPoolStatus {
@@ -338,6 +341,8 @@ fn dto_by_name(name: &str) -> Value {
             manual_propose: false,
             admin_http: false,
             dev_mode: false,
+            proposer: false,
+            node_list: false,
             faucet: false,
             faucet_remaining: 0,
         }),
@@ -369,6 +374,24 @@ fn dto_by_name(name: &str) -> Value {
         }),
         "PooledDeploys" => to_json(&PooledDeploys {
             deploys: Vec::new(),
+        }),
+        "NodeListResponse" => to_json(&NodeListResponse {
+            network_id: "0".into(),
+            primary_shard: "/root".into(),
+            generated_at: 0,
+            own_latest_block_number: 0,
+            nodes: Vec::new(),
+        }),
+        "NodeListEntry" => to_json(&NodeListEntry {
+            node_id: "0".into(),
+            http_url: "http://127.0.0.1:40403".into(),
+            network_id: "0".into(),
+            shard_id: "/root".into(),
+            node_version: "0".into(),
+            latest_block_number: 0,
+            proposer: true,
+            accepts_deploys: true,
+            is_self: false,
         }),
         "FaucetResponse" => to_json(&FaucetResponse {
             deploy_id: "0".into(),

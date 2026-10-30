@@ -233,6 +233,12 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         port_admin_http: to_i32(get(h, "port-admin-http")?)?,
         max_blocks_limit: to_i32(get(h, "max-blocks-limit")?)?,
         enable_reporting: to_bool(get(h, "enable-reporting")?)?,
+        publish_node_list: to_bool(get(h, "publish-node-list")?)?,
+        node_list_probe_interval: to_duration(get(h, "node-list-probe-interval")?)?,
+        node_list_probe_timeout: to_duration(get(h, "node-list-probe-timeout")?)?,
+        node_list_max_entries: usize::try_from(to_i64(get(h, "node-list-max-entries")?)?).map_err(
+            |_| "api-server.node-list-max-entries must be a non-negative integer".to_string(),
+        )?,
         enable_txn_api: to_bool(get(h, "enable-txn-api")?)?,
         enable_devnet_cors: to_bool(get(h, "enable-devnet-cors")?)?,
         enable_devnet_admin_public: to_bool(get(h, "enable-devnet-admin-public")?)?,

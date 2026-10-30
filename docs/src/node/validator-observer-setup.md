@@ -52,6 +52,33 @@ boundary re-selects the active set each epoch. The lifecycle is
 A second node on one host uses an offset (`41400`–`41405`, discovery UDP `41404`); see
 [the testnet's port notes](testnet.md#housekeeping) for the exact rule.
 
+### Publishing the node hostlist (optional)
+
+A node can tell wallets which other nodes can take their deploys: `GET /api/v1/nodes` returns the
+live peers it has probed and found deploy-capable. It is **off by default**, because it discloses
+peer addresses to any HTTP client:
+
+```hocon
+api-server {
+  publish-node-list = true
+  node-list-max-entries = 32
+  node-list-probe-interval = 60 seconds
+  node-list-probe-timeout = 2 seconds
+}
+```
+
+or `--api-publish-node-list`. Two things make a node **listable** by its peers, and both follow from
+the probe rather than from a setting:
+
+- its HTTP API (40403) must be reachable from the peers, on the default layout
+  (`HTTP = protocol + 3`, e.g. 40400 → 40403, 41400 → 41403);
+- it must hold a validator key (`proposer: true` in `/api/v1/status`) — an observer is never served,
+  because a deploy sent to it would sit in its pool rather than be included.
+
+A node behind a reverse proxy on 443, or on a non-standard port layout, can publish a list but will
+not appear in its peers' lists. The list is advisory: peers report their own state, and a wallet
+re-verifies each entry before use.
+
 **The bootstrap is not the only peer that must be able to dial you.** A joiner that admits inbound only
 from its `--bootstrap` receives the fringe, the store items and the block gossip, and **applies none of
 them**: it sits at height 0 with a healthy peer count and fails after three idle rounds. Measured
