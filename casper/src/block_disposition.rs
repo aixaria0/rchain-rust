@@ -914,6 +914,90 @@ pub async fn startup_audit_then_running(
     }
 }
 
+/// Re-offer a *stored* pending body after its parents have reached the DAG.
+///
+/// The boot sweep cannot replay a block whose parents are still missing, and the
+/// fault loop intentionally only retries faulted rows. Without this sweep, a
+/// previously skipped stored row can remain pending indefinitely after its
+/// parent arrives. Only the Stored stage is eligible: Validating and Retry
+/// indicate a block was already submitted to the processor. An age floor
+/// excludes normal ingress handoffs and the boot-time sweep.
+pub const PENDING_PARENT_RECHECK_AGE_MS: u64 = 60_000;
+
+pub fn eligible_stored_pending(disposition: &BlockDisposition, now_ms: u64) -> bool {
+    matches!(
+        disposition,
+        BlockDisposition::Pending {
+            stage: PendingStage::Stored,
+            since_unix_ms,
+            ..
+        } if now_ms.saturating_sub(*since_unix_ms) >= PENDING_PARENT_RECHECK_AGE_MS
+    )
+}
+
+pub async fn retry_ready_stored_pending(
+    phase: NodePhaseCell,
+    ledger: BlockDispositionStore,
+    block_store: BlockStore,
+    dag: Arc<dyn BlockDagStorage>,
+    to_processor: mpsc::Sender<BlockMessage>,
+    log: Arc<dyn Log>,
+) {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    phase.wait_until_running().await;
+    let mut interval = tokio::time::interval(RETRY_SWEEP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Avoid racing the launch-time reoffer sweep on its first immediate tick.
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        let rows = match ledger.unsettled().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                log.error(source, &format!("pending parent sweep could not read ledger: {e}"));
+                continue;
+            }
+        };
+        let now_ms = now_unix_millis();
+        for (hash, disposition) in rows {
+            if !eligible_stored_pending(&disposition, now_ms) {
+                continue;
+            }
+            let repr = dag.get_representation().await;
+            if repr.contains(&hash) {
+                if let Err(e) = ledger.settle(hash).await {
+                    log.warn(source, &format!("could not settle inserted pending block {}: {e}", hash.to_hex()));
+                }
+                continue;
+            }
+            let stored = match block_store.get(&[hash]).await {
+                Ok(stored) => stored,
+                Err(e) => {
+                    log.error(source, &format!("could not load stored pending body {}: {e}", hash.to_hex()));
+                    continue;
+                }
+            };
+            let Some(block) = stored.into_iter().next().flatten() else {
+                log.error(source, &format!("pending body {} is missing from storage; retaining obligation", hash.to_hex()));
+                continue;
+            };
+            if !block.justifications.iter().all(|parent| repr.contains(parent)) {
+                continue;
+            }
+            // The stage transition prevents further sweeps from dispatching the
+            // same body while its validation is in flight. Never erase faults.
+            if let Err(e) = ledger.mark_retry_started(hash).await {
+                log.error(source, &format!("could not reserve pending replay {}: {e}", hash.to_hex()));
+                continue;
+            }
+            log.info(source, &format!("re-offering stored pending body {} after parents entered DAG", hash.to_hex()));
+            if !chan::send(&to_processor, block).await {
+                return;
+            }
+        }
+    }
+}
+
 /// The retry loop: every [`RETRY_SWEEP_INTERVAL`], re-offer the faulted blocks whose backoff has
 /// elapsed. The processor's fault handlers update the row, so a repeated fault counts and a
 /// successful one settles it. A terminal fault stays in the ledger and keeps the pipeline fault
@@ -1008,10 +1092,29 @@ pub const ORPHAN_AUDIT_SAMPLES: u32 = 3;
 static ORPHAN_BODIES: AtomicU64 = AtomicU64::new(0);
 static ORPHAN_DETECTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// The currently confirmed orphan count: **zero unless a gap has been sustained**. A transient
-/// in-flight body is not counted.
+// A boot-time store/DAG mismatch is known before readiness is exposed. The
+// periodic three-sample rule only protects against transient *runtime* writes;
+// it must not erase an already observed startup discrepancy.
+pub fn observe_boot_orphan_gap(stored: usize, in_dag: usize) -> u64 {
+    let gap = u64::try_from(stored.saturating_sub(in_dag)).unwrap_or(u64::MAX);
+    if gap > 0 {
+        let previous = ORPHAN_BODIES.swap(gap, Ordering::Relaxed);
+        if previous == 0 {
+            ORPHAN_DETECTIONS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    gap
+}
+
+/// The currently observed orphan count. A mismatch already known at boot blocks readiness
+/// immediately; a transient runtime write counts only after three consecutive audit samples.
 pub fn orphan_bodies() -> u64 {
     ORPHAN_BODIES.load(Ordering::Relaxed)
+}
+
+/// Clear the readiness blocker only when the store/DAG discrepancy is actually gone.
+fn clear_orphan_gate_if_resolved(gap: u64) -> bool {
+    gap == 0 && ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0
 }
 
 /// How many distinct sustained orphan episodes this process has seen. Monotone, so an operator can
@@ -1092,7 +1195,9 @@ pub async fn audit_stored_bodies(
                 }
             }
             None => {
-                if ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0 {
+                // An already confirmed boot gap remains a readiness blocker
+                // until an observation proves the discrepancy has vanished.
+                if clear_orphan_gate_if_resolved(gap) {
                     log.info(
                         source,
                         &format!(
@@ -1117,6 +1222,35 @@ mod tests {
 
     fn height(n: i64) -> BlockHeight {
         BlockHeight::try_from(n).unwrap()
+    }
+
+    #[test]
+    fn aged_stored_pending_is_reoffered_but_inflight_and_faulted_are_not() {
+        let pending = BlockDisposition::Pending {
+            block_number: height(8),
+            stage: PendingStage::Stored,
+            since_unix_ms: 1000,
+        };
+        assert!(!eligible_stored_pending(&pending, 60_999));
+        assert!(eligible_stored_pending(&pending, 61_000));
+        assert!(!eligible_stored_pending(&pending, 0));
+        for stage in [PendingStage::Validating, PendingStage::Retry] {
+            let in_flight = BlockDisposition::Pending {
+                block_number: height(8),
+                stage,
+                since_unix_ms: 1000,
+            };
+            assert!(!eligible_stored_pending(&in_flight, 600_000));
+        }
+        let faulted = BlockDisposition::Faulted {
+            block_number: height(8),
+            stage: "validation".to_string(),
+            reason: "injected".to_string(),
+            since_unix_ms: 1000,
+            last_attempt_unix_ms: 5000,
+            attempts: MAX_FAULT_RETRIES,
+        };
+        assert!(!eligible_stored_pending(&faulted, 600_000));
     }
 
     async fn store() -> BlockDispositionStore {
@@ -1168,6 +1302,23 @@ mod tests {
         // A zero sample is evidence the normal case returned; the count starts again.
         assert_eq!(streak.observe(0), None);
         assert_eq!(streak.observe(1), None);
+    }
+
+    #[test]
+    fn a_known_boot_gap_is_not_hidden_behind_the_periodic_sampling_window() {
+        ORPHAN_BODIES.store(0, Ordering::Relaxed);
+        // This exact shape occurred in the isolated legacy testnet snapshot.
+        assert_eq!(observe_boot_orphan_gap(1947, 21), 1926);
+        assert_eq!(orphan_bodies(), 1926);
+        // One transient sample cannot clear a mismatch already found at boot.
+        let mut streak = OrphanStreak::default();
+        assert_eq!(streak.observe(1926), None);
+        assert!(!clear_orphan_gate_if_resolved(1926));
+        assert_eq!(orphan_bodies(), 1926);
+        assert!(clear_orphan_gate_if_resolved(0));
+        assert_eq!(orphan_bodies(), 0);
+        assert_eq!(observe_boot_orphan_gap(21, 1947), 0);
+        assert_eq!(orphan_bodies(), 0);
     }
 
     #[test]

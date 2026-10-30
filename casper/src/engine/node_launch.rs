@@ -408,10 +408,10 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         .flatten();
     // **A body count above the DAG count is an orphan signal, not a fact to ignore.** This is a
     // cheap boot observation (no body decode): a store with bodies the DAG does not hold is the
-    // shape the live testnet showed on B/C/D. The full disposition ledger/audit is U19/B46; until
-    // it lands, the operator at least gets a line naming the mismatch instead of a silent start.
+    // shape the live testnet showed on B/C/D. The periodic audit waits for three runtime samples;
+    // a mismatch seen at boot is already evidence and must block readiness immediately.
     let stored_bodies = block_store.count().await?;
-    if stored_bodies > repr.dag_set.len() {
+    if crate::block_disposition::observe_boot_orphan_gap(stored_bodies, repr.dag_set.len()) > 0 {
         log.warn(
             source,
             &format!(

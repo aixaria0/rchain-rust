@@ -1068,6 +1068,16 @@ fn wire_block_processing_observed(
     // **The retry loop and the periodic audit** run for the life of the shard. The start-up
     // re-offer is *not* spawned here: launch runs it before the shard reaches `Running` (unit 3),
     // so a restarted node cannot report running with the ledger unsettled.
+    // Re-offer aged stored pending blocks after parents enter the live DAG.
+    // The per-shard phase gate preserves the launch/recovery ordering.
+    tokio::spawn(rchain_casper::block_disposition::retry_ready_stored_pending(
+        parts.phase.clone(),
+        parts.block_disposition.clone(),
+        parts.block_store.clone(),
+        parts.dag.clone(),
+        processor_input_tx_disposition.clone(),
+        disposition_log.clone(),
+    ));
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
         parts.phase.clone(),
         parts.block_disposition.clone(),

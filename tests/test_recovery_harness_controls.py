@@ -68,6 +68,77 @@ class RejoinAgreementTests(unittest.TestCase):
         self.assertEqual(run.finalized_marker_agreement(60), heads)
         run.finalized_marker.assert_called_once_with(60, required=True)
 
+    def test_healing_requires_health_in_addition_to_matching_finality(self):
+        from unittest.mock import Mock, patch
+        operator = {
+            "latestBlockNumber": 70, "peers": 7, "finalityStall": None,
+            "unrestorableRecords": 0, "unrestorableBlock": None,
+            "undeliveredSends": 0,
+        }
+        healthy = {
+            "ready": True, "orphanBodies": 0,
+            "pipelineFaults": 0, "proposalHalted": False,
+        }
+        cases = [
+            (healthy, True),
+            ({**healthy, "ready": False}, False),
+            ({**healthy, "orphanBodies": 26}, False),
+            ({**healthy, "pipelineFaults": 1}, False),
+            ({**healthy, "proposalHalted": True}, False),
+            ({}, False),
+        ]
+        for health, expected in cases:
+            with self.subTest(health=health):
+                run = self.drill(self.heads())
+                run.events = object()
+                run.record = Mock()
+                def answer(i, path, admin=False):
+                    return operator if admin else health
+                with patch.object(m.a, "get", side_effect=answer):
+                    result = run.finalized_marker_agreement(60)
+                self.assertEqual(result == self.heads(), expected)
+                run.record.assert_called_once()
+                statuses = run.record.call_args.kwargs["nodes"]
+                self.assertEqual(len(statuses), 8)
+                self.assertEqual(statuses[-1]["orphan_bodies"], health.get("orphanBodies"))
+
+    def test_missing_divergence_counter_cannot_certify_rejoin(self):
+        from unittest.mock import Mock, patch
+        run = self.drill(self.heads())
+        run.events = object()
+        run.record = Mock()
+        operator = {
+            "latestBlockNumber": 70, "peers": 7, "finalityStall": None,
+            "unrestorableRecords": None, "unrestorableBlock": None,
+            "undeliveredSends": 0,
+        }
+        health = {
+            "ready": True, "orphanBodies": 0,
+            "pipelineFaults": 0, "proposalHalted": False,
+        }
+        with patch.object(m.a, "get", side_effect=lambda i, path, admin=False: operator if admin else health):
+            self.assertIsNone(run.finalized_marker_agreement(60))
+        run.finalized_marker.assert_not_called()
+
+    def test_permanent_divergence_refuses_even_when_health_reports_ready(self):
+        from unittest.mock import Mock, patch
+        run = self.drill(self.heads())
+        run.events = object()
+        run.record = Mock()
+        operator = {
+            "latestBlockNumber": 70, "peers": 7, "finalityStall": None,
+            "unrestorableRecords": 1, "unrestorableBlock": "fatal-block",
+            "undeliveredSends": 0,
+        }
+        health = {
+            "ready": True, "orphanBodies": 0,
+            "pipelineFaults": 0, "proposalHalted": False,
+        }
+        with patch.object(m.a, "get", side_effect=lambda i, path, admin=False: operator if admin else health):
+            with self.assertRaisesRegex(RuntimeError, "PERMANENT_DIVERGENCE"):
+                run.finalized_marker_agreement(60)
+        run.finalized_marker.assert_not_called()
+
     def test_persistent_disagreement_fails_at_the_existing_healing_deadline(self):
         from unittest.mock import patch
         heads = self.heads()
