@@ -389,6 +389,7 @@ condition and the `edecimal` payload. The wire's minimal bytes and tag 35, serde
 literal surface, reducer dispatch and the cost model remain outside the law and Rust-tested;
 AC10 (operator/new-genesis acceptance) remains a release step.
 | **Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).** | Pos.rhox has no liveness jail, vote or ejection; the port adds five genesis parameters, five `pos:` leaves and the `voteSlash`/`unvoteSlash`/`getLiveness`/`getVotes` methods. | A chain that arms liveness enforcement changes its boundary post-state: a jailed validator is not drawn and earns nothing, and a passing >2/3 active-stake vote slashes and bans. Default-off and the format-2 params encoding keep unarmed chains byte-identical; arming requires a new genesis and is a hard fork. Pre-launch category A; every validator must run the binary; no live evidence yet. RCHIP #55, HAZOP U21, C344 |
+| **Cost charges track the work of collection canonicalisation, union and `rho:gov:censure`.** | Archived `legacy/rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala` at `1b7583649` charges `unionCost(other.size)` — the right operand only — a flat `KEYS_METHOD_COST = 10`, and no canonicalisation charge beyond the method call; the Rust-native `rho:gov:*` folds have no Scala oracle. | Rust charges `canonicalization_cost(n) = 3n` for the conversions, `set` and `keys` output, both union operands, and `(u+1)^3` for censure (Law 91, `spec/Rchain/Cost.lean`; C345/C346, pass §149). **Hard fork (#51 category A):** `refund_amount`/`burned_amount` and every post-state hash move; a pre-fork block containing a conversion or a censure does not replay under the new code (`replay_cost_mismatch`); every network's genesis post-state hash moves; the block-version activation gate is owed. |
 
 ## 7. Verification
 
@@ -12009,7 +12010,7 @@ The other three `rho:gov:*` folds keep the squared charge and their work shape i
 residual, stated in the row). C348's residual is accepted, not fixed. C350's migration was exercised by
 the test harness, not by a real populated store; a `Faulted` row on an unsettled body returns as
 `Pending`. The fixtures' end-to-end greeter dial is exercised by the reference suite, not by a Rust
-test — the Rust test pins the call site. And **no §6 deviation row was added**: the inventory pins every
-row by digest and pins `source_dev_sha`, so a row added on a branch would either claim a row at an older
-commit or drag a branch commit into an audit artifact. It is **owed after merge**, against the new dev
-SHA, together with the hard-fork ledger item that records this change.
+test — the Rust test pins the call site. And **no §6 deviation row was added on the branch**: the
+inventory pins every row by digest and pins `source_dev_sha`, so a row added there would either claim a
+row at an older commit or drag a branch commit into an audit artifact. It is recorded in §6 after merge,
+against the new dev SHA `78efd3fa1`, together with the hard-fork ledger item that records this change.

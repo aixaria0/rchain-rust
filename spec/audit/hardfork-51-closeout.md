@@ -4,7 +4,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 43 overlapping tracker, audit and release obligations: **11 landed implementation references, 12 maintainer-recorded deferrals and 20 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 43 overlapping tracker, audit and release obligations: **12 landed implementation references, 12 maintainer-recorded deferrals and 19 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
@@ -22,7 +22,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Complete source inventory
 
-[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 90 current §6 rows**, with 43 conservative category-A candidates. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
+[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 93 current §6 rows**, with 46 conservative category-A candidates. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
 
 The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, existing evidence, missing proof, next action and acceptance condition. Source-row hashes, line numbers and evidence URLs must agree with the pinned register. A documented deferral must agree between the matrix and the validated ledger. Neither file can invent an independent sign-off or a passed execution.
 

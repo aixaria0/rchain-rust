@@ -247,8 +247,8 @@ bound is total in its anchor. C348 is an accepted residual and C352 a corrected 
   with no `await` — which is why the remediation bounds the work rather than interrupting it.
 - Of the ten findings the pass refuted, the one it opened expecting to lead with is among them ([§116
   of the pass record](../../../spec/audit/passes.md)).
-- The register grew to **379 rows — 375 `done`, 4 `in progress`, 0 `todo`**; the Rust witness set
-  from 88 to **230 entries over 211 distinct symbols**. The tree's three `#[ignore]`s are a diagnostic
+- The register grew to **387 rows — 383 `done`, 4 `in progress`, 0 `todo`**; the Rust witness set
+  from 88 to **260 entries over 239 distinct symbols**. The tree's three `#[ignore]`s are a diagnostic
   table printer (`casper/src/blocks/proposer/proposer.rs`) and two benchmarks/replays
   (`casper/tests/n420_rcash_replay.rs`, `casper/tests/startup_metadata_bench.rs`); none is a
   registered witness.

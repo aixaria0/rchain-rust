@@ -1,43 +1,46 @@
 {
   "binary": {
     "build_command": "cargo build --release -p rchain-node --bin rnode",
-    "bytes": 47065056,
-    "mtime": 1793354123,
-    "path": "target/release/rnode",
+    "bytes": 49317360,
+    "mtime": 1793391636,
+    "path": "/home/patrick/RNodeRust/.claude/worktrees/docs-clean-2026-10-30/target/release/rnode",
     "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
-    "sha256": "c387c1335d7430eb4897fc433e20a17217bb2e884e2729ae2c1efc3b53bf092e",
+    "sha256": "446dbaf13e24930fe4067ec97390959e328c62dc7a6e0e631dc83de846ad34bf",
     "stale": "false",
     "strip": "not stripped"
   },
   "code_dirty": false,
   "date": "2026-10-30",
-  "git_commit": "ffca3992e",
+  "git_commit": "78efd3fa1",
   "git_dirty": true,
   "known_stale": [
     "39102784",
+    "47065056",
     "189725",
     "197000",
     "203000",
+    "226974",
     "43.6",
     "461",
     "467",
-    "474"
+    "474",
+    "508"
   ],
   "legacy": {
     "bytes": 27425437,
-    "citation_paths": 161,
+    "citation_paths": 162,
     "citation_refs": 249,
     "files": 1596
   },
   "members": 14,
   "per_crate": {
     "block-storage": {
-      "files": 16,
-      "lines": 4888
+      "files": 17,
+      "lines": 5073
     },
     "casper": {
-      "files": 97,
-      "lines": 73411
+      "files": 98,
+      "lines": 74600
     },
     "comm": {
       "files": 38,
@@ -56,20 +59,20 @@
       "lines": 13187
     },
     "node": {
-      "files": 97,
-      "lines": 41546
+      "files": 99,
+      "lines": 43424
     },
     "ocapn": {
       "files": 30,
-      "lines": 11812
+      "lines": 12019
     },
     "qucalc": {
       "files": 4,
       "lines": 1087
     },
     "rholang": {
-      "files": 52,
-      "lines": 41138
+      "files": 53,
+      "lines": 41610
     },
     "rspace": {
       "files": 59,
@@ -85,12 +88,12 @@
     },
     "shared": {
       "files": 34,
-      "lines": 4725
+      "lines": 4864
     }
   },
   "schema": 1,
-  "tracked_rs_files": 508,
-  "tracked_rs_lines": 226974,
+  "tracked_rs_files": 513,
+  "tracked_rs_lines": 231044,
   "workspace": {
     "files": 2,
     "lines": 281

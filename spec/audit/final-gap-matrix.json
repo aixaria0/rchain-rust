@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "source_dev_sha": "d8dd1163168b3c357fc4bccbd1853b820abbcecb",
-  "observed_date": "2026-10-24",
+  "source_dev_sha": "78efd3fa1e6dbaf2a863fbf9da58325eccfb4e90",
+  "observed_date": "2026-10-30",
   "tracker": "#51",
   "boundary": "42 overlapping tracker obligations, not 42 defects. Maintainer deferrals are recorded with source links; this matrix grants no release authorization.",
   "items": [
@@ -807,12 +807,13 @@
         "#514"
       ],
       "existing_evidence": {
-        "branch": "audit/security-2026-10",
+        "pr": 514,
+        "merge_commit": "78efd3fa1e6dbaf2a863fbf9da58325eccfb4e90",
         "pass": "spec/audit/passes.md 149",
         "law": "91a, 91b"
       },
-      "missing_proof": "The change is not on dev: no pre-fork replay refusal, no populated-store upgrade and no second binary are established, and the \u00a76 deviation row is owed against the new dev SHA.",
-      "smallest_corrective_action": "Merge #514 as a lockstep (category A) change, re-pin the \u00a76 inventory to the post-merge dev SHA with the cost-deviation row, and regenerate every pinned genesis hash.",
+      "missing_proof": "No pre-fork replay refusal, no populated-store upgrade and no second binary are established; the \u00a76 row and inventory re-pin are now recorded at this SHA, and every pinned genesis hash still has to be regenerated.",
+      "smallest_corrective_action": "Run the pre-fork replay refusal and a populated-store upgrade on a chain carrying the fix, replay identically on a second binary, and regenerate every pinned genesis hash.",
       "required_acceptance_test": "A pre-fork block containing a conversion or a censure is refused at replay with replay_cost_mismatch, and a post-fork chain replays identically on two independent binaries.",
       "decision_owner": "Jim / consensus",
       "recorded_owner_reason_deferral": false
