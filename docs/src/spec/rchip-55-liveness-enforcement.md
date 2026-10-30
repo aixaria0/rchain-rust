@@ -78,8 +78,8 @@ register row 89, the HAZOP U21 and safety-case B48/B49/H-RS-17.
 A four-validator devnet and then a live testnet must show: jail after two advancing boundaries with the
 bond unchanged; a >2/3 vote slash and permanent ejection with replay agreement; a partition that jails
 but does not slash without a vote; a stall that moves neither clock; a restart during jail that returns
-at expiry and renews while silent; the exact 2/3 boundary. The devnet harness and evidence contract
-are in `tests/liveness-enforcement.py` / `spec/audit/evidence/`; the live arm is owed.
+at expiry and renews while silent; the exact 2/3 boundary. **A devnet harness and evidence contract
+under `tests/liveness-enforcement.py` / `spec/audit/evidence/` are still owed; no live arm was run.**
 
 ## 8. Known residuals
 
