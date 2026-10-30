@@ -310,11 +310,15 @@ impl<'a> Cursor<'a> {
 #[derive(Clone)]
 pub struct BlockDispositionStore {
     store: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>>,
+    mutation: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl BlockDispositionStore {
     pub fn from_store(store: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>>) -> Self {
-        Self { store }
+        Self {
+            store,
+            mutation: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// **Record that this node owes the block an outcome.** Written when the body is in the store,
@@ -326,6 +330,7 @@ impl BlockDispositionStore {
         block_number: BlockHeight,
         stage: PendingStage,
     ) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         let since_unix_ms = match self.get(&hash).await? {
             // A fault is a stronger record than "pending"; a re-delivery must not erase it.
             Some(BlockDisposition::Faulted { .. }) => return Ok(()),
@@ -355,6 +360,7 @@ impl BlockDispositionStore {
         stage: &str,
         reason: &str,
     ) -> Result<u32, String> {
+        let _mutation = self.mutation.lock().await;
         let now = now_unix_millis();
         let (since_unix_ms, attempts) = match self.get(&hash).await? {
             Some(BlockDisposition::Faulted {
@@ -391,6 +397,7 @@ impl BlockDispositionStore {
         stage: &str,
         reason: &str,
     ) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         let now = now_unix_millis();
         let since_unix_ms = match self.get(&hash).await? {
             Some(disposition) => match disposition {
@@ -416,6 +423,7 @@ impl BlockDispositionStore {
 
     /// Mark that a retry is now in flight, so the loop does not re-send it until the next window.
     pub async fn mark_retry_started(&self, hash: BlockHash) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         match self.get(&hash).await? {
             Some(BlockDisposition::Faulted {
                 block_number,
@@ -459,10 +467,46 @@ impl BlockDispositionStore {
         }
     }
 
+    /// Claim an aged Stored row only if it is still eligible now. Ledger snapshots
+    /// can outlive a concurrent verdict, validation handoff or terminal fault.
+    /// The shared mutation lock makes that check and transition one operation.
+    pub async fn reserve_stored_retry(
+        &self,
+        hash: BlockHash,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let _mutation = self.mutation.lock().await;
+        let Some(disposition) = self.get(&hash).await? else {
+            return Ok(false);
+        };
+        if !eligible_stored_pending(&disposition, now_ms) {
+            return Ok(false);
+        }
+        let BlockDisposition::Pending {
+            block_number,
+            since_unix_ms,
+            ..
+        } = disposition else {
+            return Ok(false);
+        };
+        self.store
+            .put(&[(
+                hash,
+                BlockDisposition::Pending {
+                    block_number,
+                    stage: PendingStage::Retry,
+                    since_unix_ms,
+                },
+            )])
+            .await?;
+        Ok(true)
+    }
+
     /// **A verdict, or a fault the node has stopped retrying, settles the obligation.** The DAG
     /// metadata is the record for an accepted or refused block; a quarantined fault stays visible
     /// until an operator acts, so it is not deleted here.
     pub async fn settle(&self, hash: BlockHash) -> Result<usize, String> {
+        let _mutation = self.mutation.lock().await;
         self.store.delete(&[hash]).await
     }
 
@@ -986,9 +1030,13 @@ pub async fn retry_ready_stored_pending(
             }
             // The stage transition prevents further sweeps from dispatching the
             // same body while its validation is in flight. Never erase faults.
-            if let Err(e) = ledger.mark_retry_started(hash).await {
-                log.error(source, &format!("could not reserve pending replay {}: {e}", hash.to_hex()));
-                continue;
+            match ledger.reserve_stored_retry(hash, now_ms).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    log.error(source, &format!("could not reserve pending replay {}: {e}", hash.to_hex()));
+                    continue;
+                }
             }
             log.info(source, &format!("re-offering stored pending body {} after parents entered DAG", hash.to_hex()));
             if !chan::send(&to_processor, block).await {
@@ -1222,6 +1270,30 @@ mod tests {
 
     fn height(n: i64) -> BlockHeight {
         BlockHeight::try_from(n).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_pending_snapshots_cannot_duplicate_a_claim_or_retry_a_terminal_fault() {
+        let ledger = store().await;
+        let block = hash(70);
+        ledger.mark_pending(block, height(8), PendingStage::Stored).await.unwrap();
+        let now = now_unix_millis().saturating_add(PENDING_PARENT_RECHECK_AGE_MS);
+        let first = ledger.clone();
+        let second = ledger.clone();
+        let (a, b) = tokio::join!(
+            first.reserve_stored_retry(block, now),
+            second.reserve_stored_retry(block, now),
+        );
+        assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
+
+        // A sweep may still hold its old Stored snapshot after a fault or
+        // verdict. Neither outcome may be turned back into an eligible retry.
+        ledger.mark_terminal_fault(block, height(8), "terminal", "quarantined").await.unwrap();
+        assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
+        assert_eq!(ledger.get(&block).await.unwrap().unwrap().attempts(), MAX_FAULT_RETRIES);
+        ledger.settle(block).await.unwrap();
+        assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
+        assert!(ledger.get(&block).await.unwrap().is_none());
     }
 
     #[test]
