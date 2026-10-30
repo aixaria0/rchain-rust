@@ -246,6 +246,7 @@ jobs:
         run: |
           python3 tools/check-cost-register.py
           tools/emit-cost-register.sh --check
+          python3 -m unittest discover -s tests -p test_cost_register.py -v
 
       - name: Review-ledger coverage gate
         # The audit's own limit statement — `all N T1 modules read`, printed by `audit-status.sh` and
