@@ -4933,6 +4933,8 @@ def lawsC : List Law := [
       "rholang/src/native_state.rs:a_jailed_validator_returns_after_the_term",
       "rholang/src/native_state.rs:a_still_absent_validator_is_renewed",
       "rholang/src/native_state.rs:a_banished_validator_cannot_rebond",
+      "rholang/src/native_state.rs:a_delegation_cannot_buy_slash_voting_power_mid_epoch",
+      "rholang/src/native_state.rs:two_of_three_active_votes_cannot_cross_strict_threshold_via_delegation",
       "rholang/src/system_processes.rs:pos_vote_slash_is_authorised_by_the_deployer_id"],
     witness := [`Rchain.Liveness.jail_never_touches_the_bond,
       `Rchain.Liveness.the_stall_rule_changes_nothing,
@@ -4954,7 +4956,8 @@ def lawsC : List Law := [
       (`a_vote_without_jail_is_not_opened`).",
     note := "RCHIP #55. The model separates the two steps: `stepJail` never writes `pool`, and \
       `voteSlash` writes it only when `passes` (strict `3 * for > 2 * total`, the same rule as \
-      `is_super_majority`). The Rust side supplies the expiry/renewal arithmetic, the participation \
+      `is_super_majority`), and both sides of that inequality read the **active-set snapshot**, not \
+      the mutable pool, so a mid-epoch delegation cannot buy voting power. The Rust side supplies the expiry/renewal arithmetic, the participation \
       map (from the receiver's finalised fringe), the vote-window tally, the delegation fan-out on a \
       slash, and the withdrawal escrow; those are outside the model. This is **not** an inactivity \
       leak: no automatic step touches a bond. Default off; a network arms it at genesis. The boundary- \

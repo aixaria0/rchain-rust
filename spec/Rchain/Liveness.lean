@@ -30,7 +30,7 @@ abbrev Validator := Nat
     are `((target, voter), inFavor)`. -/
 structure State where
   pool : List (Validator × Nat)
-  active : List Validator
+  active : List (Validator × Nat)
   absent : List (Validator × Nat)
   jailed : List (Validator × Nat)
   banned : List Validator
@@ -49,13 +49,13 @@ def windowLeft (s : State) (v : Validator) : Nat := lookup s.windows v
 
 /-- Total active stake. -/
 def totalStake (s : State) : Nat :=
-  s.active.foldl (fun acc v => acc + lookup s.pool v) 0
+  s.active.foldl (fun acc entry => acc + entry.2) 0
 
 /-- The active stake whose ballot for `target` is in favour. -/
 def forStake (s : State) (target : Validator) : Nat :=
   s.ballots.foldl
     (fun acc ballot =>
-      if ballot.2 && ballot.1.1 == target then acc + lookup s.pool ballot.1.2 else acc)
+      if ballot.2 && ballot.1.1 == target then acc + lookup s.active ballot.1.2 else acc)
     0
 
 /-- **Strictly more than two thirds.** The same integer rule as `is_super_majority`. -/
@@ -68,7 +68,8 @@ def passes (s : State) (target : Validator) : Bool :=
     present validator reaches the end, renewed while it stays silent. -/
 def stepJail (present : Validator → Bool) (advance : Bool) (N J : Nat) (s : State) : State :=
   if advance then
-    let counted := s.active.map (fun v => (v, if present v then 0 else absentCount s v + 1))
+    let counted := s.active.map (fun entry =>
+      (entry.1, if present entry.1 then 0 else absentCount s entry.1 + 1))
     let newly := counted.filterMap (fun entry => if entry.2 >= N then some (entry.1, J) else none)
     let kept :=
       s.jailed.filterMap (fun entry =>
@@ -103,7 +104,7 @@ theorem no_boundary_no_action (present : Validator → Bool) (advance : Bool) (N
     validator unjailed. -/
 theorem one_lapse_is_not_sustained :
     let s : State :=
-      { pool := [(1, 10)], active := [1], absent := [], jailed := [], banned := [],
+      { pool := [(1, 10)], active := [(1, 10)], absent := [], jailed := [], banned := [],
         windows := [], ballots := [], anchor := 0 }
     jailTerm (stepJail (fun _ => false) true 2 5 s) 1 = 0 := by
   decide
@@ -115,7 +116,7 @@ def stallStep (present : Validator → Bool) (N J : Nat) (s : State) : State :=
 
 theorem a_stall_that_counts_jails_an_innocent :
     let s : State :=
-      { pool := [(1, 10)], active := [1], absent := [(1, 1)], jailed := [], banned := [],
+      { pool := [(1, 10)], active := [(1, 10)], absent := [(1, 1)], jailed := [], banned := [],
         windows := [], ballots := [], anchor := 0 }
     jailTerm (stallStep (fun _ => false) 2 5 s) 1 = 5 ∧ stepJail (fun _ => false) false 2 5 s = s := by
   decide
@@ -125,7 +126,7 @@ def voteSlash (s : State) (target : Validator) : State :=
   if passes s target then
     { s with
       pool := s.pool.filter (fun entry => entry.1 != target)
-      active := s.active.filter (fun v => v != target)
+      active := s.active.filter (fun entry => entry.1 != target)
       banned := target :: s.banned
       jailed := s.jailed.filter (fun entry => entry.1 != target)
       windows := s.windows.filter (fun entry => entry.1 != target)
@@ -150,7 +151,7 @@ theorem a_passing_vote_slashes_and_ejects (s : State) (target : Validator)
     strict supermajority. -/
 theorem a_simple_majority_is_not_enough :
     let s : State :=
-      { pool := [(1, 10), (2, 10), (3, 10)], active := [1, 2, 3], absent := [], jailed := [],
+      { pool := [(1, 10), (2, 10), (3, 10)], active := [(1, 10), (2, 10), (3, 10)], absent := [], jailed := [],
         banned := [], windows := [], ballots := [((3, 1), true), ((3, 2), true)], anchor := 0 }
     passes s 3 = false := by
   decide
@@ -170,7 +171,7 @@ def burnStep (s : State) (target : Validator) : State :=
 
 theorem jail_that_burns_the_bond_reaches_a_stake :
     let s : State :=
-      { pool := [(1, 10)], active := [1], absent := [], jailed := [], banned := [],
+      { pool := [(1, 10)], active := [(1, 10)], absent := [], jailed := [], banned := [],
         windows := [], ballots := [], anchor := 0 }
     (burnStep s 1).pool ≠ s.pool ∧ (stepJail (fun _ => false) false 2 5 s).pool = s.pool := by
   decide
