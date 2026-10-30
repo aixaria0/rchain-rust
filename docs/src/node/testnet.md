@@ -485,17 +485,11 @@ trusted network record**. The node refuses to enter Running when an imported or 
 DAG starts with another genesis; this guard is **opt-in**, not an identity guarantee when the
 flag is omitted. `--sync-anchor` identifies a recovery block, **not** the network genesis.
 
-Historical changes to genesis inputs also changed the hash: the 2026-09-26 rebuilds
-that signed for one validator all produced `e525129d…`, adding B's
-bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
-produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap of 250 and an active set of
-4 — produced `713c0ebb…`, and the 2026-10-24 rebuild — the shard renamed from `/root` to `/testnet` — produced
-`c596bef4…`. The 2026-10-29 rebuild extended the wallet allocations and produced `133b1d30…`, the current
-hash pinned above; bonds and the first-bond ceremony identity were retained. **The old single-bond hash is not reachable again**: the genesis content moved, so the same bond set
-no longer gives the same block. The rebuild chronology is in
-[Incident history](incident-history.md#genesis-identity-and-rebuild-churn).
+**The old single-bond hash is not reachable again**: the genesis content moved, so the same bond set
+no longer gives the same block. The current hash is pinned above; the rebuild chronology and the
+earlier hashes are in [Incident history](incident-history.md#genesis-identity-and-rebuild-churn).
 
-### Rebuilding: the four things that bit, measured on 2026-10-24
+### Rebuilding: the four things that are not obvious
 
 A rebuild is a fresh data directory and a new genesis. These are the steps that are not obvious, each
 one from the day's own failures:

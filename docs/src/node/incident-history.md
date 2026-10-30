@@ -37,11 +37,14 @@ node on its host synced that node's chain instead. The procedure now treats the 
 part of genesis, not as tuning.
 
 The net was rebuilt several times while native PoS state was fixed
-([#74](https://github.com/rhovision-org/rholo/issues/74)); the genesis hash moved with each rebuild,
-and an old single-bond hash was no longer reachable. Node identities changed with the TLS
-certificates, so a peer's bootstrap URL had to be retargeted. The 2026-09-24 three-validator build
-and the pre-restart check on [#373](https://github.com/rhovision-org/rholo/issues/373) are records of
-that churn, not setup steps.
+([#74](https://github.com/rhovision-org/rholo/issues/74)). The observed chronology: the 2026-09-26
+one-validator rebuilds produced `e525129d…`; adding B's bond moved it to `6a6db0db…`; the 2026-09-29
+rebuild (one bond and a content change) produced `9f09e7a0…`; the 2026-10-04 rebuild (four bonds at
+250, cap 250, active set 4) produced `713c0ebb…`; the 2026-10-24 rebuild (shard renamed `/root` to
+`/testnet`) produced `c596bef4…`; the 2026-10-29 rebuild (extended wallets) produced `133b1d30…`, the
+current hash. Node identities changed with the TLS certificates, so a peer's bootstrap URL had to be
+retargeted. The 2026-09-24 three-validator build and the pre-restart check on
+[#373](https://github.com/rhovision-org/rholo/issues/373) are records of that churn, not setup steps.
 
 ## Finality and the live weight set
 
