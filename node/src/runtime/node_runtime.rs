@@ -1075,14 +1075,16 @@ fn wire_block_processing_observed(
     // so a restarted node cannot report running with the ledger unsettled.
     // Re-offer aged stored pending blocks after parents enter the live DAG.
     // The per-shard phase gate preserves the launch/recovery ordering.
-    tokio::spawn(rchain_casper::block_disposition::retry_ready_stored_pending(
-        parts.phase.clone(),
-        parts.block_disposition.clone(),
-        parts.block_store.clone(),
-        parts.dag.clone(),
-        processor_input_tx_disposition.clone(),
-        disposition_log.clone(),
-    ));
+    tokio::spawn(
+        rchain_casper::block_disposition::retry_ready_stored_pending(
+            parts.phase.clone(),
+            parts.block_disposition.clone(),
+            parts.block_store.clone(),
+            parts.dag.clone(),
+            processor_input_tx_disposition.clone(),
+            disposition_log.clone(),
+        ),
+    );
     tokio::spawn(rchain_casper::block_disposition::retry_faulted_blocks(
         parts.phase.clone(),
         parts.block_disposition.clone(),

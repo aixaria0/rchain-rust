@@ -470,11 +470,7 @@ impl BlockDispositionStore {
     /// Claim an aged Stored row only if it is still eligible now. Ledger snapshots
     /// can outlive a concurrent verdict, validation handoff or terminal fault.
     /// The shared mutation lock makes that check and transition one operation.
-    pub async fn reserve_stored_retry(
-        &self,
-        hash: BlockHash,
-        now_ms: u64,
-    ) -> Result<bool, String> {
+    pub async fn reserve_stored_retry(&self, hash: BlockHash, now_ms: u64) -> Result<bool, String> {
         let _mutation = self.mutation.lock().await;
         let Some(disposition) = self.get(&hash).await? else {
             return Ok(false);
@@ -486,7 +482,8 @@ impl BlockDispositionStore {
             block_number,
             since_unix_ms,
             ..
-        } = disposition else {
+        } = disposition
+        else {
             return Ok(false);
         };
         self.store
@@ -998,7 +995,10 @@ pub async fn retry_ready_stored_pending(
         let rows = match ledger.unsettled().await {
             Ok(rows) => rows,
             Err(e) => {
-                log.error(source, &format!("pending parent sweep could not read ledger: {e}"));
+                log.error(
+                    source,
+                    &format!("pending parent sweep could not read ledger: {e}"),
+                );
                 continue;
             }
         };
@@ -1010,22 +1010,41 @@ pub async fn retry_ready_stored_pending(
             let repr = dag.get_representation().await;
             if repr.contains(&hash) {
                 if let Err(e) = ledger.settle(hash).await {
-                    log.warn(source, &format!("could not settle inserted pending block {}: {e}", hash.to_hex()));
+                    log.warn(
+                        source,
+                        &format!(
+                            "could not settle inserted pending block {}: {e}",
+                            hash.to_hex()
+                        ),
+                    );
                 }
                 continue;
             }
             let stored = match block_store.get(&[hash]).await {
                 Ok(stored) => stored,
                 Err(e) => {
-                    log.error(source, &format!("could not load stored pending body {}: {e}", hash.to_hex()));
+                    log.error(
+                        source,
+                        &format!("could not load stored pending body {}: {e}", hash.to_hex()),
+                    );
                     continue;
                 }
             };
             let Some(block) = stored.into_iter().next().flatten() else {
-                log.error(source, &format!("pending body {} is missing from storage; retaining obligation", hash.to_hex()));
+                log.error(
+                    source,
+                    &format!(
+                        "pending body {} is missing from storage; retaining obligation",
+                        hash.to_hex()
+                    ),
+                );
                 continue;
             };
-            if !block.justifications.iter().all(|parent| repr.contains(parent)) {
+            if !block
+                .justifications
+                .iter()
+                .all(|parent| repr.contains(parent))
+            {
                 continue;
             }
             // The stage transition prevents further sweeps from dispatching the
@@ -1034,11 +1053,20 @@ pub async fn retry_ready_stored_pending(
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(e) => {
-                    log.error(source, &format!("could not reserve pending replay {}: {e}", hash.to_hex()));
+                    log.error(
+                        source,
+                        &format!("could not reserve pending replay {}: {e}", hash.to_hex()),
+                    );
                     continue;
                 }
             }
-            log.info(source, &format!("re-offering stored pending body {} after parents entered DAG", hash.to_hex()));
+            log.info(
+                source,
+                &format!(
+                    "re-offering stored pending body {} after parents entered DAG",
+                    hash.to_hex()
+                ),
+            );
             if !chan::send(&to_processor, block).await {
                 return;
             }
@@ -1276,7 +1304,10 @@ mod tests {
     async fn stale_pending_snapshots_cannot_duplicate_a_claim_or_retry_a_terminal_fault() {
         let ledger = store().await;
         let block = hash(70);
-        ledger.mark_pending(block, height(8), PendingStage::Stored).await.unwrap();
+        ledger
+            .mark_pending(block, height(8), PendingStage::Stored)
+            .await
+            .unwrap();
         let now = now_unix_millis().saturating_add(PENDING_PARENT_RECHECK_AGE_MS);
         let first = ledger.clone();
         let second = ledger.clone();
@@ -1288,9 +1319,15 @@ mod tests {
 
         // A sweep may still hold its old Stored snapshot after a fault or
         // verdict. Neither outcome may be turned back into an eligible retry.
-        ledger.mark_terminal_fault(block, height(8), "terminal", "quarantined").await.unwrap();
+        ledger
+            .mark_terminal_fault(block, height(8), "terminal", "quarantined")
+            .await
+            .unwrap();
         assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
-        assert_eq!(ledger.get(&block).await.unwrap().unwrap().attempts(), MAX_FAULT_RETRIES);
+        assert_eq!(
+            ledger.get(&block).await.unwrap().unwrap().attempts(),
+            MAX_FAULT_RETRIES
+        );
         ledger.settle(block).await.unwrap();
         assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
         assert!(ledger.get(&block).await.unwrap().is_none());
