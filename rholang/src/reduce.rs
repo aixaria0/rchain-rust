@@ -307,8 +307,17 @@ fn int_bigop(
 /// shared with the `+` operator exactly as Scala shares them (`EPlusBody`'s
 /// `case (lhs: ESetBody, rhs) => add(lhs, List[Par](rhs))` calls the same `add` the `.add(x)`
 /// method does), so the two cannot drift apart.
+///
+/// **The charge is the set it rebuilds, not one addition** (C353). It clones every element and then
+/// re-canonicalises the whole set through `par_set`, so the work is the output's canonicalisation —
+/// the same shape `set` charges on a map (C345). The flat `add_cost` this used to charge let a fold
+/// that inserts N elements buy `O(N² log N)` work for `O(N)` phlo: one member of the class the
+/// October re-audit closed, in the arm the arm-by-arm reading did not reach, and found by the cost
+/// register's first census.
 fn set_add(b: &ParSet, element: Par, cost: &CostAccounting) -> Result<Expr, RholangError> {
-    cost.charge(Costs::add_cost())?;
+    cost.charge(Costs::canonicalization_cost(
+        (b.ps.len() as i64).saturating_add(1),
+    ))?;
     let element_conn = element.connective_used;
     let element_lf = element.locally_free.0.clone();
     let mut ps = b.ps.clone();
@@ -5001,6 +5010,31 @@ mod tests {
             marginal(to_map, |t| format!("{t}.toMap().set(0,0)"), pairs, 9)
                 - marginal(to_map, |t| format!("{t}.toMap().set(0,0)"), pairs, 8),
             Costs::add_cost().value
+        );
+    }
+
+    /// **`add` — and so `set + x`, which shares its body — charges the set it rebuilds** (C353).
+    ///
+    /// `set_add` clones every element and re-canonicalises the whole set, so the charge must grow with
+    /// the set. The flat `add_cost` this replaced made a fold of N insertions buy `O(N² log N)` work
+    /// for `O(N)` phlo. The baseline is the set the method reads, so the conversion's own charge is
+    /// cancelled out.
+    #[test]
+    fn a_set_add_charges_the_set_it_rebuilds() {
+        let to_set = |t: &str| format!("{t}.toSet()");
+        assert_eq!(
+            marginal(to_set, |t| format!("{t}.toSet().add(0)"), ints, 9)
+                - marginal(to_set, |t| format!("{t}.toSet().add(0)"), ints, 8),
+            Costs::add_cost().value,
+            "one more element in the set must cost one more canonicalisation"
+        );
+        // The `+` operator shares `set_add`, so it is charged the same. Its own `op_call_cost` is a
+        // constant and cancels in the marginal.
+        assert_eq!(
+            marginal(to_set, |t| format!("{t}.toSet() + 0"), ints, 9)
+                - marginal(to_set, |t| format!("{t}.toSet() + 0"), ints, 8),
+            Costs::add_cost().value,
+            "`set + x` is the same body and the same charge"
         );
     }
 

@@ -142,6 +142,24 @@ impl Costs {
             format!("{universe}-member censure fold"),
         )
     }
+    /// The cost of a **ranked** tally: every round scans every ranked entry, and a round may
+    /// eliminate only one option, so there are at most `longest` rounds (C354).
+    ///
+    /// The charge the handler used to take was `(ballots + weights)²` — a function of two counts that
+    /// the option lists do not appear in at all, while the work is linear in them and round-multiplied
+    /// by the longest ballot. This is the `diff_cost`/`string_search_worst_cost` shape: a scan whose
+    /// worst case is a product, so the product is what is charged. The floor keeps a one-entry ballot
+    /// — or a ballot list where every round eliminates everything at once — from costing nothing.
+    pub fn gov_tally_ranked_cost(longest: i64, entries: i64) -> Cost {
+        Cost::new(
+            longest.saturating_mul(entries).max(entries),
+            format!("{longest}-deep ranked tally over {entries} entries"),
+        )
+    }
+    /// The cost of an **approval** tally: every approved option is counted once per ballot (C354).
+    pub fn gov_tally_approval_cost(entries: i64) -> Cost {
+        Cost::new(entries, format!("{entries}-option approval tally"))
+    }
     /// The cost of canonicalising a collection of `elements` items (C345).
     ///
     /// `par_set` and `par_map` sort and deduplicate their input, so every method that builds one — the
@@ -699,5 +717,17 @@ mod tests {
             135_005_697,
             "at the bound the charge is (512+1)³"
         );
+    }
+
+    /// **A tally charges the option lists it scans** (C354): the ranked mode charges the worst case —
+    /// one scan per entry per round — and the approval mode charges its entries. The floor keeps a
+    /// one-round ballot from costing nothing.
+    #[test]
+    fn the_tally_charges_are_the_models() {
+        assert_eq!(Costs::gov_tally_ranked_cost(10, 1_000).value, 10_000);
+        assert_eq!(Costs::gov_tally_ranked_cost(1, 10).value, 10);
+        assert_eq!(Costs::gov_tally_ranked_cost(0, 0).value, 0);
+        assert_eq!(Costs::gov_tally_approval_cost(0).value, 0);
+        assert_eq!(Costs::gov_tally_approval_cost(1_000).value, 1_000);
     }
 }
