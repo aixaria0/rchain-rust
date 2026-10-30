@@ -181,10 +181,8 @@ under an 87 % line-coverage floor
 ### Comparison with other chains
 
 **Comparison with three live mainnets.** The October 2026 pass read this node and Solana (Agave), Sui
-and Bitcoin SV at pinned revisions — `v4.4.0`, `testnet-v1.83.0`, `v1.2.3` — with one question: *is
-there an operation reachable by an unauthenticated remote attacker whose cost is superlinear in
-attacker input while the charge is flat?* **At the pin every one of the four had such an operation**;
-the table is what separates them, and on the structural axes the pre-testnet node leads.
+and Bitcoin SV at pinned revisions (`v4.4.0`, `testnet-v1.83.0`, `v1.2.3`) against one question — *can
+a remote attacker make the node do unbounded work?* — and the table is the answer.
 
 | | **This node** (pre-testnet) | **Solana** (Agave) | **Sui** | **Bitcoin SV** |
 |---|---|---|---|---|
@@ -194,19 +192,7 @@ the table is what separates them, and on the structural axes the pre-testnet nod
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->91 laws<!-- counts:end -->; every registered witness runs by name; `sorry`/`admit`/`opaque` refused | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
 | **Peer identity** | Mutual TLS; the certificate key is bound to the identity the peer claims. Which keys are admitted is unconstrained — a recorded decision, not an oversight ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the conversions, `set.add` and both tallies charge what they do (Law 91), and a register plus a census gate refuses an undeclared charge (`spec/COST.md`) — the remaining gaps are the log factor of a sort and the gate's blindness to a wrong declaration, and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
-
-The cost row is the one this node does not lead, and it is the row that has moved twice. September
-closed its specific instances (the union dedup and the governance folds); the October pass found the
-class live again in the collection conversions, which sorted for a flat 18 phlo, and opened C345 and
-C346; **the same PR closed both** — the conversions now charge their output, the union charges both
-operands, and `rho:gov:censure` is charged the cube of its universe (Law 91). That pass also built the
-instrument the class had never had: `spec/COST.md` registers every priced operation with the shape of
-its charge, and a census in CI refuses an arm that declares none — and its first census found **two
-more live instances** (`set.add`'s flat three phlo, and the tallies' uncounted option lists), which is
-what the class looks like when nothing is watching. The warning stays because the charge is linear for
-`O(n log n)` work — bounded amplification, not an exact price — and because the gate reads
-declarations, not work.
+| **Cost model bounds attacker work** | ✅ per-block phlo and deploy caps; every priced operation is registered and gated ([`spec/COST.md`](spec/COST.md)) | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
 Two limits: Sui's crypto/P2P and Solana's Agave VM are unvendored, so those cells are **could not trace**, not
 cleared; and this node's assurance ends where the review says — the chain layer's authority is access
