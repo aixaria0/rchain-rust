@@ -1,6 +1,7 @@
 //! Block processing (port of `blocks/BlockProcessor.scala`).
 
 use rchain_shared::chan;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
@@ -319,6 +320,17 @@ pub(crate) async fn publish_accepted_root(
 // and not inert if it ever did fire: a parked block rides **every** subsequent batch, so an
 // unresolvable one would be replayed up to the cap on each delivery, for ever.
 
+/// The receiver and disposition sweeps may offer the same stored body concurrently.
+/// Keep exact hash duplicates out of replay; different hashes must still reach
+/// validation even when they share a sender and sequence number.
+fn unique_received_blocks(batch: Vec<BlockMessage>) -> Vec<BlockMessage> {
+    let mut seen = BTreeSet::new();
+    batch
+        .into_iter()
+        .filter(|block| seen.insert(block.block_hash))
+        .collect()
+}
+
 /// Process incoming blocks: validate a batch concurrently, insert serially in topological order,
 /// notify the validated queue, and broadcast the block hash (port of `BlockProcessor.apply`).
 pub async fn apply<F, Fut>(
@@ -351,6 +363,19 @@ pub async fn apply<F, Fut>(
                 Err(_) => break,
             }
         }
+
+        // A disposition sweep can race the receiver's handoff. Deduplicate within
+        // this batch, then discard deliveries committed by an earlier batch. All
+        // validation tasks in the previous batch have finished before this point.
+        let mut uninserted = Vec::new();
+        for block in unique_received_blocks(batch) {
+            if dag.get_representation().await.contains(&block.block_hash) {
+                settle_block(&disposition, &block, &log, source).await;
+                continue;
+            }
+            uninserted.push(block);
+        }
+        let batch = uninserted;
 
         // Validate each block concurrently. Validation is verify-only (replay) and forks its own
         // replay runtime per block, so blocks in the batch are independent.
@@ -535,6 +560,27 @@ mod tests {
             sig: vec![1],
             timestamp: 0,
         }
+    }
+
+    #[test]
+    fn concurrent_receiver_and_retry_deliveries_are_replayed_once() {
+        let first = sample_block();
+        let mut sibling = first.clone();
+        sibling.block_hash = BlockHash::new([0xcd; 32]);
+        let selected = unique_received_blocks(vec![
+            first.clone(),
+            first.clone(),
+            sibling.clone(),
+            first.clone(),
+            sibling.clone(),
+        ]);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].block_hash, first.block_hash);
+        assert_eq!(selected[1].block_hash, sibling.block_hash);
+        // A conflicting block at the same sender/sequence is not an exact
+        // duplicate. It must still pass through the existing equivocation checks.
+        assert_eq!(selected[0].sender, selected[1].sender);
+        assert_eq!(selected[0].seq_num, selected[1].seq_num);
     }
 
     #[tokio::test]

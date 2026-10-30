@@ -5,6 +5,7 @@ on:
     branches:
       - verify/quiet-finality-integrated-20261030
       - verify/finality-recovery-current-dev-20261030
+      - verify/finality-recovery-dedup-20261030
 
 permissions:
   contents: read
