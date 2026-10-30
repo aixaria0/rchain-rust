@@ -11,8 +11,16 @@ errors = []
 blocks = {}
 for i in range(8):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{40403+1000*i}/api/blocks/0/1000", timeout=10) as r:
-            data = json.load(r)
+        base = f"http://127.0.0.1:{40403+1000*i}"
+        with urllib.request.urlopen(base + "/api/v1/status", timeout=10) as r:
+            tip = json.load(r)["latestBlockNumber"]
+        data = []
+        for start in range(0, tip + 1, 50):
+            with urllib.request.urlopen(base + f"/api/blocks/{start}/{min(start+49,tip)}", timeout=10) as r:
+                page = json.load(r)
+            if not isinstance(page, list):
+                raise AssertionError(f"invalid DAG page: {page}")
+            data.extend(page)
         (out / f"validator-{i}.json").write_text(json.dumps(data, indent=2)+"\n")
         def visit(x):
             if isinstance(x,dict):
