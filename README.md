@@ -154,7 +154,7 @@ through the node by a Rust consumer, so a definition cannot drift from its corpu
 noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
 
 **Reviewed, adversarially, repeatedly.** The pass record is
-[`spec/audit/passes.md`](spec/audit/passes.md) — 149 sections of findings, refutations and remediations,
+[`spec/audit/passes.md`](spec/audit/passes.md) — 150 sections of findings, refutations and remediations,
 from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
 full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
 and closes by construction — a row is `done` only when the bad state is no longer representable, with
@@ -170,8 +170,8 @@ clock — asking which of seven personas can act against each: **97 rows**, each
 and a falsifier, held to shape by a CI gate and driven against one live devnet boot with the runs
 committed ([`docs/src/spec/adversary.md`](docs/src/spec/adversary.md)).
 
-**Tested in-process and live, and gated.** ~2,607 test functions (counted 2026-10-30), a 165-file
-Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 55
+**Tested in-process and live, and gated.** ~2,615 test functions (counted 2026-10-30), a 165-file
+Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 56
 committed evidence directories (40 campaign runs) from live drills. Static gates run in CI on every
 push beside `cargo fmt --check`,
 clippy with `-D warnings`, `cargo deny check`, the `wasm32` reducer check and a nightly formal gate,
@@ -194,14 +194,19 @@ the table is what separates them, and on the structural axes the pre-testnet nod
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->91 laws<!-- counts:end -->; every registered witness runs by name; `sorry`/`admit`/`opaque` refused | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
 | **Peer identity** | Mutual TLS; the certificate key is bound to the identity the peer claims. Which keys are admitted is unconstrained — a recorded decision, not an oversight ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the collection conversions now charge three phlo per element of the output they build (C345, Law 91a) — the remaining gap is the log factor of a sort, and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
+| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the conversions, `set.add` and both tallies charge what they do (Law 91), and a register plus a census gate refuses an undeclared charge (`spec/COST.md`) — the remaining gaps are the log factor of a sort and the gate's blindness to a wrong declaration, and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
 The cost row is the one this node does not lead, and it is the row that has moved twice. September
 closed its specific instances (the union dedup and the governance folds); the October pass found the
 class live again in the collection conversions, which sorted for a flat 18 phlo, and opened C345 and
 C346; **the same PR closed both** — the conversions now charge their output, the union charges both
-operands, and `rho:gov:censure` is charged the cube of its universe (Law 91). The warning stays because
-the charge is linear for `O(n log n)` work: bounded amplification, not an exact price.
+operands, and `rho:gov:censure` is charged the cube of its universe (Law 91). That pass also built the
+instrument the class had never had: `spec/COST.md` registers every priced operation with the shape of
+its charge, and a census in CI refuses an arm that declares none — and its first census found **two
+more live instances** (`set.add`'s flat three phlo, and the tallies' uncounted option lists), which is
+what the class looks like when nothing is watching. The warning stays because the charge is linear for
+`O(n log n)` work — bounded amplification, not an exact price — and because the gate reads
+declarations, not work.
 
 Two limits: Sui's crypto/P2P and Solana's Agave VM are unvendored, so those cells are **could not trace**, not
 cleared; and this node's assurance ends where the review says — the chain layer's authority is access

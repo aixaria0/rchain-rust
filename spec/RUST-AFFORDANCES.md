@@ -179,7 +179,12 @@ per element is `n·m` and charging one factor is the sublinear-charge shape that
 inoperative (§3.10). The same shape is the collection one: `toSet`, `toMap`, `set` and `keys` charge
 three phlo per element of the output they canonicalise, and a union charges both operands — the October
 2026 re-audit's finding, and the reason it was found by measurement rather than by a gate is that
-nothing in the tree compares a charge with its work (`RUST-VS-SCALA.md` §3.13, Law 91a, pass 149).
+nothing in the tree compared a charge with its work (`RUST-VS-SCALA.md` §3.13, Law 91a, pass 149). **And
+the comparison is an instrument now**: `spec/COST.md` is a register of every priced operation with the
+shape of its charge, `tools/check-cost-register.py` refuses an arm that declares none, and
+`rholang/tests/cost_shapes.rs` measures that a declared shape still grows. Its first census found two
+more of the same class (`set.add`, and the tallies' uncounted option lists), which is the honest
+measure of how long "by construction" was a claim rather than a construction (pass 150, Law 91c).
 
 **Where this page earns its honesty.** One of the planned fixes — a per-byte charge on the crypto
 builtins — was **written, tested, and reverted**, because implementing it showed *the finding was

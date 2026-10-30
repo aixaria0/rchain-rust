@@ -4,7 +4,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 43 overlapping tracker, audit and release obligations: **12 landed implementation references, 12 maintainer-recorded deferrals and 19 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 44 overlapping tracker, audit and release obligations: **12 landed implementation references, 12 maintainer-recorded deferrals and 20 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|

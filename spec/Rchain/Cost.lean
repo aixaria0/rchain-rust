@@ -86,4 +86,19 @@ theorem censureCost_monotone {a b : Nat} (h : a ≤ b) : censureCost a ≤ censu
 theorem censureCost_is_not_the_square : ∃ u, censureCost u ≠ u * u :=
   ⟨2, by decide⟩
 
+/-- The phlo a tally charges (C354). A **ranked** tally scans every ranked entry once per round and a
+round may eliminate only one option, so there are at most `longest` rounds: the worst case is
+`longest * entries`. An **approval** tally counts every approved entry once. The floor is the approval
+side, and it also keeps a one-round ranked ballot from costing nothing. -/
+def tallyCost (longest entries : Nat) : Nat := max (longest * entries) entries
+
+/-- A tally charges every entry it scans, whatever the ballot shape. -/
+theorem tallyCost_covers_the_entries (longest entries : Nat) : entries ≤ tallyCost longest entries :=
+  Nat.le_max_right _ _
+
+/-- And a ranked tally charges the **worst case** of its rounds, not one pass. -/
+theorem tallyCost_is_the_worst_case (longest entries : Nat) :
+    longest * entries ≤ tallyCost longest entries :=
+  Nat.le_max_left _ _
+
 end Rchain
