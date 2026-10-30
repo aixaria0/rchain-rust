@@ -154,7 +154,7 @@ through the node by a Rust consumer, so a definition cannot drift from its corpu
 noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
 
 **Reviewed, adversarially, repeatedly.** The pass record is
-[`spec/audit/passes.md`](spec/audit/passes.md) — 148 sections of findings, refutations and remediations,
+[`spec/audit/passes.md`](spec/audit/passes.md) — 149 sections of findings, refutations and remediations,
 from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
 full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
 and closes by construction — a row is `done` only when the bad state is no longer representable, with
@@ -170,8 +170,8 @@ clock — asking which of seven personas can act against each: **97 rows**, each
 and a falsifier, held to shape by a CI gate and driven against one live devnet boot with the runs
 committed ([`docs/src/spec/adversary.md`](docs/src/spec/adversary.md)).
 
-**Tested in-process and live, and gated.** ~2,593 test functions (counted 2026-10-30), a 165-file
-Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 52
+**Tested in-process and live, and gated.** ~2,607 test functions (counted 2026-10-30), a 165-file
+Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 55
 committed evidence directories (40 campaign runs) from live drills. Static gates run in CI on every
 push beside `cargo fmt --check`,
 clippy with `-D warnings`, `cargo deny check`, the `wasm32` reducer check and a nightly formal gate,
@@ -183,8 +183,8 @@ under an 87 % line-coverage floor
 **Comparison with three live mainnets.** The October 2026 pass read this node and Solana (Agave), Sui
 and Bitcoin SV at pinned revisions — `v4.4.0`, `testnet-v1.83.0`, `v1.2.3` — with one question: *is
 there an operation reachable by an unauthenticated remote attacker whose cost is superlinear in
-attacker input while the charge is flat?* **Every one of the four has such an operation**; the table is
-what separates them, and on the structural axes the pre-testnet node leads.
+attacker input while the charge is flat?* **At the pin every one of the four had such an operation**;
+the table is what separates them, and on the structural axes the pre-testnet node leads.
 
 | | **This node** (pre-testnet) | **Solana** (Agave) | **Sui** | **Bitcoin SV** |
 |---|---|---|---|---|
@@ -208,7 +208,8 @@ cleared; and this node's assurance ends where the review says — the chain laye
 control by another name, and unforgeability is axiomatised at the crypto boundary (law 19), not proved.
 
 **The October 2026 re-audit in full — the cost-model class, the new ingress surface, the referee
-verdicts, and the comparison at pinned revisions; September 2026 is kept at §9:
+verdicts, the comparison at pinned revisions, and the remediation of all eight findings in the same
+PR; September 2026 is kept at §9:
 [`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
 **How the apparatus was built is written up too, because the method is the part that is unusual here.**
