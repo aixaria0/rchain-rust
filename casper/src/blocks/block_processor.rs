@@ -371,6 +371,9 @@ pub async fn apply<F, Fut>(
         for block in unique_received_blocks(batch) {
             if dag.get_representation().await.contains(&block.block_hash) {
                 settle_block(&disposition, &block, &log, source).await;
+                // A late receiver handoff may still hold dependency state.
+                // Release that state without replay, rebroadcast or proposer taps.
+                chan::send(&released_tx, block).await;
                 continue;
             }
             uninserted.push(block);

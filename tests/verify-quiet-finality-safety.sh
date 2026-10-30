@@ -5,6 +5,7 @@ cargo test --release --locked -p rchain-sdk --lib consensus
 cargo test --release --locked -p rchain-casper --lib blocks::proposer
 cargo test --release --locked -p rchain-casper --lib block_disposition
 cargo test --release --locked -p rchain-casper --lib blocks::block_processor
+cargo test --release --locked -p rchain-casper --lib blocks::block_receiver
 cargo test --release --locked -p rchain-casper --lib engine::node_phase
 cargo test --release --locked -p rchain-rholang --lib liveness_tests
 cargo test --release --locked -p rchain-node --lib web::node_list
