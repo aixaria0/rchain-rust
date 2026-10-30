@@ -311,11 +311,15 @@ impl<'a> Cursor<'a> {
 #[derive(Clone)]
 pub struct BlockDispositionStore {
     store: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>>,
+    mutation: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl BlockDispositionStore {
     pub fn from_store(store: Arc<dyn KeyValueTypedStore<BlockHash, BlockDisposition>>) -> Self {
-        Self { store }
+        Self {
+            store,
+            mutation: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// **Record that this node owes the block an outcome.** Written when the body is in the store,
@@ -327,6 +331,7 @@ impl BlockDispositionStore {
         block_number: BlockHeight,
         stage: PendingStage,
     ) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         let since_unix_ms = match self.get(&hash).await? {
             // A fault is a stronger record than "pending"; a re-delivery must not erase it.
             Some(BlockDisposition::Faulted { .. }) => return Ok(()),
@@ -356,6 +361,7 @@ impl BlockDispositionStore {
         stage: &str,
         reason: &str,
     ) -> Result<u32, String> {
+        let _mutation = self.mutation.lock().await;
         let now = now_unix_millis();
         let (since_unix_ms, attempts) = match self.get(&hash).await? {
             Some(BlockDisposition::Faulted {
@@ -392,6 +398,7 @@ impl BlockDispositionStore {
         stage: &str,
         reason: &str,
     ) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         let now = now_unix_millis();
         let since_unix_ms = match self.get(&hash).await? {
             Some(disposition) => match disposition {
@@ -417,6 +424,7 @@ impl BlockDispositionStore {
 
     /// Mark that a retry is now in flight, so the loop does not re-send it until the next window.
     pub async fn mark_retry_started(&self, hash: BlockHash) -> Result<(), String> {
+        let _mutation = self.mutation.lock().await;
         match self.get(&hash).await? {
             Some(BlockDisposition::Faulted {
                 block_number,
@@ -460,10 +468,43 @@ impl BlockDispositionStore {
         }
     }
 
+    /// Claim an aged Stored row only if it is still eligible now. Ledger snapshots
+    /// can outlive a concurrent verdict, validation handoff or terminal fault.
+    /// The shared mutation lock makes that check and transition one operation.
+    pub async fn reserve_stored_retry(&self, hash: BlockHash, now_ms: u64) -> Result<bool, String> {
+        let _mutation = self.mutation.lock().await;
+        let Some(disposition) = self.get(&hash).await? else {
+            return Ok(false);
+        };
+        if !eligible_stored_pending(&disposition, now_ms) {
+            return Ok(false);
+        }
+        let BlockDisposition::Pending {
+            block_number,
+            since_unix_ms,
+            ..
+        } = disposition
+        else {
+            return Ok(false);
+        };
+        self.store
+            .put(&[(
+                hash,
+                BlockDisposition::Pending {
+                    block_number,
+                    stage: PendingStage::Retry,
+                    since_unix_ms,
+                },
+            )])
+            .await?;
+        Ok(true)
+    }
+
     /// **A verdict, or a fault the node has stopped retrying, settles the obligation.** The DAG
     /// metadata is the record for an accepted or refused block; a quarantined fault stays visible
     /// until an operator acts, so it is not deleted here.
     pub async fn settle(&self, hash: BlockHash) -> Result<usize, String> {
+        let _mutation = self.mutation.lock().await;
         self.store.delete(&[hash]).await
     }
 
@@ -998,12 +1039,16 @@ pub async fn reoffer_ready_stored_pending_once(
         }
         // The row moves in flight before the claim, so a claim that turns out `Owned` (the
         // receiver is dispatching it) is still covered by the processor's settle/fault.
-        if let Err(e) = ledger.mark_retry_started(hash).await {
-            log.error(
-                source,
-                &format!("could not reserve pending replay {}: {e}", hash.to_hex()),
-            );
-            continue;
+        match ledger.reserve_stored_retry(hash, now_ms).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!("could not reserve pending replay {}: {e}", hash.to_hex()),
+                );
+                continue;
+            }
         }
         if receiver_state.lock().await.claim_reoffer(&hash) == ReofferClaim::Owned {
             continue;
@@ -1156,10 +1201,29 @@ pub const ORPHAN_AUDIT_SAMPLES: u32 = 3;
 static ORPHAN_BODIES: AtomicU64 = AtomicU64::new(0);
 static ORPHAN_DETECTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// The currently confirmed orphan count: **zero unless a gap has been sustained**. A transient
-/// in-flight body is not counted.
+// A boot-time store/DAG mismatch is known before readiness is exposed. The
+// periodic three-sample rule only protects against transient *runtime* writes;
+// it must not erase an already observed startup discrepancy.
+pub fn observe_boot_orphan_gap(stored: usize, in_dag: usize) -> u64 {
+    let gap = u64::try_from(stored.saturating_sub(in_dag)).unwrap_or(u64::MAX);
+    if gap > 0 {
+        let previous = ORPHAN_BODIES.swap(gap, Ordering::Relaxed);
+        if previous == 0 {
+            ORPHAN_DETECTIONS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    gap
+}
+
+/// The currently observed orphan count. A mismatch already known at boot blocks readiness
+/// immediately; a transient runtime write counts only after three consecutive audit samples.
 pub fn orphan_bodies() -> u64 {
     ORPHAN_BODIES.load(Ordering::Relaxed)
+}
+
+/// Clear the readiness blocker only when the store/DAG discrepancy is actually gone.
+fn clear_orphan_gate_if_resolved(gap: u64) -> bool {
+    gap == 0 && ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0
 }
 
 /// How many distinct sustained orphan episodes this process has seen. Monotone, so an operator can
@@ -1240,7 +1304,7 @@ pub async fn audit_stored_bodies(
                 }
             }
             None => {
-                if ORPHAN_BODIES.swap(0, Ordering::Relaxed) > 0 {
+                if clear_orphan_gate_if_resolved(gap) {
                     log.info(
                         source,
                         &format!(
@@ -1265,6 +1329,68 @@ mod tests {
 
     fn height(n: i64) -> BlockHeight {
         BlockHeight::try_from(n).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_pending_snapshots_cannot_duplicate_a_claim_or_retry_a_terminal_fault() {
+        let ledger = store().await;
+        let block = hash(70);
+        ledger
+            .mark_pending(block, height(8), PendingStage::Stored)
+            .await
+            .unwrap();
+        let now = now_unix_millis().saturating_add(PENDING_PARENT_RECHECK_AGE_MS);
+        let first = ledger.clone();
+        let second = ledger.clone();
+        let (a, b) = tokio::join!(
+            first.reserve_stored_retry(block, now),
+            second.reserve_stored_retry(block, now),
+        );
+        assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
+
+        // A sweep may still hold its old Stored snapshot after a fault or
+        // verdict. Neither outcome may be turned back into an eligible retry.
+        ledger
+            .mark_terminal_fault(block, height(8), "terminal", "quarantined")
+            .await
+            .unwrap();
+        assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
+        assert_eq!(
+            ledger.get(&block).await.unwrap().unwrap().attempts(),
+            MAX_FAULT_RETRIES
+        );
+        ledger.settle(block).await.unwrap();
+        assert!(!ledger.reserve_stored_retry(block, now).await.unwrap());
+        assert!(ledger.get(&block).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn aged_stored_pending_is_reoffered_but_inflight_and_faulted_are_not() {
+        let pending = BlockDisposition::Pending {
+            block_number: height(8),
+            stage: PendingStage::Stored,
+            since_unix_ms: 1000,
+        };
+        assert!(!eligible_stored_pending(&pending, 60_999));
+        assert!(eligible_stored_pending(&pending, 61_000));
+        assert!(!eligible_stored_pending(&pending, 0));
+        for stage in [PendingStage::Validating, PendingStage::Retry] {
+            let in_flight = BlockDisposition::Pending {
+                block_number: height(8),
+                stage,
+                since_unix_ms: 1000,
+            };
+            assert!(!eligible_stored_pending(&in_flight, 600_000));
+        }
+        let faulted = BlockDisposition::Faulted {
+            block_number: height(8),
+            stage: "validation".to_string(),
+            reason: "injected".to_string(),
+            since_unix_ms: 1000,
+            last_attempt_unix_ms: 5000,
+            attempts: MAX_FAULT_RETRIES,
+        };
+        assert!(!eligible_stored_pending(&faulted, 600_000));
     }
 
     async fn store() -> BlockDispositionStore {
@@ -1316,6 +1442,23 @@ mod tests {
         // A zero sample is evidence the normal case returned; the count starts again.
         assert_eq!(streak.observe(0), None);
         assert_eq!(streak.observe(1), None);
+    }
+
+    #[test]
+    fn a_known_boot_gap_is_not_hidden_behind_the_periodic_sampling_window() {
+        ORPHAN_BODIES.store(0, Ordering::Relaxed);
+        // This exact shape occurred in the isolated legacy testnet snapshot.
+        assert_eq!(observe_boot_orphan_gap(1947, 21), 1926);
+        assert_eq!(orphan_bodies(), 1926);
+        // One transient sample cannot clear a mismatch already found at boot.
+        let mut streak = OrphanStreak::default();
+        assert_eq!(streak.observe(1926), None);
+        assert!(!clear_orphan_gate_if_resolved(1926));
+        assert_eq!(orphan_bodies(), 1926);
+        assert!(clear_orphan_gate_if_resolved(0));
+        assert_eq!(orphan_bodies(), 0);
+        assert_eq!(observe_boot_orphan_gap(21, 1947), 0);
+        assert_eq!(orphan_bodies(), 0);
     }
 
     #[test]
