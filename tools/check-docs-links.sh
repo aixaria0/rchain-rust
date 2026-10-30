@@ -8,7 +8,7 @@
 #
 #   1. SUMMARY is in sync: every target exists and every page is listed exactly once.
 #   2. Every relative link resolves against the linking file's directory (the book and the root
-     reader-facing documents).
+#      reader-facing documents).
 #   3. Every `#fragment` resolves to a heading on the target page (GitHub/mdbook slug rule).
 #   4. No empty link text, empty destination, or empty parenthetical outside code.
 #
