@@ -64,9 +64,9 @@ produced **126 blocks in about three minutes** (2026-09-29, [#70](https://github
 AUDIT C170/C171). A later measurement recorded **276** of mostly empty attestations in about a minute
 ([#105](https://github.com/rhovision-org/rholo/issues/105)); the number is recorded as "276 blocks in
 about a minute" because the artifact's unit was never resolved. The block rate is not a throughput
-capability — it is a defect that a live operator meets as a continually growing chain. The guard that
-bounds the cadence is described in [Operating the node](operating.md#block-production-modes); the
-blocks-per-deploy arithmetic is in [Issue 149](../spec/testnet-acceptance.md).
+capability — it is a defect that a live operator meets as a continually growing chain. The current
+block-production modes are in [Operating the node](operating.md#block-production-modes); the
+blocks-per-deploy arithmetic is in [the acceptance specification](../spec/testnet-acceptance.md).
 
 ## Start-up replay and the 3,200-block correction
 
