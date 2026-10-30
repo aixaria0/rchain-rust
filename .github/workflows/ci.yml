@@ -349,3 +349,26 @@ jobs:
 
       - name: emSign exception rejects unpatched root providers
         run: python3 tools/check-emsign-dependency-policy.py
+
+  docs:
+    name: Documentation book
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install mdbook
+        run: cargo install --locked mdbook --version 0.5.4
+
+      - name: Documentation structure, links and anchors
+        run: tools/check-docs-links.sh --gate
+
+      - name: Artifact figures match the record
+        run: tools/recount-artifact.sh --check
+
+      - name: Law counts match the register
+        run: tools/emit-lean-counts.sh --check
+
+      - name: Build the book
+        run: mdbook build docs
