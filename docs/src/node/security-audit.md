@@ -144,14 +144,16 @@ synchronous builtin — it bounds the waiter, not the work. **These are the inst
 the conversion and fold arms; that is an inspection, not a proof that no fourth exists**, and no gate
 is about cost (§5).
 
-**What §149 did, and what it did not.** The conversions and `set`/`keys` now charge their output
+**What §149 did, and what §150 added.** The conversions and `set`/`keys` now charge their output
 (`3 · n`, computed before the work), `++`/`.union` charge **both** operands (as `diff_cost` already
 charged `|left|·|right|`), and `censure` charges `(U+1)³`. The bound stayed at 512 because the cubic
-path was then measured at it — 33 ms for a 512-member universe in release. **Not done**: a cost-shape
-gate, which is still the missing instrument (this finding was found by measurement, and none of the
-existing gates can see a charge that does not track its work); and the charge is linear for `O(n log n)`
-work, so a log factor remains — bounded, not exact. The 600 s deadline stays as the liveness backstop
-it is.
+path was then measured at it — 33 ms for a 512-member universe in release. **§150 then built the
+instrument §149 lacked**: [`spec/COST.md`](../../../spec/COST.md) registers every priced operation with
+the shape of its charge, a census refuses an arm that declares none, and a deterministic shape test
+measures that a declared shape still grows — and its first census found **two more instances of the
+class** (`set.add` C353, the tallies' uncounted option lists C354). What remains is the **log factor**
+— the charge is linear for `O(n log n)` work, bounded, not exact — and the fact that the gate reads
+declarations rather than work. The 600 s deadline stays as the liveness backstop it is.
 
 ## 4. Other confirmed findings
 
@@ -226,11 +228,15 @@ The check-off is [`spec/AUDIT.md`](../../../spec/AUDIT.md) and it says what it s
 restate a total here, because a hand-typed count is the claim that rots. What the register does not
 cover is specific:
 
-- **No gate is about cost.** The tree's gates cover panics, `unsafe`, silent conversion, type escapes,
-  lock recovery, queue bounds, spawn observability, workflow pins, vendored sources, the HAZOP and the
-  safety case, the wargame, dependencies, docs and counts. A new builtin that charges nothing for
-  quadratic work fails none of them. §3 is the demonstration: a live cost defect on a tree where every
-  gate is green.
+- **The cost gate reads declarations, not work.** §3 was the demonstration that no gate could see a
+  charge that does not track its work: a live cost defect on a tree where every gate was green. There
+  is one now — `spec/cost-register.tsv` with `tools/check-cost-register.py`, and a deterministic shape
+  test beside it ([the cost model](../formal/cost-model.md), pass §150) — and its limits are the next
+  bullet's shape: it fails on an arm with no declared charge, a row for nothing, and a charge moved out
+  of its arm, and the shape test fails when a charge stops growing. It **cannot** see a `linear`
+  declaration over `O(n log n)` work (the recorded log factor), a wrong declaration, or a mis-set
+  constant. A new builtin that charges nothing still passes if it *declares* `identity` or `capped` —
+  the claim is now written down and reviewable, which is the difference.
 - **The assurance gates read names, not assertions.** A HAZOP falsifier or a resource-safety evidence
   cell that names a real test in the right file passes `--gate` without anyone checking that the test
   asserts the deviation's negation. The register's own witness column has a run-by-name gate; these
@@ -312,10 +318,13 @@ have no gate.
 
 These are decisions, not defects.
 
-- **A cost-shape gate.** The charges themselves are settled (§149: output size for the conversions,
-  both operands for the union, `(U+1)³` for `censure`, Law 91), and the cubic path was measured at the
-  bound. What has no instrument is the *class*: nothing in the tree can see a charge that does not track
-  its work, so the next such defect is found by measurement, as this one was.
+- **The cost gate's blind spots, not the gate itself.** The instrument exists now
+  ([the cost model](../formal/cost-model.md), §150): a register over every priced operation, a census
+  that refuses an undeclared arm, and a deterministic shape test. Its first census found two more live
+  instances (`set.add`, and the tallies' uncounted option lists) — which is the argument for it. What
+  it still cannot see is the *work*: a `linear` row over `O(n log n)` code, a wrong declaration, and a
+  mis-set constant all pass. The first is the log-factor decision below; the last is a measurement
+  nobody has done (one phlo per operation is a count, not a calibrated unit).
 - **The charge's shape at the margin.** The conversions are linear for `O(n log n)` work, so a phlo buys
   work bounded by `charge · log charge`. Bounded is the requirement the defect violated; an exact price
   of a comparison is a larger decision.

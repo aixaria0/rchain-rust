@@ -1365,6 +1365,35 @@ impl SystemProcesses {
         })
     }
 
+    /// Bound and charge `rho:gov:tally` — the one `rho:gov:*` handler whose work is a function of a
+    /// list the member universe does not count (C354).
+    ///
+    /// The member maps keep the `MAX_GOV_UNIVERSE` refusal; the **option lists are charged, not
+    /// refused**: every round scans every ranked entry and there are at most `longest` rounds, so a
+    /// ranked tally charges that product and an approval tally charges its entries. A legitimate
+    /// election (a few hundred ballots over ten options) pays a few thousand phlo, and a ballot map
+    /// whose option lists are a million entries deep is priced past the block cap instead of being run.
+    fn charge_gov_tally(
+        cc: &ContractCall<ChargingRSpace, std::sync::Weak<RholangAndScalaDispatcher>>,
+        universe: usize,
+        longest: usize,
+        entries: usize,
+        ranked: bool,
+    ) -> Result<(), RholangError> {
+        if universe > Self::MAX_GOV_UNIVERSE {
+            return Err(illegal_arg(&format!(
+                "governance input names {universe} members, over the {} limit",
+                Self::MAX_GOV_UNIVERSE
+            )));
+        }
+        let cost = if ranked {
+            crate::accounting::Costs::gov_tally_ranked_cost(longest as i64, entries as i64)
+        } else {
+            crate::accounting::Costs::gov_tally_approval_cost(entries as i64)
+        };
+        cc.cost().charge(cost)
+    }
+
     /// `rho:gov:censure(censures, levels, vouchers, ret)` — accountability: `(discredited,
     /// newLevels)` via a ⅔ quorum (floored at 2) with voucher slashing.
     fn gov_censure(&self) -> ScalaBodyFn {
@@ -1412,9 +1441,22 @@ impl SystemProcesses {
                 };
                 let b = parse_ranked_ballots(ballots)?;
                 let w = parse_member_int_map(weights)?;
-                Self::charge_gov_fold(&cc, b.len() + w.len())?;
                 let mode = RhoString::unapply(mode)
                     .ok_or_else(|| illegal_arg("gov:tally expects a mode string"))?;
+                // The option lists are what the work is linear in, and the old universe did not
+                // count them (C354).
+                let entries: usize = b.values().map(Vec::len).sum();
+                let longest = b.values().map(Vec::len).max().unwrap_or(0);
+                let ranked = match mode {
+                    "ranked" => true,
+                    "approval" => false,
+                    _ => {
+                        return Err(illegal_arg(
+                            "gov:tally mode must be \"ranked\" or \"approval\"",
+                        ))
+                    }
+                };
+                Self::charge_gov_tally(&cc, b.len() + w.len(), longest, entries, ranked)?;
                 let winner = match mode {
                     "ranked" => qucalc::gov::tally_ranked(&b, &w),
                     "approval" => qucalc::gov::tally_approval(&b, &w),
@@ -4676,6 +4718,113 @@ mod tests {
         assert_eq!(
             RhoString::unapply(produced[0].1.pars[0].as_par()),
             Some("X")
+        );
+    }
+
+    /// **A tally charges the option lists it scans** (C354), where it used to charge only
+    /// `(ballots + weights)²` — a function the option lists do not appear in, while the work is
+    /// linear in them and round-multiplied by the longest ballot.
+    ///
+    /// Measured difference of charges between two election sizes, so the (constant) cost of producing
+    /// the answer cancels: ranked charges `longest × entries`, approval charges `entries`. Under the
+    /// old charge both differences would be zero — the numbers do not depend on the options at all.
+    #[tokio::test]
+    async fn a_tally_charges_the_option_lists_it_scans() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs, cost) = mock_system_processes_with_cost(&mock);
+        let tally = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::GOV_TALLY)
+            .expect("gov:tally definition");
+        let ack = FixedChannels::stdout();
+        let ballots_of = |n: usize, k: usize| {
+            let options: Vec<String> = (0..k).map(|o| format!("o{o:02}")).collect();
+            RhoMap::apply(
+                (0..n)
+                    .map(|i| (RhoString::apply(format!("m{i}")), string_list(&options)))
+                    .collect(),
+            )
+        };
+        let weights_of = |n: usize| {
+            RhoMap::apply(
+                (0..n)
+                    .map(|i| (RhoString::apply(format!("m{i}")), RhoNumber::apply(1)))
+                    .collect(),
+            )
+        };
+        async fn charged(
+            def: &Definition,
+            cost: &std::sync::Arc<crate::accounting::CostAccounting>,
+            ballots: Par,
+            weights: Par,
+            mode: &str,
+            ack: Par,
+        ) -> i64 {
+            let before = cost.total_charged();
+            (def.handler)(
+                vec![lpw(vec![
+                    ballots,
+                    weights,
+                    RhoString::apply(mode.to_string()),
+                    ack,
+                ])],
+                DfsPath::root(),
+            )
+            .await
+            .expect("tally runs");
+            cost.total_charged() - before
+        }
+
+        // ranked: `longest × entries`.
+        let small = charged(
+            tally,
+            &cost,
+            ballots_of(2, 3),
+            weights_of(2),
+            "ranked",
+            ack.clone(),
+        )
+        .await; // 3 * 6 = 18
+        let large = charged(
+            tally,
+            &cost,
+            ballots_of(2, 6),
+            weights_of(2),
+            "ranked",
+            ack.clone(),
+        )
+        .await; // 6 * 12 = 72
+        assert_eq!(
+            large - small,
+            72 - 18,
+            "a ranked tally's charge must grow with the option lists, not only with the ballots"
+        );
+
+        // approval: `entries`.
+        let small = charged(
+            tally,
+            &cost,
+            ballots_of(2, 3),
+            weights_of(2),
+            "approval",
+            ack.clone(),
+        )
+        .await; // 6
+        let large = charged(
+            tally,
+            &cost,
+            ballots_of(2, 6),
+            weights_of(2),
+            "approval",
+            ack,
+        )
+        .await; // 12
+        assert_eq!(
+            large - small,
+            12 - 6,
+            "an approval tally's charge must grow with the approvals it counts"
         );
     }
 

@@ -817,6 +817,25 @@
       "required_acceptance_test": "A pre-fork block containing a conversion or a censure is refused at replay with replay_cost_mismatch, and a post-fork chain replays identically on two independent binaries.",
       "decision_owner": "Jim / consensus",
       "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:cost-insert-and-tally",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "rholang/src/reduce.rs::set_add and rholang/src/system_processes.rs::charge_gov_tally: the charges C353/C354 add (Law 91a/c)",
+      "related_issue_pr": [
+        "#51",
+        "C353",
+        "C354"
+      ],
+      "existing_evidence": {
+        "pass": "spec/audit/passes.md 150",
+        "register": "spec/COST.md"
+      },
+      "missing_proof": "The change is on the cost-register branch and not on dev: no pre-fork replay refusal, no populated-store upgrade and no second binary are established, and its section 6 deviation row is owed after merge.",
+      "smallest_corrective_action": "Merge the cost-register PR as a lockstep category-A change, re-pin the section 6 inventory to the post-merge dev SHA with the cost rows, and regenerate every pinned genesis hash.",
+      "required_acceptance_test": "A pre-fork block containing a set insertion or a tally is refused at replay with replay_cost_mismatch, and a post-fork chain replays identically on two independent binaries.",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
     }
   ],
   "section6_inventory": "section6-gap-inventory.json"

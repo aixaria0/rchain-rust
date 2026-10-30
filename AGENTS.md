@@ -113,7 +113,7 @@ is not pulled in by the library target and a bare `lake build` would otherwise c
 answers asks for one — a "network usability test" applied to every doc change. It is not recorded as
 adopted, because a policy nothing checks reads as a policy that holds. What does hold is the narrower
 and true thing: the two rules above, the audit's residue stated above, and the registers that *are*
-gated (`spec/AUDIT.md`'s check-off, the law register, the test-coverage census). Whether a doc PR gets
+gated (`spec/AUDIT.md`'s check-off, the law register, the test-coverage census, the cost register). Whether a doc PR gets
 a checklist is a maintainer's decision rather than an edit to this file.
 
 ## Intent
@@ -136,7 +136,7 @@ recorded in the Scala-deviation register, [`spec/audit/passes.md`](spec/audit/pa
 ## The target, and how work is tracked
 
 **The oracle is done.** `spec/laws.tsv` reads **0 `owed`, 1 `open`** across
-<!-- counts:entries -->130 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->85<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->36<!-- counts:end -->
+<!-- counts:entries -->131 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->86<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->36<!-- counts:end -->
 `proved-tied`, <!-- counts:axioms -->10 axioms<!-- counts:end --> (9 crypto by design, 1 named) — the single open row
 (law 63a, a bridged deploy's attribution) being a cross-implementation relay this tree cannot reach
 rather than a proof debt, so the mathematical programme the prime directive sets is finished. Adding a

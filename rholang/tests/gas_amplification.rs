@@ -183,3 +183,98 @@ async fn censure_is_cubic_in_the_universe() {
         );
     }
 }
+
+/// **The three `rho:gov:*` folds C346 left unmeasured** (C354), timed against the charge they are
+/// given.
+///
+/// The handler charges `gov_fold_cost(ballots + weights)` — two counts — for folds whose work is a
+/// function of other inputs. This probe builds the shapes: a trust chain (one level of propagation per
+/// round), a delegation chain (one walk per member), ranked ballots (one scan per round per ballot),
+/// and the two tally modes with long option lists, **which the charged universe does not count at
+/// all**. `charged` is the phlo the handler would charge for the same call, so `ms / charged`-order
+/// amplification is readable directly.
+#[tokio::test]
+async fn the_other_governance_folds_are_measured() {
+    if !probe_enabled() {
+        return;
+    }
+    use std::collections::BTreeMap;
+
+    println!("case,members,charged_phlo,ms");
+
+    // `trustLevels`: an admin-rooted chain of depth `d` needs `d` rounds, each scanning `d` ratings.
+    for d in [128usize, 256, 511] {
+        let admins = vec!["m0000".to_string()];
+        let ratings: Vec<(String, String, i64)> = (0..d)
+            .map(|i| (format!("m{i:04}"), format!("m{:04}", i + 1), 5))
+            .collect();
+        let charged = (ratings.len() as i64 + admins.len() as i64).pow(2);
+        let start = Instant::now();
+        let _ = qucalc::gov::trust_levels(&ratings, &admins);
+        println!("trust_levels,{d},{charged},{}", start.elapsed().as_millis());
+    }
+
+    // `resolveWeights`: every member walks the same delegation chain, so the work is `U * L`.
+    for l in [128usize, 256, 511] {
+        let mut delegations = BTreeMap::new();
+        for i in 0..l {
+            delegations.insert(format!("m{i:04}"), format!("m{:04}", i + 1));
+        }
+        let direct_voters = vec![format!("m{l:04}")];
+        let charged = (direct_voters.len() + delegations.len()) as i64;
+        let charged = charged * charged;
+        let start = Instant::now();
+        let _ = qucalc::gov::resolve_weights(&direct_voters, &delegations, &BTreeMap::new());
+        println!(
+            "resolve_weights,{l},{charged},{}",
+            start.elapsed().as_millis()
+        );
+    }
+
+    // `tally_ranked`: `b` ballots, each ranking `k` options. The handler charges `(2b)^2` — the
+    // option lists are not in the universe at all.
+    for (b, k) in [
+        (16usize, 8usize),
+        (64, 16),
+        (128, 64),
+        (100, 1_000),
+        (100, 4_000),
+    ] {
+        let ballots: BTreeMap<String, Vec<String>> = (0..b)
+            .map(|i| {
+                (
+                    format!("m{i:04}"),
+                    (0..k).map(|o| format!("o{o:05}")).collect(),
+                )
+            })
+            .collect();
+        let weights: BTreeMap<String, i64> = (0..b).map(|i| (format!("m{i:04}"), 1)).collect();
+        let charged = ((b + weights.len()) as i64).pow(2);
+        let start = Instant::now();
+        let _ = qucalc::gov::tally_ranked(&ballots, &weights);
+        println!(
+            "tally_ranked,{b}x{k},{charged},{}",
+            start.elapsed().as_millis()
+        );
+    }
+
+    // `tally_approval`: `b` ballots approving `k` options each — the approval lists are uncounted too.
+    for (b, k) in [(128usize, 64usize), (128, 4_000)] {
+        let ballots: BTreeMap<String, Vec<String>> = (0..b)
+            .map(|i| {
+                (
+                    format!("m{i:04}"),
+                    (0..k).map(|o| format!("o{o:05}")).collect(),
+                )
+            })
+            .collect();
+        let weights: BTreeMap<String, i64> = (0..b).map(|i| (format!("m{i:04}"), 1)).collect();
+        let charged = ((b + weights.len()) as i64).pow(2);
+        let start = Instant::now();
+        let _ = qucalc::gov::tally_approval(&ballots, &weights);
+        println!(
+            "tally_approval,{b}x{k},{charged},{}",
+            start.elapsed().as_millis()
+        );
+    }
+}

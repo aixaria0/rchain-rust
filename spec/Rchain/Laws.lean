@@ -5208,6 +5208,7 @@ def lawsC : List Law := [
       "rholang/src/reduce.rs:to_map_charges_its_elements",
       "rholang/src/reduce.rs:keys_charges_its_output",
       "rholang/src/reduce.rs:set_charges_the_map_it_rebuilds",
+      "rholang/src/reduce.rs:a_set_add_charges_the_set_it_rebuilds",
       "rholang/src/reduce.rs:a_union_charges_both_operands_alike",
       "rholang/src/accounting.rs:collection_and_censure_charges_are_the_models"],
     witness := [`Rchain.canonicalizationCost_covers_the_operand, `Rchain.unionCost_symmetric],
@@ -5225,7 +5226,11 @@ def lawsC : List Law := [
       charged at parse and the create path is not attacker-sized. The tie is prose plus the Rust \
       witness, not a corpus: the cost is a closed form, so a corpus of the same numbers would \
       restate the witness. Consensus-visible (#51 category A): the charge moves refund and burned \
-      amounts, hence every post-state hash." },
+      amounts, hence every post-state hash. **The row was true and the code was not, in one arm**: \
+      `set.add`/`set + x` charged a flat 3 phlo for the same re-canonicalisation until the cost \
+      register's first census found it (C353). The statement did not need to change — the arm needed \
+      to join it, which is what a law that is checked against a census can say and a law checked \
+      against its own witnesses cannot." },
 
   { number := 91, clause := "b", layer := "Rholang",
     statement := "**The censure charge bounds the cubic fold.** `rho:gov:censure` charges `(U+1)³` \
@@ -5250,8 +5255,37 @@ def lawsC : List Law := [
       calibration. The bound is on the **sum** of censures, levels and vouchers, which is what stops \
       a deep cascade: a discredit needs a quorum of about two thirds of the eligible set, and the \
       universe counts the censure pairs that must supply it. **The other three `rho:gov:*` folds \
-      keep the squared charge** — their work shape is unmeasured, and that is a residual of this row \
-      rather than a claim that they are quadratic." },
+      keep the squared charge**, and their work shapes were measured afterwards (C354): `trustLevels` \
+      converges in at most five rounds because a conferral cannot raise a level past the rater's, and \
+      `resolveWeights` walks each member's delegation chain — both quadratic, so the squared charge \
+      matches the shape. The measurement was recorded in the cost register (`spec/COST.md`) rather \
+      than left as a residual." },
+
+  { number := 91, clause := "c", layer := "Rholang",
+    statement := "**A tally charges the option lists it scans.** A ranked tally charges the worst \
+      case — one scan per ranked entry per round, at most `longest` rounds — and an approval tally \
+      charges every approved entry. The member maps keep the universe bound; the lists are priced \
+      rather than refused",
+    status := .provedModel,
+    declarations := [`Rchain.tallyCost, `Rchain.tallyCost_covers_the_entries,
+      `Rchain.tallyCost_is_the_worst_case],
+    axioms := [],
+    rust := ["rholang/src/system_processes.rs", "rholang/src/accounting.rs"],
+    rustWitness := ["rholang/src/system_processes.rs:a_tally_charges_the_option_lists_it_scans",
+      "rholang/src/accounting.rs:the_tally_charges_are_the_models"],
+    witness := [`Rchain.tallyCost_covers_the_entries, `Rchain.tallyCost_is_the_worst_case],
+    falsifiable := "The charge this replaced was `(ballots + weights)²`, a function the option lists \
+      do not appear in at all; `a_tally_charges_the_option_lists_it_scans` reads the handler's own \
+      cost cell for the same election at two option-list sizes and the difference is zero under that \
+      charge, so a revert fails there. The probe measures the work the old charge ignored: 34 ms for \
+      a ranked tally of 100 ballots over 4 000 options and 68 ms for an approval tally over 4 000.",
+    note := "**Priced, not refused.** The member maps keep `MAX_GOV_UNIVERSE`; the option lists are \
+      bounded by the charge itself — a ballot map whose lists are a million entries deep is priced \
+      past the block phlo cap instead of being run — because a refusal here would reject a legitimate \
+      election (a few hundred ballots over ten options) to stop one that the phlo budget already \
+      stops. The ranked worst case is `longest × entries`: every round scans every entry, and a round \
+      may eliminate only one option, so `longest` bounds the rounds. The floor is the approval side. \
+      Consensus-visible (#51 category A)." },
 
 ]
 

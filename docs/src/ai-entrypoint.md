@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law register
-([`spec/LAWS.md`](../../spec/LAWS.md), **<!-- counts:entries -->130 entries<!-- counts:end -->**: the calculus laws, the rows covering the
+([`spec/LAWS.md`](../../spec/LAWS.md), **<!-- counts:entries -->131 entries<!-- counts:end -->**: the calculus laws, the rows covering the
 surface a client writes, the Proof-of-Stake epoch, the fee and charging rows, the progress set, and the
 bounded-work, namespace, wire, session and distributed-system rows that follow; its long-form
 catalogue is [`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus core
@@ -25,6 +25,7 @@ catalogue is [`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus co
 | **Port an existing app** (or debug a parser that worked elsewhere) | [Porting an app from rnode](developer/porting-a-client.md) — reply shapes, refused terms, the traps |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
 | Map a language feature, or a **syntax, matching, reply-shape or JSON** feature, to its **law** and its proof | [The laws](formal/laws.md) |
+| Ask whether gas bounds work, or why a charge is the shape it is | [The cost model, and the gate that keeps it honest](formal/cost-model.md) |
 | **Work on the law register** — add or change a law, read a status, run the gates | [Laws reference for AI agents](ai/laws-reference.md) |
 | Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/scheduling.md) |
 | Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/scheduling.md) |
@@ -58,5 +59,5 @@ into a third place is a catalog nothing checks.
 | `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the long-form law catalogue (its table ends at Law 77; the register covers <!-- counts:laws-entries -->91 laws and 130 entries<!-- counts:end -->) with source-of-truth + Rust realization | — |
+| `spec/INVENTORY.md` | the long-form law catalogue (its table ends at Law 77; the register covers <!-- counts:laws-entries -->91 laws and 131 entries<!-- counts:end -->) with source-of-truth + Rust realization | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

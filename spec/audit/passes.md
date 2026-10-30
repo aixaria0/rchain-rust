@@ -12014,3 +12014,81 @@ test — the Rust test pins the call site. And **no §6 deviation row was added 
 inventory pins every row by digest and pins `source_dev_sha`, so a row added there would either claim a
 row at an older commit or drag a branch commit into an audit artifact. It is recorded in §6 after merge,
 against the new dev SHA `78efd3fa1`, together with the hard-fork ledger item that records this change.
+## 150. The cost register: the missing instrument, and the two instances its first census found (C353, C354)
+
+**Found.** PR #514 closed the October re-audit's cost findings and said, in its own words, that the
+class was not closed: *"no gate is about cost"* (§148; `security-audit.md` §5), with §8's first open
+question the missing instrument. This pass builds it — and reading the charge surface to fill the
+register found **two live members of the class that the arm-by-arm remediation had missed**, before
+the gate ran a single check.
+
+**C353 — `set.add` and `set + x`.** Both call `reduce.rs::set_add`, which clones every element and
+re-canonicalises the whole set through `par_set`, for a flat `Costs::add_cost()` (3 phlo). A fold
+inserting N elements buys `O(N² log N)` work for `O(N)` phlo. C345 read the *conversion* arms and the
+map `set`; it did not read the insertion path the operator shares. The charge is now
+`canonicalization_cost(len + 1)` — exactly what `.set` on a map already charges — and Law 91a's
+statement did not change: the arm joined a law that was already true of its neighbours.
+
+**C354 — the two tallies.** `gov_tally` charged `gov_fold_cost(ballots + weights)`, a function the
+ranked/approved **option lists do not appear in at all**, while the work is linear in them and (for a
+ranked tally) round-multiplied by the longest ballot. Measured in release, on the old charge:
+
+| shape | charged | wall time |
+|---|---|---|
+| ranked, 100 ballots × 4 000 options | 40 000 phlo | **34 ms** |
+| approval, 128 ballots × 4 000 approvals | 65 536 phlo | **68 ms** |
+| ranked, 16 ballots × 8 options | 1 024 phlo | 0 ms |
+
+A ranked tally now charges `longest × entries` (one scan per entry per round, at most `longest`
+rounds) and an approval tally charges its entries — Law **91c**. The member maps keep
+`MAX_GOV_UNIVERSE`; the lists are **priced rather than refused**, because a refusal would reject a
+legitimate election (a few hundred ballots over ten options) to stop one that the phlo budget already
+stops.
+
+**The instrument.** `spec/cost-register.tsv` — 55 rows, one per priced operation: the work in a
+phrase, the shape (`constant|linear|product|quadratic|cubic|capped|identity`), the basis, the
+`Costs::` constructor or the helper whose body charges, the test that measures it, and any residual;
+rendered into `spec/COST.md`. `tools/check-cost-register.py` fails on an arm with no row, a row for
+nothing, a declared charge that is not in the arm it claims, an `identity`/`capped` row naming a
+charge, and evidence that resolves to nothing; seven mutation tests in `tests/test_cost_register.py`
+hold each of those refusals. `rholang/tests/cost_shapes.rs` is the measuring half and runs in
+`cargo test --workspace`: for each shape family the charged phlo at two sizes must grow at the
+declared rate — deterministic, because it reads phlo and not wall time. CI runs both beside the spawn
+and type-system censuses.
+
+**The other three folds, measured rather than assumed.** C346 left `trustLevels`, `resolveWeights` and
+`tally` charged `U²` with their shapes unmeasured. The probe
+(`rholang/tests/gas_amplification.rs::the_other_governance_folds_are_measured`) finds `trustLevels` at
+0 ms for a 511-member chain — a conferral cannot raise a level past the rater's, so the fixed point
+converges in at most five rounds — and `resolveWeights` at 41 ms at the universe bound with each member
+walking the delegation chain: both quadratic, so the squared charge matches both shapes. They are
+recorded in the register as `quadratic` / `measured`; C346's "unmeasured" residual is discharged.
+
+**Two decisions, recorded not coded.** A collection **literal** stays uncharged: its bytes were
+charged at parse and again at storage, and the runtime route that builds a set is priced by `set.add`
+after C353, so the two routes now meet — the literal route is bounded by the 64 KiB deploy term. And
+the charge remains **linear for `O(n log n)` work**: a phlo buys work bounded by `charge · log charge`,
+bounded and not the defect, but not an exact price of a comparison. `size` is the reverse case: `O(1)`
+work charged by the element count, an over-charge in the safe direction, and the register says so
+rather than the code being changed to match.
+
+**How it is falsified.** The register's own mutation tests — a deleted row for a live arm, a row for
+nothing, a charge moved out of its arm, an identity row naming a charge — and the shape tests, each of
+which fails when its charge is reverted (C353 and C354 were shown that way: `0` against `3` and `0`
+against `54`). The gate is as falsifiable as the defects it exists for, which is the only reason to
+add it.
+
+**What this does not claim.** The gate reads the *declaration* and the charge constructor, not the
+arm's complexity: a `linear` row over `O(n log n)` work passes, which is the recorded log factor, and
+a new arm that charges a constant passes if it declares `constant` — the difference is that the claim
+is now written beside the work in one table a reviewer reads. The **constant** is not checked either:
+one phlo per operation is a count, not a calibrated unit, and `resolveWeights` is the measured
+example (41 ms for a quadratic charge that matches its quadratic shape).
+
+**This unit's own §6 row is owed, for the reason §149 gave one unit ago.** The inventory pins every
+row by digest and pins `source_dev_sha`, so a row for C353/C354 pinned to the #514 merge commit would
+point at a `passes.md` that does not contain it, and pinning it to this branch would drag a branch
+commit into an audit artifact. The row and the inventory, matrix and ledger re-pin are owed **after
+this PR merges**, against the new dev SHA. What *can* be done now is the ledger, which is authored and
+not digest-pinned: `Audit:cost-tracks-work` reads `merged` on dev (the post-#514 closeout landed that
+with its §6 row), and this unit's charges are a new `open` item.
