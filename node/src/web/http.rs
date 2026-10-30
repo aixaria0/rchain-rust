@@ -977,14 +977,16 @@ fn observation_time_ms() -> u64 {
 /// A missing or inconsistent reading is explicitly unknown, never interpreted as a healthy network.
 async fn api_finality_observation(State(state): State<HttpState>) -> Response {
     let observed_at = observation_time_ms();
-    let (status, finalized) = tokio::join!(
-        state.web_api.status(),
-        state.web_api.last_finalized_block(),
-    );
+    let (status, finalized) =
+        tokio::join!(state.web_api.status(), state.web_api.last_finalized_block(),);
     let complete = status.is_ok() && finalized.is_ok();
     let body = finality_observation(status.as_ref().ok(), finalized.as_ref().ok(), observed_at);
     (
-        if complete { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
+        if complete {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         Json(body),
     )
         .into_response()
@@ -2063,7 +2065,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/deploy/{deploy_id}", get(api_find_deploy))
         .route("/api/is-finalized/{hash}", get(api_is_finalized))
         .route("/api/v1/status", get(api_status))
-        .route("/api/v1/finality-observation", get(api_finality_observation))
+        .route(
+            "/api/v1/finality-observation",
+            get(api_finality_observation),
+        )
         .route(
             "/api/v1/deploy-settlement/{deploy_signature}",
             get(api_deploy_settlement),
@@ -2581,7 +2586,6 @@ mod tests {
         ))
     }
 
-
     fn issue_487_block() -> rchain_models::casper::protocol::deploy_service::LightBlockInfo {
         rchain_models::casper::protocol::deploy_service::LightBlockInfo {
             version: 1,
@@ -2635,7 +2639,9 @@ mod tests {
         assert_eq!(result["execution"], "failed");
         assert_eq!(result["finalized"], true);
         assert_eq!(result["settlementConfirmed"], false);
-        let pending = DeployExecStatus::NotProcessed { status: "Pooled".to_string() };
+        let pending = DeployExecStatus::NotProcessed {
+            status: "Pooled".to_string(),
+        };
         let result = deploy_settlement_observation("sig", &pending, Some(true), 126);
         assert_eq!(result["stage"], "notProcessed");
         assert!(result["finalized"].is_null());
