@@ -328,6 +328,79 @@ theorem a_gate_without_the_bound_admits_a_private_chain :
     unboundedGate .running (MAX_PROPOSAL_FINALITY_LAG + 1) 0 = .allow := by
   decide
 
+/-! ## 88c — an overflow refusal is a deferral, not an orphan
+
+The receiver's capacity path stores the body and writes the `Pending` row **before** it can refuse,
+so the refusal is a deferral the ledger already records. What was missing was a reader: the fault
+loop excludes `Pending`, and the boot sweep skips a row whose parents are absent. A runtime sweep
+over aged `Stored` rows is that reader; it claims the receiver's in-memory state, so a held body is
+dispatched once, and it moves the row in flight before dispatch, so a second sweep takes nothing.
+
+The model is the row's eligibility and the claim, not the store I/O: a missing body, a read error
+and the receiver's queue are Rust facts the register note names. -/
+
+namespace Recovery
+
+/-- Where a pending row is. `Retry` is "in flight"; only `Stored` is the sweep's question. -/
+inductive Stage where
+  | stored
+  | validating
+  | retry
+  deriving DecidableEq, Repr
+
+/-- One pending row: its stage and the instant it was written. -/
+structure Row where
+  stage : Stage
+  since : Nat
+  deriving DecidableEq, Repr
+
+/-- The age floor: a stored row must be 60 s old before the sweep will take it. -/
+def age_floor : Nat := 60000
+
+/-- **The sweep's predicate**: a `Stored` row at or past the floor. -/
+def eligible (r : Row) (now : Nat) : Bool :=
+  r.stage == Stage.stored && age_floor ≤ now - r.since
+
+/-- **The capacity refusal changes no row.** The obligation survives the error by construction. -/
+def refuse (r : Row) : Row := r
+
+theorem an_overflow_refusal_keeps_the_row (r : Row) : refuse r = r := rfl
+
+/-- The receiver's in-memory claim: held and not yet claimed. -/
+structure Receiver where
+  held : Bool
+  claimed : Bool
+  deriving DecidableEq, Repr
+
+/-- Take the claim if it is free. The second answer is the state after the attempt. -/
+def claim (r : Receiver) : Bool × Receiver :=
+  if r.held && !r.claimed then (true, { r with claimed := true }) else (false, r)
+
+/-- **A claim is taken once**: whatever the first attempt did, the second takes nothing. -/
+theorem a_claim_is_taken_once (r : Receiver) : (claim (claim r).2).1 = false := by
+  unfold claim
+  split <;> simp_all
+
+/-- A re-offered row is `retry`, so a second sweep does not take it. -/
+def reoffer (r : Row) : Row := { r with stage := Stage.retry }
+
+theorem reoffer_is_not_eligible (r : Row) (now : Nat) :
+    eligible (reoffer r) now = false := by
+  simp [eligible, reoffer]
+
+/-- The floor, both sides: one millisecond under is not eligible; at it, is. -/
+theorem the_age_floor_gates_eligibility :
+    eligible ⟨Stage.stored, 0⟩ 59999 = false ∧
+      eligible ⟨Stage.stored, 0⟩ 60000 = true := by
+  decide
+
+/-- A row already in flight is never eligible. -/
+theorem an_inflight_row_is_not_eligible (now : Nat) :
+    eligible ⟨Stage.retry, 0⟩ now = false := by
+  simp [eligible]
+
+end Recovery
+
 end Disposition
 
 end Rchain

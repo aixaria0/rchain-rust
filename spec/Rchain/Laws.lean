@@ -4928,6 +4928,53 @@ def lawsC : List Law := [
       chain — it bounds the private chain a node can build; the finality algorithm and slashing \
       are outside it." },
 
+  { number := 88, clause := "c", layer := "Disposition",
+    statement := "**An overflow refusal is a deferral, not an orphan.** The receiver stores the \
+      body and writes the `Pending` row before it can refuse for capacity, so the refusal changes \
+      no row: the obligation survives by construction. A runtime sweep re-offers an aged `Stored` \
+      row once every justification is in the DAG; a row already in flight (`Validating`/`Retry`) is \
+      never eligible; a held body's claim is taken once; and a re-offered row moves to `Retry`, so \
+      a second sweep dispatches nothing",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Disposition.Recovery.Row, `Rchain.Disposition.Recovery.eligible,
+      `Rchain.Disposition.Recovery.refuse,
+      `Rchain.Disposition.Recovery.an_overflow_refusal_keeps_the_row,
+      `Rchain.Disposition.Recovery.Receiver, `Rchain.Disposition.Recovery.claim,
+      `Rchain.Disposition.Recovery.a_claim_is_taken_once,
+      `Rchain.Disposition.Recovery.reoffer,
+      `Rchain.Disposition.Recovery.reoffer_is_not_eligible,
+      `Rchain.Disposition.Recovery.the_age_floor_gates_eligibility,
+      `Rchain.Disposition.Recovery.an_inflight_row_is_not_eligible],
+    axioms := [],
+    rust := ["casper/src/block_disposition.rs", "casper/src/blocks/block_receiver.rs",
+      "node/src/runtime/node_runtime.rs"],
+    rustWitness := ["casper/src/block_disposition.rs:a_refused_stored_body_is_reoffered_by_the_runtime_sweep",
+      "casper/src/block_disposition.rs:a_pending_body_waits_for_its_parent",
+      "casper/src/block_disposition.rs:the_sweep_is_idempotent",
+      "casper/src/blocks/block_receiver.rs:a_reoffer_claim_is_taken_once_and_never_steals_an_inflight_block"],
+    witness := [`Rchain.Disposition.Recovery.an_overflow_refusal_keeps_the_row,
+      `Rchain.Disposition.Recovery.a_claim_is_taken_once,
+      `Rchain.Disposition.Recovery.reoffer_is_not_eligible,
+      `Rchain.Disposition.Recovery.the_age_floor_gates_eligibility,
+      `Rchain.Disposition.Recovery.an_inflight_row_is_not_eligible],
+    falsifiable := "Removing the age floor makes the sweep race the receiver's own release and the \
+      boot sweep (`the_age_floor_gates_eligibility` flips); dropping the `Validating`/`Retry` \
+      exclusion makes a second sweep duplicate an in-flight body (`an_inflight_row_is_not_eligible`, \
+      `the_sweep_is_idempotent`); dropping the claim lets the sweep and the receiver dispatch the \
+      same held body (`a_reoffer_claim_is_taken_once...`); and a sweep that does not move the row \
+      in flight fails `a_refused_stored_body_is_reoffered_by_the_runtime_sweep`'s `Retry` \
+      assertion.",
+    note := "The code was adopted from candidate `ac41fe7d`/`4d9883a4`/`20ef2505` and re-homed on \
+      #499's `NodePhaseCell` (the candidate calls the pre-#499 free `wait_until_running`), with the \
+      receiver claim added: the candidate's sweep could race the receiver's own release, because the \
+      in-memory state is shared through the `Arc<Mutex<…>>`. **Liveness only** — the sweep dispatches \
+      the same `block_processor` validation path as the boot audit, and no validity, state-hash or \
+      wire rule changes. The model abstracts the store I/O, the missing-body arm and the queue. \
+      Named residual: a just-released block is briefly neither held nor in the DAG; the 60 s floor \
+      makes the window small, and the restart-under-load arm is the place to look for duplicate \
+      proposals before adding an in-flight hash set." },
+
   { number := 89, layer := "PoS",
     statement := "**Liveness enforcement is jail first; only a vote reaches the bond.** A validator \
       absent across advancing epoch boundaries is removed from the active set for `J` boundaries and \

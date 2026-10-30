@@ -8,7 +8,9 @@
 //! Later clauses extend this layer (the receiver re-offer and the fault classification); this
 //! consumer dispatches on the case name and fails on an unknown one rather than skipping it.
 
+use rchain_casper::block_disposition::{eligible_stored_pending, BlockDisposition, PendingStage};
 use rchain_casper::blocks::proposer::proposer::take_escape_permit;
+use rchain_shared::refined::BlockHeight;
 
 #[test]
 fn the_paced_gate_is_the_lean_models() {
@@ -27,7 +29,11 @@ fn the_paced_gate_is_the_lean_models() {
         assert_eq!(cols[0], "recovery", "{line:?}");
         match cols[1] {
             "pace" => {
-                assert_eq!(cols.len(), 6, "a pace row is kind/first/now/escape/new: {line:?}");
+                assert_eq!(
+                    cols.len(),
+                    6,
+                    "a pace row is kind/first/now/escape/new: {line:?}"
+                );
                 let first = parse_opt(cols[2]);
                 let now: u64 = cols[3].parse().expect("now");
                 let escape: bool = cols[4].parse().expect("escape");
@@ -38,13 +44,42 @@ fn the_paced_gate_is_the_lean_models() {
                     "case {line:?}"
                 );
             }
+            "eligible" => {
+                assert_eq!(
+                    cols.len(),
+                    6,
+                    "an eligible row is kind/stage/since/now/expected: {line:?}"
+                );
+                let stage = match cols[2] {
+                    "stored" => PendingStage::Stored,
+                    "validating" => PendingStage::Validating,
+                    "retry" => PendingStage::Retry,
+                    other => panic!("no Rust stage for {other:?}"),
+                };
+                let since: u64 = cols[3].parse().expect("since");
+                let now: u64 = cols[4].parse().expect("now");
+                let expected: bool = cols[5].parse().expect("expected");
+                let row = BlockDisposition::Pending {
+                    block_number: BlockHeight::try_from(0).expect("height"),
+                    stage,
+                    since_unix_ms: since,
+                };
+                assert_eq!(
+                    eligible_stored_pending(&row, now),
+                    expected,
+                    "case {line:?}"
+                );
+            }
             other => panic!("no Rust arm for the recovery case {other:?}"),
         }
         seen += 1;
     }
 
     // No row may pass vacuously: at least one escape, one refusal and one consumption.
-    assert!(seen >= 7, "the corpus carries the pacing cases");
+    assert!(
+        seen >= 11,
+        "the corpus carries the pacing and eligibility cases"
+    );
 }
 
 fn parse_opt(s: &str) -> Option<u64> {

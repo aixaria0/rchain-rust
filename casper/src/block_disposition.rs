@@ -42,6 +42,7 @@ use rchain_shared::refined::BlockHeight;
 use rchain_shared::typed_store::{Codec, KeyValueTypedStore};
 use tokio::sync::mpsc;
 
+use crate::blocks::block_receiver::{BlockReceiverState, ReofferClaim};
 use crate::engine::node_phase::NodePhaseCell;
 
 /// Where a pending body is in the pipeline. Diagnostic only: every pending row is equally
@@ -914,6 +915,153 @@ pub async fn startup_audit_then_running(
     }
 }
 
+/// **How long a `Stored` row may sit before the runtime re-offer sweep will take it.** Normal
+/// ingress hands a body on within milliseconds; the floor keeps the sweep from racing the
+/// receiver's own release and from duplicating the boot sweep's first pass.
+pub const PENDING_PARENT_RECHECK_AGE_MS: u64 = 60_000;
+
+/// Whether a row is a `Stored` pending body old enough for the re-offer sweep. `Validating` and
+/// `Retry` rows are already in flight; `Faulted` rows belong to the backoff loop.
+pub fn eligible_stored_pending(disposition: &BlockDisposition, now_ms: u64) -> bool {
+    matches!(
+        disposition,
+        BlockDisposition::Pending {
+            stage: PendingStage::Stored,
+            since_unix_ms,
+            ..
+        } if now_ms.saturating_sub(*since_unix_ms) >= PENDING_PARENT_RECHECK_AGE_MS
+    )
+}
+
+/// **One re-offer sweep** (Law 88c), extracted so a test can drive it deterministically.
+///
+/// For each eligible stored row: settle it if it is already in the DAG; otherwise load the body,
+/// require every justification in the DAG, claim the receiver's in-memory state (so a concurrent
+/// release cannot dispatch it twice), mark the row in flight, and hand the body to the processor.
+/// Returns the number of bodies dispatched.
+#[allow(clippy::too_many_arguments)]
+pub async fn reoffer_ready_stored_pending_once(
+    ledger: &BlockDispositionStore,
+    block_store: &BlockStore,
+    dag: &Arc<dyn BlockDagStorage>,
+    receiver_state: &tokio::sync::Mutex<BlockReceiverState<BlockHash>>,
+    to_processor: &mpsc::Sender<BlockMessage>,
+    now_ms: u64,
+    log: &dyn Log,
+) -> Result<usize, String> {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    let rows = ledger.unsettled().await?;
+    let mut dispatched = 0;
+    for (hash, disposition) in rows {
+        if !eligible_stored_pending(&disposition, now_ms) {
+            continue;
+        }
+        let repr = dag.get_representation().await;
+        if repr.contains(&hash) {
+            if let Err(e) = ledger.settle(hash).await {
+                log.warn(
+                    source,
+                    &format!(
+                        "could not settle inserted pending block {}: {e}",
+                        hash.to_hex()
+                    ),
+                );
+            }
+            continue;
+        }
+        let stored = match block_store.get(&[hash]).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!("could not load stored pending body {}: {e}", hash.to_hex()),
+                );
+                continue;
+            }
+        };
+        let Some(block) = stored.into_iter().next().flatten() else {
+            log.error(
+                source,
+                &format!(
+                    "pending body {} is missing from storage; retaining the obligation",
+                    hash.to_hex()
+                ),
+            );
+            continue;
+        };
+        if !block
+            .justifications
+            .iter()
+            .all(|parent| repr.contains(parent))
+        {
+            continue;
+        }
+        // The row moves in flight before the claim, so a claim that turns out `Owned` (the
+        // receiver is dispatching it) is still covered by the processor's settle/fault.
+        if let Err(e) = ledger.mark_retry_started(hash).await {
+            log.error(
+                source,
+                &format!("could not reserve pending replay {}: {e}", hash.to_hex()),
+            );
+            continue;
+        }
+        if receiver_state.lock().await.claim_reoffer(&hash) == ReofferClaim::Owned {
+            continue;
+        }
+        log.info(
+            source,
+            &format!(
+                "re-offering stored pending body {} after its parents entered the DAG",
+                hash.to_hex()
+            ),
+        );
+        if !chan::send(to_processor, block).await {
+            return Ok(dispatched);
+        }
+        dispatched += 1;
+    }
+    Ok(dispatched)
+}
+
+/// The runtime loop over [`reoffer_ready_stored_pending_once`], on the same cadence as the fault
+/// retry and gated on the shard being `Running` (the #499 phase cell). A sweep that cannot read
+/// the ledger logs and waits for the next tick; it never advances a row it did not dispatch.
+pub async fn retry_ready_stored_pending(
+    phase: NodePhaseCell,
+    ledger: BlockDispositionStore,
+    block_store: BlockStore,
+    dag: Arc<dyn BlockDagStorage>,
+    receiver_state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
+    to_processor: mpsc::Sender<BlockMessage>,
+    log: Arc<dyn Log>,
+) {
+    let source = LogSource::new("casper.blocks.BlockDisposition");
+    phase.wait_until_running().await;
+    let mut interval = tokio::time::interval(RETRY_SWEEP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The boot sweep gets the first immediate tick; this loop starts after one interval.
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        if let Err(e) = reoffer_ready_stored_pending_once(
+            &ledger,
+            &block_store,
+            &dag,
+            &receiver_state,
+            &to_processor,
+            now_unix_millis(),
+            log.as_ref(),
+        )
+        .await
+        {
+            log.error(
+                source,
+                &format!("stored-pending re-offer sweep could not read the ledger: {e}"),
+            );
+        }
+    }
+}
+
 /// The retry loop: every [`RETRY_SWEEP_INTERVAL`], re-offer the faulted blocks whose backoff has
 /// elapsed. The processor's fault handlers update the row, so a repeated fault counts and a
 /// successful one settles it. A terminal fault stays in the ledger and keeps the pipeline fault
@@ -1538,5 +1686,128 @@ mod tests {
         let outcome = task.await.expect("audit task");
         assert!(phase.is_running(), "the audit closes into Running");
         assert_eq!(outcome.drain.still_pending, 0);
+    }
+
+    // --- the runtime reader for stored pending bodies (Law 88c) ---
+
+    /// **The overflow half.** The receiver's capacity refusal stores the body and writes the
+    /// `Pending` row before it gives the in-memory claim up; nothing in the runtime used to read
+    /// that row again. Here the state is the post-refusal one (no claim), the row is 60 s old, and
+    /// the sweep must dispatch it — the assertion fails on the pre-fix tree because no sweep
+    /// exists.
+    #[tokio::test]
+    async fn a_refused_stored_body_is_reoffered_by_the_runtime_sweep() {
+        let block = sample_block(hash(40));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        ledger
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
+        let dag = empty_dag().await;
+        // Exactly the state `abort_stored` leaves: no in-memory claim.
+        let receiver = tokio::sync::Mutex::new(BlockReceiverState::<BlockHash>::new());
+        let (tx, mut rx) = mpsc::channel(4);
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let since = now_unix_millis() + PENDING_PARENT_RECHECK_AGE_MS;
+
+        let dispatched = reoffer_ready_stored_pending_once(
+            &ledger,
+            &block_store,
+            &dag,
+            &receiver,
+            &tx,
+            since,
+            log.as_ref(),
+        )
+        .await
+        .expect("sweep");
+        assert_eq!(dispatched, 1, "the orphan is handed to the processor");
+        assert_eq!(rx.try_recv().expect("body").block_hash, block.block_hash);
+        assert!(matches!(
+            ledger.get(&block.block_hash).await.expect("row"),
+            Some(BlockDisposition::Pending {
+                stage: PendingStage::Retry,
+                ..
+            })
+        ));
+    }
+
+    /// **The restart half.** A body whose parent is still absent is not dispatched, and the row
+    /// stays `Pending` — the obligation survives, so a later sweep (when the parent arrives) can
+    /// take it.
+    #[tokio::test]
+    async fn a_pending_body_waits_for_its_parent() {
+        let mut block = sample_block(hash(41));
+        block.justifications.push(hash(99));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        ledger
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
+        let dag = empty_dag().await;
+        let receiver = tokio::sync::Mutex::new(BlockReceiverState::<BlockHash>::new());
+        let (tx, mut rx) = mpsc::channel(4);
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let since = now_unix_millis() + PENDING_PARENT_RECHECK_AGE_MS;
+
+        let dispatched = reoffer_ready_stored_pending_once(
+            &ledger,
+            &block_store,
+            &dag,
+            &receiver,
+            &tx,
+            since,
+            log.as_ref(),
+        )
+        .await
+        .expect("sweep");
+        assert_eq!(dispatched, 0);
+        assert!(rx.try_recv().is_err(), "nothing is dispatched");
+        assert!(matches!(
+            ledger.get(&block.block_hash).await.expect("row"),
+            Some(BlockDisposition::Pending {
+                stage: PendingStage::Stored,
+                ..
+            })
+        ));
+    }
+
+    /// The row is moved in flight before dispatch, so a second sweep does not duplicate it.
+    #[tokio::test]
+    async fn the_sweep_is_idempotent() {
+        let block = sample_block(hash(42));
+        let block_store = block_store_with(&block).await;
+        let ledger = store().await;
+        ledger
+            .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
+            .await
+            .expect("pending row");
+        let dag = empty_dag().await;
+        let receiver = tokio::sync::Mutex::new(BlockReceiverState::<BlockHash>::new());
+        let (tx, mut rx) = mpsc::channel(4);
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let since = now_unix_millis() + PENDING_PARENT_RECHECK_AGE_MS;
+
+        for expected in [1, 0] {
+            let dispatched = reoffer_ready_stored_pending_once(
+                &ledger,
+                &block_store,
+                &dag,
+                &receiver,
+                &tx,
+                since,
+                log.as_ref(),
+            )
+            .await
+            .expect("sweep");
+            assert_eq!(dispatched, expected);
+        }
+        assert_eq!(
+            rx.try_recv().expect("one dispatch").block_hash,
+            block.block_hash
+        );
+        assert!(rx.try_recv().is_err(), "the second sweep sent nothing");
     }
 }

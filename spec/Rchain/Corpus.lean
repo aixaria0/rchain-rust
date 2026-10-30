@@ -16,6 +16,7 @@ import Rchain.Progress
 import Rchain.Admission
 import Rchain.HostList
 import Rchain.Decimal
+import Rchain.Disposition
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1921,43 +1922,58 @@ def hostListLine (c : Rchain.HostList.Case) : String :=
 
 /-! ## Law 51d — the paced gate (the `recovery` layer) -/
 
-/-- One pacing case: the gate's sighting, the tick, and the model's answer. The Rust consumer calls
-    `take_escape_permit` with the same three and compares. The layer is named `recovery` because the
-    decline of an escape storm is a recovery property; later clauses (receiver re-offer, fault
-    classification) extend it. -/
-structure RecoveryCase where
-  name : String
-  first : Option Nat
-  now : Nat
-  expected : Bool × Option Nat
+/-- One `recovery` case. `pace` is Law 51d's gate (first sighting, tick, expected
+    `(escape?, new sighting)`); `eligible` is Law 88c's sweep predicate (stage, since, now,
+    expected). The Rust consumer dispatches on the kind and calls the same predicate. -/
+inductive RecoveryCase where
+  | pace (first : Option Nat) (now : Nat) (expected : Bool × Option Nat)
+  | eligible (stage : Rchain.Disposition.Recovery.Stage) (since : Nat) (now : Nat)
+      (expected : Bool)
   deriving Repr
 
-def recoveryHolds (c : RecoveryCase) : Bool :=
-  decide (Rchain.Pacing.take ⟨c.first⟩ c.now = (c.expected.1, { since := c.expected.2 }))
+def recoveryHolds : RecoveryCase → Bool
+  | .pace first now expected =>
+      decide (Rchain.Pacing.take ⟨first⟩ now = (expected.1, { since := expected.2 }))
+  | .eligible stage since now expected =>
+      decide (Rchain.Disposition.Recovery.eligible ⟨stage, since⟩ now = expected)
 
 def recoveryCases : List RecoveryCase :=
-  [ { name := "pace", first := none, now := 0, expected := (false, some 0) }
-  , { name := "pace", first := some 0, now := 14999, expected := (false, some 0) }
-  , { name := "pace", first := some 0, now := 15000, expected := (true, some 15000) }
-  , { name := "pace", first := some 0, now := 15001, expected := (true, some 15001) }
-  , { name := "pace", first := some 0, now := 30000, expected := (true, some 30000) }
-  , { name := "pace", first := some 15000, now := 15001, expected := (false, some 15000) }
-  , { name := "pace", first := some 15000, now := 30000, expected := (true, some 30000) }
+  [ .pace none 0 (false, some 0)
+  , .pace (some 0) 14999 (false, some 0)
+  , .pace (some 0) 15000 (true, some 15000)
+  , .pace (some 0) 15001 (true, some 15001)
+  , .pace (some 0) 30000 (true, some 30000)
+  , .pace (some 15000) 15001 (false, some 15000)
+  , .pace (some 15000) 30000 (true, some 30000)
+  , .eligible .stored 0 59999 false
+  , .eligible .stored 0 60000 true
+  , .eligible .validating 0 60000 false
+  , .eligible .retry 0 60000 false
   ]
 
-def recoveryCaseCount : Nat := 7
+def recoveryCaseCount : Nat := 11
 
 theorem recoveryCases_decide : recoveryCases.all recoveryHolds = true := by decide
 
 theorem recoveryCases_length : recoveryCases.length = recoveryCaseCount := by decide
 
-def recoveryLine (c : RecoveryCase) : String :=
-  String.intercalate "\t"
-    ["recovery", c.name,
-      match c.first with | none => "-" | some n => toString n,
-      toString c.now,
-      if c.expected.1 then "true" else "false",
-      match c.expected.2 with | none => "-" | some n => toString n]
+def recoveryStageName : Rchain.Disposition.Recovery.Stage → String
+  | .stored => "stored"
+  | .validating => "validating"
+  | .retry => "retry"
+
+def recoveryLine : RecoveryCase → String
+  | .pace first now expected =>
+      String.intercalate "\t"
+        ["recovery", "pace",
+          match first with | none => "-" | some n => toString n,
+          toString now,
+          if expected.1 then "true" else "false",
+          match expected.2 with | none => "-" | some n => toString n]
+  | .eligible stage since now expected =>
+      String.intercalate "\t"
+        ["recovery", "eligible", recoveryStageName stage,
+          toString since, toString now, if expected then "true" else "false"]
 
 
 /-! ## Law 87 — the decimal value algebra -/

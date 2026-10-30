@@ -5,3 +5,7 @@ recovery	pace	0	15001	true	15001
 recovery	pace	0	30000	true	30000
 recovery	pace	15000	15001	false	15000
 recovery	pace	15000	30000	true	30000
+recovery	eligible	stored	0	59999	false
+recovery	eligible	stored	0	60000	true
+recovery	eligible	validating	0	60000	false
+recovery	eligible	retry	0	60000	false
