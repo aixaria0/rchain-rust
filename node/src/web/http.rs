@@ -2597,7 +2597,9 @@ mod tests {
                 status.accepts_deploys = true;
                 status
             },
-            pooled_deploys: PooledDeploys { deploys: Vec::new() },
+            pooled_deploys: PooledDeploys {
+                deploys: Vec::new(),
+            },
             deploy_result: None,
             finalized_block: Some(BlockInfo {
                 block_info: rchain_models::casper::protocol::deploy_service::LightBlockInfo {
@@ -2636,7 +2638,9 @@ mod tests {
             let mut s = state();
             s.web_api = Arc::new(MockWebApi {
                 status: test_status(),
-                pooled_deploys: PooledDeploys { deploys: Vec::new() },
+                pooled_deploys: PooledDeploys {
+                deploys: Vec::new(),
+            },
                 deploy_result: Some(DeployExecStatus::ProcessedWithSuccess {
                     deploy_result: Vec::new(),
                     block: issue_487_block(),
