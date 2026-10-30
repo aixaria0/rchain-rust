@@ -12,6 +12,7 @@ import Rchain.Lex
 import Rchain.Parse
 import Rchain.Casper.Validate
 import Rchain.Casper.Rounds
+import Rchain.Progress
 import Rchain.Admission
 import Rchain.HostList
 import Rchain.Decimal
@@ -1918,6 +1919,47 @@ def hostListLine (c : Rchain.HostList.Case) : String :=
       if c.expected.isEmpty then "-" else String.intercalate "," (c.expected.map toString)]
 
 
+/-! ## Law 51d — the paced gate (the `recovery` layer) -/
+
+/-- One pacing case: the gate's sighting, the tick, and the model's answer. The Rust consumer calls
+    `take_escape_permit` with the same three and compares. The layer is named `recovery` because the
+    decline of an escape storm is a recovery property; later clauses (receiver re-offer, fault
+    classification) extend it. -/
+structure RecoveryCase where
+  name : String
+  first : Option Nat
+  now : Nat
+  expected : Bool × Option Nat
+  deriving Repr
+
+def recoveryHolds (c : RecoveryCase) : Bool :=
+  decide (Rchain.Pacing.take ⟨c.first⟩ c.now = (c.expected.1, { since := c.expected.2 }))
+
+def recoveryCases : List RecoveryCase :=
+  [ { name := "pace", first := none, now := 0, expected := (false, some 0) }
+  , { name := "pace", first := some 0, now := 14999, expected := (false, some 0) }
+  , { name := "pace", first := some 0, now := 15000, expected := (true, some 15000) }
+  , { name := "pace", first := some 0, now := 15001, expected := (true, some 15001) }
+  , { name := "pace", first := some 0, now := 30000, expected := (true, some 30000) }
+  , { name := "pace", first := some 15000, now := 15001, expected := (false, some 15000) }
+  , { name := "pace", first := some 15000, now := 30000, expected := (true, some 30000) }
+  ]
+
+def recoveryCaseCount : Nat := 7
+
+theorem recoveryCases_decide : recoveryCases.all recoveryHolds = true := by decide
+
+theorem recoveryCases_length : recoveryCases.length = recoveryCaseCount := by decide
+
+def recoveryLine (c : RecoveryCase) : String :=
+  String.intercalate "\t"
+    ["recovery", c.name,
+      match c.first with | none => "-" | some n => toString n,
+      toString c.now,
+      if c.expected.1 then "true" else "false",
+      match c.expected.2 with | none => "-" | some n => toString n]
+
+
 /-! ## Law 87 — the decimal value algebra -/
 
 open Rchain.Decimal in
@@ -2136,7 +2178,7 @@ def main (args : List String) : IO UInt32 := do
       || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
       || a == "stake" || a == "block" || a == "liveness" || a == "admission"
-      || a == "decimal" || a == "hostlist")).getD "flags"
+      || a == "decimal" || a == "hostlist" || a == "recovery")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -2174,6 +2216,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.decimalCases.map Corpus.decimalLine, Corpus.decimalCaseCount)
     else if want == "hostlist" then
       (Corpus.hostListCases.map Corpus.hostListLine, Corpus.hostListCaseCount)
+    else if want == "recovery" then
+      (Corpus.recoveryCases.map Corpus.recoveryLine, Corpus.recoveryCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

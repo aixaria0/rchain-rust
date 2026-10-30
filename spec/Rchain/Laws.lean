@@ -2936,6 +2936,40 @@ def lawsB : List Law := [
       <reason>` — the register's own `status` discipline applied to a table that is prose. Two rows are \
       honestly `not modelled`: the join rule (`spec/Rchain/Silence.lean` already records that boundary, and \
       a half-filled join is silence there as it is in the node) and the inactivity leak above" },
+  { number := 51, clause := "d", layer := "Progress",
+    rustWitness := [
+      "casper/src/blocks/proposer/proposer.rs:round_escape_permit_is_consumed_even_when_the_round_stays_open",
+      "casper/src/blocks/proposer/proposer.rs:late_escape_and_repeated_ticks_do_not_bank_unused_permits"],
+    statement := "**A time-gated action consumes its permit.** The proposer's escape from a round \
+      that is not closing may fire only after a full `ROUND_STALL_ESCAPE` interval, and firing it \
+      re-arms the sighting: a still-open round must wait another full interval. A banked permit — \
+      the defect shape, `banked` — licenses every later tick once the first interval elapsed, so the \
+      bound stops pacing anything and a fast producer can exhaust the finality-lag bound while its \
+      peers are still assembling the next shared justification layer",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Pacing.Permit, `Rchain.Pacing.take, `Rchain.Pacing.banked,
+      `Rchain.Pacing.a_permit_is_consumed, `Rchain.Pacing.the_banked_gate_fires_every_tick,
+      `Rchain.Pacing.the_correct_gate_waits_a_full_interval],
+    axioms := [],
+    rust := ["casper/src/blocks/proposer/proposer.rs"],
+    witness := [`Rchain.Pacing.a_permit_is_consumed,
+      `Rchain.Pacing.the_banked_gate_fires_every_tick,
+      `Rchain.Pacing.the_correct_gate_waits_a_full_interval],
+    falsifiable := some "Deleting the sighting reset in `take_round_escape` makes \
+      `round_escape_permit_is_consumed_even_when_the_round_stays_open` fire: the second tick at +1 ms \
+      escapes. `late_escape_and_repeated_ticks_do_not_bank_unused_permits` pins the late sighting \
+      (90 s) and the burst after it. The corpus row `pace 15000 15001` expects no escape and fires \
+      under the banked model, while `the_banked_gate_fires_every_tick` exhibits that model's defect \
+      as a theorem",
+    note := "The code was adopted from candidate `b26bda1a` (branch \
+      `aixaria0:verify/quiet-finality-integrated-20261030`): `proposer.rs` is byte-identical between \
+      that branch's merge-base and this tree, so only the proposer hunk was taken. The fix is \
+      **consensus-neutral** — it gates `AlreadyProposedThisRound`, not block validity, the state \
+      hash or the wire — and `ROUND_STALL_ESCAPE` is unchanged at 15 s. The model's `bound` is 15 000 \
+      ms; the corpus (`spec/conformance/recovery.tsv`) is the tie to `take_escape_permit`. The layer \
+      is named `recovery` because the decline of an escape storm is a recovery property; later \
+      clauses (the receiver re-offer and the fault classification) extend it." },
   { number := 52, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/blocks/proposer/proposer.rs:the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one"],

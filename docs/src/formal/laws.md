@@ -11,7 +11,7 @@ disagree, the register is right.
 > - **`Law N`** — a stable number, 1–90. Numbers are never reused; a new law takes the next one.
 > - **`Law Nx`** — a *clause* of a law whose parts have different proofs or statuses (`16a`, `16b`, …).
 >   <!-- counts:clause-laws -->20<!-- counts:end --> laws carry clauses; the register has one **entry** per clause.
-> - **Entry** — one row of the register. **<!-- counts:laws -->90 laws<!-- counts:end --> = <!-- counts:entries -->125 entries<!-- counts:end -->**, and the
+> - **Entry** — one row of the register. **<!-- counts:laws -->90 laws<!-- counts:end --> = <!-- counts:entries -->126 entries<!-- counts:end -->**, and the
 >   status counts are per entry. Laws 14, 16 and 86 have clauses on both sides of `proved-tied`/`proved-model`,
 >   which is why the number of *laws* proved is smaller than the sum of the two status columns.
 > - **`C###`** — an audit finding (`spec/audit/passes.md`), never a law. HAZOP rows are `F-U…`/`H-U…`,
@@ -148,7 +148,7 @@ catalog does not silently shrink.
 
 | Law | What it guarantees |
 |---|---|
-| 51 | Non-progress has three shapes (void requirement, terminal refusal, drift) and two causes (a historic predicate, two split readers). |
+| 51 | Non-progress has three shapes (void requirement, terminal refusal, drift) and two causes (a historic predicate, two split readers). A time-gated action (51d) consumes its permit: a banked permit fires on every tick rather than pacing. |
 | 52 | Finality's denominator is the whole bonded stake; only the partition may shrink — two disjoint groups cannot both be a strict supermajority. |
 | 53 | An attribution is terminal: the refusal persists and the rule refuses the validator's children, until a restoring rule or a rewind removes the state. |
 | 54 | A liveness predicate reads the current view, not a history; and two views of one set written in separate steps can split their readers. |
@@ -247,7 +247,7 @@ catalog does not silently shrink.
 The register classifies every entry; the words mean different things:
 
 - **proved-tied** — proved, *and* tied to the node by a conformance corpus the Rust consumer runs.
-  <!-- counts:proved-tied-entries -->33<!-- counts:end --> entries.
+  <!-- counts:proved-tied-entries -->34<!-- counts:end --> entries.
 - **proved-model** — proved about a model that a person keeps in sync with the Rust.
   <!-- counts:proved-model-entries -->83<!-- counts:end --> entries.
 - **axiom-by-design** — a primitive assumed rather than proved (cryptography): <!-- counts:axioms -->10 axioms<!-- counts:end --> across the tree.
@@ -256,9 +256,9 @@ The register classifies every entry; the words mean different things:
   counted as coverage); **orphaned** — out of scope (the Rosette rows); **retired** — the port has no
   rule of that shape, evidenced by naming the code that was read.
 
-The count arithmetic, in one sentence: **<!-- counts:laws -->90 laws<!-- counts:end -->, <!-- counts:entries -->125 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->20<!-- counts:end --> laws
+The count arithmetic, in one sentence: **<!-- counts:laws -->90 laws<!-- counts:end -->, <!-- counts:entries -->126 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->20<!-- counts:end --> laws
 carry clauses; **<!-- counts:proved-laws -->83<!-- counts:end --> laws are proved in at least one clause**, split over entries as
-<!-- counts:proved-tied-entries -->33<!-- counts:end --> tied and <!-- counts:proved-model-entries -->83<!-- counts:end --> over the model. The two status columns overlap on
+<!-- counts:proved-tied-entries -->34<!-- counts:end --> tied and <!-- counts:proved-model-entries -->83<!-- counts:end --> over the model. The two status columns overlap on
 laws 14, 16 and 86, which is why they do not add up to the law-level union. No total on this page is
 hand-written: the spans are emitted from the register.
 
