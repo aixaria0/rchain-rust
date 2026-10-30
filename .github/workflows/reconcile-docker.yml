@@ -7,6 +7,8 @@ on:
       - "tests/reconcile-regression.py"
       - "tests/reconcile-cache-regression.py"
       - "tests/reconcile-target-guard.py"
+      - "tests/reconcile-enumeration-regression.sh"
+      - "tests/reconcile-systemd-restore-regression.sh"
       - ".github/workflows/reconcile-docker.yml"
   workflow_dispatch:
 permissions:
@@ -25,6 +27,10 @@ jobs:
         run: python3 tests/reconcile-cache-regression.py
       - name: Check live target inventory guard
         run: python3 tests/reconcile-target-guard.py
+      - name: Verify node enumeration and audit bounds offline
+        run: bash tests/reconcile-enumeration-regression.sh
+      - name: Verify the systemd restore stages before swap
+        run: bash tests/reconcile-systemd-restore-regression.sh
       - name: Verify Docker engine
         run: docker info
       - name: Exercise recovery on disposable Docker resources
