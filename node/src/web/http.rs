@@ -2586,6 +2586,81 @@ mod tests {
         ))
     }
 
+    #[tokio::test]
+    async fn issue_487_http_finality_route_never_claims_network_quorum() {
+        use tower::ServiceExt;
+        let mut s = state();
+        s.web_api = Arc::new(MockWebApi {
+            status: {
+                let mut status = test_status();
+                status.latest_block_number = 1791;
+                status.accepts_deploys = true;
+                status
+            },
+            pooled_deploys: PooledDeploys { deploys: Vec::new() },
+            deploy_result: None,
+            finalized_block: Some(BlockInfo {
+                block_info: rchain_models::casper::protocol::deploy_service::LightBlockInfo {
+                    block_number: 1756,
+                    ..issue_487_block()
+                },
+                deploys: Vec::new(),
+            }),
+            finalized_result: None,
+        });
+        let response = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/finality-observation")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["availability"], "unknown");
+        assert_eq!(json["observedFinalityLag"], 35);
+        assert_eq!(json["finalizedBlockNumber"], 1756);
+    }
+
+    #[tokio::test]
+    async fn issue_487_http_settlement_route_requires_independent_finality() {
+        use tower::ServiceExt;
+        for (finalized, expected_stage, confirmed) in [
+            (Some(false), "includedUnfinalized", false),
+            (Some(true), "finalizedSuccess", true),
+            (None, "finalityUnknown", false),
+        ] {
+            let mut s = state();
+            s.web_api = Arc::new(MockWebApi {
+                status: test_status(),
+                pooled_deploys: PooledDeploys { deploys: Vec::new() },
+                deploy_result: Some(DeployExecStatus::ProcessedWithSuccess {
+                    deploy_result: Vec::new(),
+                    block: issue_487_block(),
+                }),
+                finalized_block: None,
+                finalized_result: finalized,
+            });
+            let response = router(s)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/api/v1/deploy-settlement/deadbeef")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["stage"], expected_stage);
+            assert_eq!(json["settlementConfirmed"], confirmed);
+        }
+    }
+
     fn issue_487_block() -> rchain_models::casper::protocol::deploy_service::LightBlockInfo {
         rchain_models::casper::protocol::deploy_service::LightBlockInfo {
             version: 1,
@@ -2744,6 +2819,9 @@ mod tests {
     struct MockWebApi {
         status: PublicStatus,
         pooled_deploys: PooledDeploys,
+        deploy_result: Option<DeployExecStatus>,
+        finalized_block: Option<BlockInfo>,
+        finalized_result: Option<bool>,
     }
 
     #[async_trait]
@@ -2761,7 +2839,9 @@ mod tests {
         }
 
         async fn deploy_status(&self, _: &str) -> Result<DeployExecStatus, BlockApiException> {
-            unimplemented!()
+            self.deploy_result
+                .clone()
+                .ok_or_else(|| BlockApiException("deploy result unavailable".to_string()))
         }
 
         async fn pooled_deploys(&self) -> Result<PooledDeploys, BlockApiException> {
@@ -2794,7 +2874,9 @@ mod tests {
         }
 
         async fn last_finalized_block(&self) -> Result<BlockInfo, BlockApiException> {
-            unimplemented!()
+            self.finalized_block
+                .clone()
+                .ok_or_else(|| BlockApiException("finalized block unavailable".to_string()))
         }
 
         async fn get_block(&self, _: &str) -> Result<BlockInfo, BlockApiException> {
@@ -2826,8 +2908,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn is_finalized(&self, _: &str) -> Result<bool, BlockApiException> {
-            unimplemented!()
+        async fn is_finalized(&self, hash: &str) -> Result<bool, BlockApiException> {
+            assert_eq!(hash, "block-1781", "lookup must use the inclusion block");
+            self.finalized_result
+                .ok_or_else(|| BlockApiException("finality unavailable".to_string()))
         }
 
         async fn get_transaction(&self, _: &str) -> Result<TransactionResponse, BlockApiException> {
@@ -2844,6 +2928,9 @@ mod tests {
                 pooled_deploys: PooledDeploys {
                     deploys: Vec::new(),
                 },
+                deploy_result: None,
+                finalized_block: None,
+                finalized_result: None,
             }),
             block_report_api: test_block_report_api(),
             // The HTTP tests drive the routes, not the shard list; one member stands in.
@@ -3764,6 +3851,9 @@ mod tests {
                     valid_after_block_number: -1,
                 }],
             },
+            deploy_result: None,
+            finalized_block: None,
+            finalized_result: None,
         });
         let response = api_deploys(State(s)).await;
         assert_eq!(response.status(), StatusCode::OK);
