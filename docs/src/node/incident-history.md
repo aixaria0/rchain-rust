@@ -228,7 +228,10 @@ the [resource-safety case](../spec/resource-safety-case.md).
 The report is [the security audit](security-audit.md) §9; this is its close-out, kept apart so the
 report stays a photograph. The **October 2026 re-audit** (§1–§8 of the same page, pass §148) is the
 next pass: it re-derived this close-out, found the cost-model class live again in the collection
-conversions, and opened C345–C352.
+conversions, and opened C345–C352. **All eight were remediated in the same PR** (pass §149): the
+conversions and unions charge their output, `censure` its cube (Law 91), the greeter and the websocket
+accept are bounded, the body and its disposition row are one transaction, and the proposal finality
+bound is total in its anchor. C348 is an accepted residual and C352 a corrected claim.
 
 - The three P1s were one root cause — the gas model did not bound work — closed by a per-block phlo
   cap, charging the operations that charged less than their work, and charging the parse. The

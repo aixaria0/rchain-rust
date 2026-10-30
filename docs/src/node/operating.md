@@ -334,6 +334,19 @@ before the ledger is adopted by the start-up scan on the next start; a body whos
 decoded is logged by hash and remains this count audit's signal, so the recovery is an operator
 reset or a peer re-delivery.
 
+**The body and its row are one write.** They live in the same LMDB environment and are committed in
+one transaction, so a crash cannot leave a stored body with no row — the shape that needed the
+start-up scan in the first place. The ledger moved into the block-storage environment in the build
+that carries the October 2026 remediation, which bumped the store-format marker: an **upgrade** from
+an earlier build re-adopts the ledger with the start-up scan on first boot (a `Faulted` row on an
+unsettled body comes back as `Pending`, so the block is retried rather than dropped), and a
+**downgrade** to an earlier build is refused rather than run over a store it cannot read.
+
+**The same build changes the gas charges, so its genesis post-state hash differs from the previous
+build's.** A network upgrading must regenerate any pinned `--expected-genesis-hash` and move together
+(validators and observers alike): a pre-change block containing a collection conversion or a `censure`
+does not replay under the new charges, and a mixed network would refuse it.
+
 | Switch | Default | Effect |
 |---|---|---|
 | `RNODE_DEPLOY_RELAY` | off | offer each admitted deploy to connected peers' external deploy service (`_PORT`, default 40401; `_FANOUT` to cap) |

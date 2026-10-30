@@ -11,6 +11,11 @@ coverage re-measure, no full reading of the three chain trees, no 600 s wall-clo
 relay exhaustion. The measurements are release-profile probes on one host; the projection to the block
 deadline is arithmetic from those measurements, not a wait.
 
+**These are the *before* numbers, and the findings are no longer open.** The eight rows were remediated
+in the same PR (pass §149); the *after* measurements from the same probe are in
+[`../c345-c352-remediation-20261030/`](../c345-c352-remediation-20261030/). Left here unchanged on
+purpose: a findings record that edits itself cannot be checked against.
+
 ## Files
 
 - `preregistration.md` — the method, the lens assignment, the 18-candidate queue and the verdict

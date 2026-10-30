@@ -56,8 +56,8 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws
   (59–65), the distributed-system set (66–71), the durable reset, the stop and the read construction
   (72–77), the genesis's developer allocation (78) and the schedule it unlocks on (79), and the
-  sync, Proof-of-Stake, Casper, admission, decimal and disposition rows (80–89) — mapped to their
-  machine-checked proofs.
+  sync, Proof-of-Stake, Casper, admission, decimal and disposition rows (80–89), the published
+  hostlist (90) and the charge magnitudes (91) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building
@@ -194,11 +194,14 @@ what separates them, and on the structural axes the pre-testnet node leads.
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->91 laws<!-- counts:end -->; every registered witness runs by name; `sorry`/`admit`/`opaque` refused | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
 | **Peer identity** | Mutual TLS; the certificate key is bound to the identity the peer claims. Which keys are admitted is unconstrained — a recorded decision, not an oversight ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the collection conversions still sort for a flat 18 phlo (C345), and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
+| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the collection conversions now charge three phlo per element of the output they build (C345, Law 91a) — the remaining gap is the log factor of a sort, and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
-The cost row is the one this node does not lead. September closed its specific instances (the union
-dedup and the governance folds); the October pass found the class live again in the collection
-conversions, which sort for a flat 18 phlo, and opened C345.
+The cost row is the one this node does not lead, and it is the row that has moved twice. September
+closed its specific instances (the union dedup and the governance folds); the October pass found the
+class live again in the collection conversions, which sorted for a flat 18 phlo, and opened C345 and
+C346; **the same PR closed both** — the conversions now charge their output, the union charges both
+operands, and `rho:gov:censure` is charged the cube of its universe (Law 91). The warning stays because
+the charge is linear for `O(n log n)` work: bounded amplification, not an exact price.
 
 Two limits: Sui's crypto/P2P and Solana's Agave VM are unvendored, so those cells are **could not trace**, not
 cleared; and this node's assurance ends where the review says — the chain layer's authority is access

@@ -93,6 +93,11 @@ split, a fund loss, or remote code execution.
 | 14 lower-severity items (P3) | Re-derived; most closed (deny policy, schema casing, openapi body, workflow pins, counts). The type-system counted classes are still reported, not enforced. |
 | One not-re-established (`censure`) | Closed, then re-opened as underpriced (C346). |
 
+**Both tables are the state at the pin.** All eight rows above were remediated in §149 (C348 kept as
+an accepted residual), so the gas-model row's "partially re-opened" instance is now charged — output
+size for the conversions, both operands for the union, `(U+1)³` for `censure` (Law 91) — and the
+"underpriced" reading of `censure` is answered by the cube.
+
 The P3 signing exception is a **decision, not work**: the release emits an `sha256sum` and no
 signature or SBOM, because a signature needs a trust root this repository has not chosen.
 
@@ -111,10 +116,12 @@ This is the pass's principal finding and the reason this section keeps its numbe
 | 40 000 | 64.1 s | **98.0 s** |
 
 **What landed since.** The dedup is sort-then-dedup (`models/src/sorter.rs:851-887`), the charges for
-union/diff track their arguments (`rholang/src/accounting.rs:112-136`), the parse is charged before
-evaluation (`rholang/src/runtime.rs:336-346`), a block carries `MAX_BLOCK_PHLO = 25 500 000 000` and at
-most 255 deploys (`casper/src/validate.rs:784-809`), and the governance folds are bounded at
-`MAX_GOV_UNIVERSE = 512` and charged (`rholang/src/system_processes.rs:1273-1292`).
+union/diff track their arguments (`rholang/src/accounting.rs:112-136` — **the union half was the right
+operand only until §149**, and both are charged now), the parse is charged before evaluation
+(`rholang/src/runtime.rs:336-346`), a block carries `MAX_BLOCK_PHLO = 25 500 000 000` and at most 255
+deploys (`casper/src/validate.rs:784-809`), and the governance folds are bounded at
+`MAX_GOV_UNIVERSE = 512` and charged (`rholang/src/system_processes.rs:1273-1292`, cubic for `censure`
+since §149).
 
 **What October measured, at `be5016682`** (release; `rholang/tests/gas_amplification.rs`,
 `RNODE_GAS_PROBE=1`; full log in the evidence directory):
@@ -137,11 +144,14 @@ synchronous builtin — it bounds the waiter, not the work. **These are the inst
 the conversion and fold arms; that is an inspection, not a proof that no fourth exists**, and no gate
 is about cost (§5).
 
-**Remediation, in the shape the tree already uses.** Charge the collection conversions for their
-output size; charge `++`/`.union` for **both** operands, as `diff_cost` already charges
-`|left|·|right|`; either charge `censure` for U³ or lower the bound from its measured path; and
-consider a cost-shape gate, since none of the existing gates can see a charge that does not track its
-work. The 600 s deadline stays as the liveness backstop it is.
+**What §149 did, and what it did not.** The conversions and `set`/`keys` now charge their output
+(`3 · n`, computed before the work), `++`/`.union` charge **both** operands (as `diff_cost` already
+charged `|left|·|right|`), and `censure` charges `(U+1)³`. The bound stayed at 512 because the cubic
+path was then measured at it — 33 ms for a 512-member universe in release. **Not done**: a cost-shape
+gate, which is still the missing instrument (this finding was found by measurement, and none of the
+existing gates can see a charge that does not track its work); and the charge is linear for `O(n log n)`
+work, so a log factor remains — bounded, not exact. The 600 s deadline stays as the liveness backstop
+it is.
 
 ## 4. Other confirmed findings
 
@@ -152,21 +162,24 @@ or a sub-quorum view `last_finalized_block_hash()` is `None`, so nothing fires a
 can extend its chain without a lag bound — the round gate limits the rate, not the height. The Lean
 model totalises the case as genesis height 0 (`rewind_plan` does the same), and its
 `a_gate_without_the_bound_admits_a_private_chain` is exactly the skipped arm. This is the one finding
-the lenses expected to be refuted.
+the lenses expected to be refuted. **Remediated in §149**: the gate is total in the anchor.
 
 **The OCapN greeter dials without the dial budget (P2, C347).** A peer that completes a CapTP session
 can deliver a `handoff-give` to the published greeter, which dials the named exporter location without
 taking a unit from the `MAX_DIALED_SESSIONS` reserve
 (`ocapn/src/fixtures.rs::Greeter::receive`; contrast `ocapn/src/enliven.rs:171-182`). The registry caps
 the count at `MAX_PEERS = 256`, so it is bounded — but at 16× the documented dial reserve, and a
-documented 64-session surface becomes ~304. All four transports are off by default.
+documented 64-session surface becomes ~304. All four transports are off by default. **Remediated in
+§149**: both dialing fixtures take one shared permit, before the connect.
 
 **The transaction API's leg amount is bounded only by the coordinator's whole vault (P2, C348).** The
 ingress checks leg count (32) and rate (10/s) and copies `amount` through; the participant rejects
 `amount > balance` and accepts `amount == balance`, so one admitted leg can escrow the validator's
 entire vault on that shard to a caller-chosen address. This is the residual of the already-known C121:
 the load-bearing guards are the loopback admin bind and `enable-txn-api`, and a remote caller needs
-`enable-devnet-admin-public` as well.
+`enable-devnet-admin-public` as well. **Kept as a residual** (§149): the API still does not cap a leg,
+and the [operating page](operating.md) now says to cap the coordinator's vault rather than the
+request.
 
 **The body and its disposition row are two transactions (P2, C350).** The receiver stores the body
 (`block_receiver.rs:559`) and then writes the `Pending` row (`:579`) in **different LMDB
@@ -174,11 +187,14 @@ environments** (`casper/src/storage.rs:76-112`), so a crash between them leaves 
 row. `reoffer_unsettled` iterates rows; the legacy scan is gated by a one-time marker; the periodic
 audit reports and withholds readiness but does not adopt. Recovery is a peer re-delivery or an
 operator reset. No safety breach — the verdict truth stays in DAG metadata — but a lost obligation.
+**Remediated in §149**: the ledger shares the bodies' LMDB environment and `put_across` commits both
+in one transaction.
 
 **A websocket client holds that transport's accept loop for ~40 s (P3, C349).** The upgrade (10 s
 timeout) and the in-band challenge (30 s read) run inside the per-transport accept task rather than
 the session task (`ocapn/src/websocket.rs:229-257`; contrast `noise.rs:301-313`). The module doc names
-the residual; only new sessions on that one optional transport are blocked.
+the residual; only new sessions on that one optional transport are blocked. **Remediated in §149**:
+the accept is a socket accept and the upgrade runs on the connection's first use.
 
 **Two assurance findings.** Barrier B46 says "`Running` requires no unresolved orphan", but the code
 sets `Running` after a bounded audit and gates **readiness** instead (`node_phase.rs:17-24`; the code's
@@ -186,7 +202,8 @@ own "visible, not settled" vocabulary in Law 88a is correct). And the HAZOP/reso
 check that a named symbol *occurs in a file*, not that the named test asserts the claim — the
 discipline `check-rust-witnesses.sh` applies to the register's witness column is not applied to those
 falsifier cells. The first is C352; the second is recorded here and in §5, not as a row, because it was
-not carried through the referee queue.
+not carried through the referee queue. **Remediated in §149** for B46 (it names readiness); the
+falsifier-cell gate remains the open instrument described in §5.
 
 **Liveness enforcement, re-verified (no new row).** A coalition holding strictly >2/3 of active stake
 can jail and then slash an honest validator whose blocks are merely *censored*: participation is read
@@ -281,8 +298,11 @@ Pinned and read 2026-10-30: Solana (Agave) `v4.4.0` / `9ef63128`; Sui `testnet-v
 | **Sui** | gas charges bytes proportionally; September's zkLogin cell could not be re-established at this pin | gas; transactions bounded | instruction tiers; size bound; verifier meter |
 | **Bitcoin SV** | `OP_CAT` doubling with the 520-byte guard **pre-Genesis only** | fees on a failing transaction collect nothing | opcode cap is a parameter, not a consensus constant |
 
-This node is mid-pack on amplification. Its containment now includes the caps and the deadline, but the
-deadline bounds the waiter, not a synchronous builtin, and the conversion family is still unpriced. The
+This node was mid-pack on amplification **at the pin**: the caps and the deadline existed, the
+deadline bounds the waiter rather than a synchronous builtin, and the conversion family was unpriced.
+**The same PR that reported it priced it** (§149): the conversions and the union charge their output,
+and `censure` its cube (Law 91), so the row above is history rather than today's arithmetic — and what
+remains is the log factor of a sort, not a flat charge. The
 structural axes — authority, encapsulation, machine-checking — are unchanged from September; the
 [README's table](../../../README.md) carries them. Sui's crypto/P2P and Solana's Agave VM are unvendored, so
 those cells are **could not trace**, not cleared. Market-cap figures are dropped: they age fastest and
@@ -292,18 +312,18 @@ have no gate.
 
 These are decisions, not defects.
 
-- **The collection charges.** Charge the conversions for output size, charge `++`/`.union` for both
-  operands, and decide whether a cost-shape gate is worth building. The instances are C345; the class
-  has no gate.
-- **`censure`'s cubic path.** Charge U³ or lower the bound from a measurement, and measure the full
-  path at the bound (C346).
-- **A proposal on a view with no finality.** Totalise the gate as genesis height 0, as `rewind_plan`
-  already does (C351), or state why the unbounded case is acceptable.
+- **A cost-shape gate.** The charges themselves are settled (§149: output size for the conversions,
+  both operands for the union, `(U+1)³` for `censure`, Law 91), and the cubic path was measured at the
+  bound. What has no instrument is the *class*: nothing in the tree can see a charge that does not track
+  its work, so the next such defect is found by measurement, as this one was.
+- **The charge's shape at the margin.** The conversions are linear for `O(n log n)` work, so a phlo buys
+  work bounded by `charge · log charge`. Bounded is the requirement the defect violated; an exact price
+  of a comparison is a larger decision.
 - **A far-future block timestamp.** The lower bound landed; the future direction is still accepted by
   design (#223). The decision is open.
-- **The OCapN greeter's budget.** Draw its dials from the reserve, or record 256 as the intended bound
-  (C347).
-- **The transaction API's amount.** A sub-balance bound, or an operator-facing cap (C348).
+- **The transaction API's amount.** Decided as a residual (§149): no API cap, and the operator caps the
+  coordinator's vault. If a network later wants a sub-balance bound, it is a policy on top of the
+  chain's, and it is a decision rather than a fix.
 - **The rejection sets.** `rejected_deploys` is compared on replay; `rejected_blocks` and
   `rejected_senders` are hashed and carried but not compared. Show reachability or record them inert.
 - **The deploy relay.** Fan-out defaults to every peer and the seen set clears at 100 000; the harm was
@@ -314,8 +334,10 @@ These are decisions, not defects.
 - **Permissive defaults** (epoch length 0, bond minimum 0) remain reachable only on ad-hoc runtimes;
   **term-depth margin** remains a proof debt; the **fringe liveness predicate** still counts messages
   rather than senders.
-- **The hard-fork schedule** for laws 87 (decimal), 88 (disposition), 89 (liveness) and 90 (hostlist):
-  which network arms which, and when.
+- **The hard-fork schedule** for laws 87 (decimal), 88 (disposition), 89 (liveness), 90 (hostlist) and
+  91 (the charge magnitudes): which network arms which, and when. **91 is the one that ships ungated
+  and cannot wait for a schedule** — it changes a block's post-state hash, so every validator on a
+  network must move together and every pinned genesis hash must be regenerated (§149).
 
 ## 9. The September 2026 pass (historical)
 
