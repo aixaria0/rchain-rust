@@ -1067,9 +1067,17 @@ async fn api_deploy_settlement(
         | crate::api::dto::DeployExecStatus::ProcessedWithError { block, .. } => {
             match state.web_api.is_finalized(&block.block_hash).await {
                 Ok(is_finalized) => Some(is_finalized),
-                // A failed lookup is explicitly represented as finalityUnknown
-                // in the settlement response, never as confirmed settlement.
-                Err(_) => None,
+                // Return the same fail-closed observation, with unknown finality.
+                // A failed RPC must never be interpreted as block settlement.
+                Err(_) => {
+                    return Json(deploy_settlement_observation(
+                        &deploy_signature,
+                        &execution,
+                        None,
+                        observation_time_ms(),
+                    ))
+                    .into_response();
+                }
             }
         }
     };
