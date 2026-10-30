@@ -71,7 +71,7 @@ fn main() {
                     .iter()
                     .filter_map(|h| state.msg_map.get(h))
                     .filter(|p| p.sender == m.sender && !prev.contains(*p))
-                    .last()
+                    .next_back()
                     .cloned()
                 {
                     m = p;
