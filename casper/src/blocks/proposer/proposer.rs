@@ -927,7 +927,10 @@ pub fn finalized_floor(finalized: Option<BlockHeight>) -> BlockHeight {
 /// This is the property C351 is about: `proposal_is_within_bound(n, None)` is `false` beyond the
 /// bound. The gate this replaced could be written `finalized.is_some_and(|f| within(n, f))`, which
 /// answers `true` for `None` — no bound at all — and that is the falsifier the test exhibits.
-pub fn proposal_is_within_bound(next_block_num: BlockHeight, finalized: Option<BlockHeight>) -> bool {
+pub fn proposal_is_within_bound(
+    next_block_num: BlockHeight,
+    finalized: Option<BlockHeight>,
+) -> bool {
     within_proposal_finality_bound(
         i64::from(next_block_num),
         i64::from(finalized_floor(finalized)),
