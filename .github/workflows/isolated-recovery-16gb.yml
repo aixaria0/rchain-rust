@@ -133,6 +133,22 @@ jobs:
           df -h > target/isolated-16gb/disk-after.txt
           docker ps -a > target/isolated-16gb/docker-ps.txt 2>&1 || true
           docker stats --no-stream > target/isolated-16gb/docker-stats.txt 2>&1 || true
+          # Preserve exact per-validator readiness evidence before teardown.
+          # A green Docker healthcheck is not equivalent to the strict /health gate.
+          for i in $(seq 0 7); do
+            node="acceptance-validator-$i"
+            [ "$i" -ne 0 ] || node="acceptance-bootstrap"
+            health_port=$((40403 + 1000 * i))
+            operator_port=$((40405 + 1000 * i))
+            if ! curl --connect-timeout 2 --max-time 5 -fsS "http://127.0.0.1:${health_port}/health" \
+                -o "target/isolated-16gb/$node-health.json"; then
+              echo "health endpoint unavailable for $node" > "target/isolated-16gb/$node-health.error"
+            fi
+            if ! curl --connect-timeout 2 --max-time 5 -fsS "http://127.0.0.1:${operator_port}/api/v1/status/operator" \
+                -o "target/isolated-16gb/$node-operator.json"; then
+              echo "operator endpoint unavailable for $node" > "target/isolated-16gb/$node-operator.error"
+            fi
+          done
           for i in $(seq 0 7); do
             node="acceptance-validator-$i"
             [ "$i" -ne 0 ] || node="acceptance-bootstrap"
