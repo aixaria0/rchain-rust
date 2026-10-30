@@ -469,10 +469,11 @@ stated.** Both conclusions are arguments about the code above, not preferences.
 a validator with a *small* stake and one key, whose expected income is neither large nor stable; the
 liveness defects are [#149](https://github.com/rhovision-org/rholo/issues/149) and
 [#172](https://github.com/rhovision-org/rholo/issues/172); and **absence** is not a
-reward-formula question at all. The instrument that prices a validator which stops is an **inactivity
-leak** — a state change that burns a silent validator's stake — and this tree has neither the state nor
-any issue that owns the design (the citations this page and the law register used to carry, #24 and #39,
-are both closed and one of them is about something else).
+reward-formula question at all. The automatic instrument this tree now carries is **jail, not a leak**: it removes a sustained
+absentee from the active set and its income, and never moves a bond. The bond is reachable only
+through the explicit >2/3 stake vote. An **inactivity leak** — a state change that burns a silent
+validator's stake — remains unmodelled and is still owned by #149 (@aixaria0); RCHIP #55 does not
+implement it.
 
 (The stranded-rewards divergence above is *not* an open question of this kind — the oracle states the
 intent, so it is a registered finding (C197) rather than a design choice.)

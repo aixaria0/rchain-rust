@@ -2161,6 +2161,31 @@
       "id": "S6:507f3e24c48232b3",
       "row_sha256": "507f3e24c48232b3e8948aa8e5004cd31b6d4318cf24f539f4ce9b00add7f452",
       "source_line": 384
+    },
+    {
+      "invariant": "**Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).**",
+      "fork_class": "A_CANDIDATE",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "related_issue_pr_or_audit": [
+        "RCHIP #55",
+        "#149",
+        "C344"
+      ],
+      "code_or_invariant": [
+        "**Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).**"
+      ],
+      "existing_evidence": {
+        "kind": "authored register on pinned dev, not a new execution witness",
+        "url": "https://github.com/rhovision-org/rholo/blob/d8dd1163168b3c357fc4bccbd1853b820abbcecb/spec/audit/passes.md",
+        "source_row": "| **Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).** | Pos.rhox has no liveness jail, vote or ejection; the port adds five genesis parameters, five `pos:` leaves and the `voteSlash`/`unvoteSlash`/`getLiveness`/`getVotes` methods. | A chain that arms liveness enforcement changes its boundary post-state: a jailed validator is not drawn and earns nothing, and a passing >2/3 active-stake vote slashes and bans. Default-off and the format-2 params encoding keep unarmed chains byte-identical; arming requires a new genesis and is a hard fork. Pre-launch category A; every validator must run the binary; no live evidence yet. RCHIP #55, HAZOP U21, C344 |"
+      },
+      "source_line": 391,
+      "row_sha256": "0963a698bc9c4ee42a824fac97c352c637c7cff739bd022c8d34a4ec09d6a0e5",
+      "id": "S6:0963a698bc9c4ee4",
+      "missing_proof": "The source row did not exist at the ledger's pinned dev commit; the URL therefore shows the section without this row. Live testnet evidence for jail/vote and the partition arm is owed.",
+      "smallest_action": "Run the devnet/live liveness-enforcement arm and commit the evidence under spec/audit/evidence/.",
+      "acceptance_test": "tests/liveness-enforcement.py plus the live artifact",
+      "decision_owner": "@PatrickMockridge"
     }
   ]
 }

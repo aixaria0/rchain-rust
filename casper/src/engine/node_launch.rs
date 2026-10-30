@@ -123,6 +123,11 @@ pub async fn create_genesis_block(
     system_contract_pub_key: &str,
     dev_tax_address: &str,
     dev_tax_vesting_blocks: i64,
+    liveness_absence_threshold: i64,
+    liveness_jail_after_boundaries: i64,
+    liveness_jail_epochs: i64,
+    liveness_vote_window: i64,
+    liveness_slash_severity: i64,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
     // Initial REV vaults, with the developer allocation derived from their total (Law 78). This is
@@ -175,6 +180,12 @@ pub async fn create_genesis_block(
             dev_tax_vesting_blocks: NonNegI64::try_from(dev_tax_vesting_blocks).map_err(|e| {
                 format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
             })?,
+
+            liveness_absence_threshold,
+            liveness_jail_after_boundaries,
+            liveness_jail_epochs,
+            liveness_vote_window,
+            liveness_slash_severity,
         },
         registry: Registry {
             system_contract_pub_key: system_contract_pub_key.to_string(),
@@ -183,6 +194,11 @@ pub async fn create_genesis_block(
         dev_vesting,
     };
 
+    // The liveness config is all-or-nothing, and this is the other path that turns config into
+    // consensus state: refuse an incoherent one before the genesis block is signed.
+    crate::genesis::build_pos_genesis(&genesis.proof_of_stake, genesis.dev_vesting.clone())
+        .params
+        .validate()?;
     crate::genesis::create_genesis_block(&ceremony, &genesis, runtime).await
 }
 
@@ -244,6 +260,11 @@ pub async fn create_genesis_block_from_config(
         &gbd.system_contract_pub_key,
         &gbd.dev_tax_address,
         gbd.dev_tax_vesting_blocks,
+        gbd.liveness_absence_threshold,
+        i64::from(gbd.liveness_jail_after_boundaries),
+        i64::from(gbd.liveness_jail_epochs),
+        i64::from(gbd.liveness_vote_window),
+        i64::from(gbd.liveness_slash_severity),
         runtime,
     )
     .await

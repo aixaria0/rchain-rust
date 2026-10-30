@@ -153,6 +153,12 @@ fn independent_recovery_replays_epoch_boundaries_and_refuses_forged_claims() {
                         pos_multi_sig_public_keys: Vec::new(),
                         pos_multi_sig_quorum: 1,
                         pos_vault_pub_key: String::new(),
+
+                        liveness_absence_threshold: 0,
+                        liveness_jail_after_boundaries: 0,
+                        liveness_jail_epochs: 0,
+                        liveness_vote_window: 0,
+                        liveness_slash_severity: 0,
                     };
                     let runtime = common::build_runtime_manager()
                         .await

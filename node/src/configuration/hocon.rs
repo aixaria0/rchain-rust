@@ -366,7 +366,44 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
             Some(v) => to_i64(v)?,
             None => 0,
         },
+
+        // Liveness enforcement (RCHIP #55, Law 89): optional and off by default. A config written
+        // before these keys resolves to the shipped rule — no jail, no vote.
+        liveness_absence_threshold: match get_opt(h, "liveness-absence-threshold") {
+            Some(v) => to_i64(v)?,
+            None => 0,
+        },
+        liveness_jail_after_boundaries: match get_opt(h, "liveness-jail-after-boundaries") {
+            Some(v) => to_i32(v)?,
+            None => 0,
+        },
+        liveness_jail_epochs: match get_opt(h, "liveness-jail-epochs") {
+            Some(v) => to_i32(v)?,
+            None => 0,
+        },
+        liveness_vote_window: match get_opt(h, "liveness-vote-window") {
+            Some(v) => to_i32(v)?,
+            None => 0,
+        },
+        liveness_slash_severity: match get_opt(h, "liveness-slash-severity") {
+            Some(v) => liveness_severity(to_string(v)?)?,
+            None => 0,
+        },
     })
+}
+
+/// The liveness slash tier's config spelling. `none` is the disabled value; a number would make the
+/// genesis file depend on `SlashSeverity::to_code`'s wire codes, which is an internal detail.
+fn liveness_severity(name: String) -> Result<i32, String> {
+    match name.to_ascii_lowercase().as_str() {
+        "none" => Ok(0),
+        "malicious" => Ok(1),
+        "misdemeanour" => Ok(2),
+        "honest-mistake" | "honestmistake" => Ok(3),
+        other => Err(format!(
+            "liveness-slash-severity `{other}` is not none, malicious, misdemeanour or honest-mistake"
+        )),
+    }
 }
 
 /// Overlay a `genesis-block-data` block's *present* keys onto `default`, field by field — the same
@@ -430,6 +467,21 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "dev-tax-vesting-blocks") {
         out.dev_tax_vesting_blocks = to_i64(v)?;
+    }
+    if let Some(v) = get_opt(h, "liveness-absence-threshold") {
+        out.liveness_absence_threshold = to_i64(v)?;
+    }
+    if let Some(v) = get_opt(h, "liveness-jail-after-boundaries") {
+        out.liveness_jail_after_boundaries = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "liveness-jail-epochs") {
+        out.liveness_jail_epochs = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "liveness-vote-window") {
+        out.liveness_vote_window = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "liveness-slash-severity") {
+        out.liveness_slash_severity = liveness_severity(to_string(v)?)?;
     }
     Ok(out)
 }
@@ -813,6 +865,12 @@ mod tests {
             system_contract_pub_key: "system".to_string(),
             dev_tax_address: String::new(),
             dev_tax_vesting_blocks: 0,
+
+            liveness_absence_threshold: 0,
+            liveness_jail_after_boundaries: 0,
+            liveness_jail_epochs: 0,
+            liveness_vote_window: 0,
+            liveness_slash_severity: 0,
         }
     }
 

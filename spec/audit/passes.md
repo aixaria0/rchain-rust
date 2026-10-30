@@ -388,6 +388,7 @@ canonicalisation, `scaledValue`'s injectivity and order, exact `+ - *`, division
 condition and the `edecimal` payload. The wire's minimal bytes and tag 35, serde ingress, the
 literal surface, reducer dispatch and the cost model remain outside the law and Rust-tested;
 AC10 (operator/new-genesis acceptance) remains a release step.
+| **Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).** | Pos.rhox has no liveness jail, vote or ejection; the port adds five genesis parameters, five `pos:` leaves and the `voteSlash`/`unvoteSlash`/`getLiveness`/`getVotes` methods. | A chain that arms liveness enforcement changes its boundary post-state: a jailed validator is not drawn and earns nothing, and a passing >2/3 active-stake vote slashes and bans. Default-off and the format-2 params encoding keep unarmed chains byte-identical; arming requires a new genesis and is a hard fork. Pre-launch category A; every validator must run the binary; no live evidence yet. RCHIP #55, HAZOP U21, C344 |
 
 ## 7. Verification
 
@@ -11859,3 +11860,29 @@ readiness back to one shard fails the two-shard `/health` test.
 block-6 phase still needs the old hosts' `status/operator` and logs. `pipelineFaults`,
 `proposalHalted`, `orphanBodies` and `sync_state` remain process-wide. No live-net arm was run. C343
 stays `in progress`; the HAZOP/safety-case debt is re-counted from their gates.
+
+## 147. Liveness enforcement: jail and the stake vote (C344, RCHIP #55)
+
+**Found.** A validator that stops is paid and holds the finality denominator for ever; the 2026-10-02
+decision refused an inactivity leak because it burns a bond through no fault. RCHIP #55 prices absence
+without that: at an **advancing** epoch boundary a sustained absentee is jailed (not drawn, no income;
+its bond and its delegators' principal untouched), and a **strict >2/3 active-stake vote**, opened only
+against a jailed validator, may slash at the configured tier and permanently eject. The mechanism is
+five genesis parameters, five `pos:` leaves and four `rho:rchain:pos` methods; a zeroed config encodes
+the pre-change format-2 `PosParams` record and writes no new leaf, so unarmed chains are byte-identical.
+Law 89 models it; the boundary tally is a state transition, not a block-level `Slash`.
+
+**Why believed.** Native unit tests cover the jail counter, the stall freeze, income zero/bond intact,
+expiry/renewal, the strict threshold, a passing slash+ban, and a banished key's refused rebond; the
+system-process test pins the deployer-id authorization and ballot storage. The Lean model proves the
+jail never writes the pool, a stalled step changes nothing, one lapse is not sustained, a vote below
+2/3 changes nothing, and a passing vote slashes/ejects.
+
+**How it is falsified.** A jail that debits the pool, a counter that advances off a stall, a vote at
+exactly 2/3, a vote against an active validator, or a rebound of a banished key fails a named test or
+the Lean witnesses.
+
+**What it does not claim.** No live testnet arm yet (jail, vote-slash, partition negative,
+restart/expiry, exact threshold); no mainnet arming (#428); no unban; the inactivity leak remains #149
+and @aixaria0's; a boundary block can omit `CloseBlock`, so the epoch transition is skippable until a
+validity rule lands. §6 records the hard fork; C344 stays `in progress`.
