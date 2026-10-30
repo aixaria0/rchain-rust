@@ -621,6 +621,15 @@ async fn api_txn_run(State(state): State<AdminState>, Json(req): Json<TxnRequest
                 .into_response()
         }
     };
+    // **The leg amount has a floor and no ceiling beyond the coordinator's own vault** (register
+    // C348, the C121 residual). `GatewayTxn::run` refuses a negative amount (`NonNegI64`), and what
+    // the escrow can move is bounded by what the coordinator holds — but this API does not cap a leg,
+    // so a caller who can reach the route can ask the coordinator to escrow its whole vault across
+    // shards. That is a decision rather than an oversight (2026-10-30): the route is behind three
+    // opt-ins — a multi-shard gateway with a signing key, `api-server.enable-txn-api`, and an admin
+    // listener published beyond loopback — and a sub-balance cap would be a second, node-local policy
+    // layered on the chain's. An operator who serves it to untrusted callers caps the coordinator's
+    // vault, not the request; `docs/src/node/operating.md` says so.
     let mut legs = Vec::with_capacity(req.legs.len());
     for leg in &req.legs {
         match rchain_shared::refined::ShardId::try_from(leg.shard_id.clone()) {

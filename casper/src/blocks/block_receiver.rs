@@ -15,7 +15,7 @@ use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
 
-use crate::block_disposition::{BlockDispositionStore, PendingStage};
+use crate::block_disposition::{BlockDispositionStore, BodyDispositionWriter, PendingStage};
 use crate::blocks::block_processor;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
@@ -489,6 +489,7 @@ async fn incoming_blocks(
     conf_shard_name: Arc<str>,
     block_store: BlockStore,
     disposition: BlockDispositionStore,
+    body_writer: BodyDispositionWriter,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -555,12 +556,21 @@ async fn incoming_blocks(
                 continue;
             }
         };
+        // **The body and the obligation are one write** (C350, U19, F-U19-01/05/07). The row used to
+        // be a second transaction in another LMDB environment, so a crash between them left a body
+        // nothing owed. One transaction cannot span environments, so the ledger shares the body's and
+        // `store_body_and_mark_pending` commits both together: either both are durable or neither is.
         if !block_stored {
-            if let Err(e) = block_store.put(&[(block.block_hash, block.clone())]).await {
+            if let Err(e) = body_writer
+                .store_body_and_mark_pending(&block, PendingStage::Stored)
+                .await
+            {
+                // The transaction aborted, so the body is *not* stored: the block is not ours to
+                // settle and the peer or retriever offers it again.
                 log.error(
                     source,
                     &format!(
-                        "Failed to store block {}, skipping: {e}",
+                        "Failed to store block {} (or to record its disposition), skipping: {e}",
                         block.block_hash.to_hex()
                     ),
                 );
@@ -568,18 +578,12 @@ async fn incoming_blocks(
                 *guard = guard.abort_stored(&block.block_hash);
                 continue;
             }
-        }
-
-        // **The body is now in the store, so the node owes it an outcome** (U19, F-U19-01/05/07).
-        // The row is written before dependency resolution and before any fallible step below, so a
-        // crash or an error leaves a durable obligation the start-up audit re-offers. A failed write
-        // is a store fault: record it and keep going — the block can still be accepted now, and the
-        // only loss is that a crash before settlement would orphan the body, which is exactly what
-        // the fault surface says.
-        if let Err(e) = disposition
+        } else if let Err(e) = disposition
             .mark_pending(block.block_hash, block.block_number, PendingStage::Stored)
             .await
         {
+            // A re-delivery of a body already in the store: there is no body write to pair this with
+            // (and re-marking an existing row is idempotent), so a failure here is the fault surface.
             block_processor::note_pipeline_fault(&block, "disposition write", &e);
             log.error(
                 source,
@@ -830,6 +834,7 @@ pub fn apply(
     conf_shard_name: String,
     block_store: BlockStore,
     disposition: BlockDispositionStore,
+    body_writer: BodyDispositionWriter,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -843,6 +848,7 @@ pub fn apply(
         conf_shard_name,
         block_store,
         disposition,
+        body_writer,
         dag,
         block_retriever,
         put_to_incoming_queue,
@@ -860,6 +866,7 @@ pub fn apply_with_queue_observer(
     conf_shard_name: String,
     block_store: BlockStore,
     disposition: BlockDispositionStore,
+    body_writer: BodyDispositionWriter,
     dag: Arc<dyn BlockDagStorage>,
     block_retriever: Arc<BlockRetriever>,
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
@@ -874,6 +881,7 @@ pub fn apply_with_queue_observer(
         Arc::from(conf_shard_name),
         block_store,
         disposition,
+        body_writer,
         dag.clone(),
         block_retriever,
         put_to_incoming_queue,

@@ -54,6 +54,13 @@ Notes for operators:
   spend-this-node's-REV route as well. A transaction may name at most 32 legs, and the coordinator
   ledger holds at most 10,000 records; past either bound a new transaction is refused rather than
   queued.
+  **A leg's amount is not capped by this API** (register C348). It must be non-negative, and the
+  escrow can only move what the coordinator key's own vault holds — but a caller who can reach the
+  route can ask it to escrow that whole vault across shards. That is a deliberate boundary rather than
+  a missing check: a sub-balance cap would be a node-local spending policy layered on the chain's, and
+  the route is already behind three opt-ins (a multi-shard gateway with a signing key,
+  `api-server.enable-txn-api`, and an admin listener published beyond loopback). **If you serve it to
+  callers you do not trust, cap the coordinator key's balance, not the request.**
 - `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.
@@ -326,6 +333,19 @@ A sustained non-zero value means a body the DAG does not account for. A body wri
 before the ledger is adopted by the start-up scan on the next start; a body whose bytes cannot be
 decoded is logged by hash and remains this count audit's signal, so the recovery is an operator
 reset or a peer re-delivery.
+
+**The body and its row are one write.** They live in the same LMDB environment and are committed in
+one transaction, so a crash cannot leave a stored body with no row — the shape that needed the
+start-up scan in the first place. The ledger moved into the block-storage environment in the build
+that carries the October 2026 remediation, which bumped the store-format marker: an **upgrade** from
+an earlier build re-adopts the ledger with the start-up scan on first boot (a `Faulted` row on an
+unsettled body comes back as `Pending`, so the block is retried rather than dropped), and a
+**downgrade** to an earlier build is refused rather than run over a store it cannot read.
+
+**The same build changes the gas charges, so its genesis post-state hash differs from the previous
+build's.** A network upgrading must regenerate any pinned `--expected-genesis-hash` and move together
+(validators and observers alike): a pre-change block containing a collection conversion or a `censure`
+does not replay under the new charges, and a mixed network would refuse it.
 
 | Switch | Default | Effect |
 |---|---|---|

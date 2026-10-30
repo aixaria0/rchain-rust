@@ -384,7 +384,7 @@
         "spec/audit/passes.md",
         "#51"
       ],
-      "blocker": "All 90 current \u00a76 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open."
+      "blocker": "All 92 current \u00a76 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open."
     },
     {
       "id": "Audit:law52-partition",
@@ -528,6 +528,18 @@
         "merge_commit": "8803233b96ce9a9e31787c9342251be27c82c89a"
       },
       "notes": "#388 is the merged canonical implementation; #371 closed as superseded. This implementation selection does not decide #372's recipient, custody, distribution cadence, or wider governance terms, which remain under the separately deferred A:rev-economics disposition."
+    },
+    {
+      "id": "Audit:cost-tracks-work",
+      "title": "The C345/C346 charge changes: collection canonicalisation, union, censure",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51",
+        "#514",
+        "spec/audit/passes.md"
+      ],
+      "blocker": "Landed on the audit branch and not yet on dev, so no historical replay, populated-store upgrade or foreign validator binary is established; the \u00a76 deviation row and the inventory re-pin are owed against the post-merge dev SHA, and every network's genesis hash moves."
     }
   ],
   "close_clause_evidence": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117",

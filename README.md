@@ -1,6 +1,6 @@
 # rholo: a language with a theorem, not just a test suite
 
-Rholang's <!-- counts:laws -->90 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
+Rholang's <!-- counts:laws -->91 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
 
 > **Operator risk.** A validator is bonded and slashable for an invalid block or proven equivocation.
@@ -13,8 +13,9 @@ its authority cannot be forged — there is no syntax that writes a private name
 > [validator risk, hardware and participation](docs/src/node/operator-risk.md) before bonding.
 
 **Whole classes of defect are absent by construction**: no `unsafe` in any of the fourteen crates, so
-memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
-Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
+memory-safety bugs are unwritable rather than mitigated. The October 2026 adversarial audit read this node and
+Solana (Agave), Sui and Bitcoin SV at pinned revisions: no chain split, no fund loss, no remote code
+execution here.
 
 **A small artifact, deliberately**: recounted <!-- recount:date -->2026-10-30<!-- recount:end -->,
 <!-- recount:rs-lines -->226,974<!-- recount:end --> lines of Rust across
@@ -49,14 +50,14 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   what it is, why it fits a blockchain, and from processes and names through object-capability smart
   contracts.
 - **Part II — The ρ-calculus, formally** ([`docs/src/formal/`](docs/src/formal/)) — the grammar, the
-  sorts, and all <!-- counts:laws -->90 laws<!-- counts:end --> — the calculus (1–29), the surface a
+  sorts, and all <!-- counts:laws -->91 laws<!-- counts:end --> — the calculus (1–29), the surface a
   client writes and a matcher reads (30–43), the Proof-of-Stake epoch (44–47), the fee and charging
   rows (48–49), the depth guards (50), the progress rows (51–54), the bounded-work and namespace rows
   (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws
   (59–65), the distributed-system set (66–71), the durable reset, the stop and the read construction
   (72–77), the genesis's developer allocation (78) and the schedule it unlocks on (79), and the
-  sync, Proof-of-Stake, Casper, admission, decimal and disposition rows (80–89) — mapped to their
-  machine-checked proofs.
+  sync, Proof-of-Stake, Casper, admission, decimal and disposition rows (80–89), the published
+  hostlist (90) and the charge magnitudes (91) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building
@@ -147,17 +148,18 @@ review findings* are catalogued in [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.
 from a gas cost that wraps negative to a hash-map iteration order that could have split a chain.
 
 **Proved.** The ρ-calculus and its node-level laws are machine-checked in Lean 4, with an α-equivalence
-metatheory in Coq: <!-- counts:laws -->90 laws<!-- counts:end -->. What binds them to *this* code is not
+metatheory in Coq: <!-- counts:laws -->91 laws<!-- counts:end -->. What binds them to *this* code is not
 review but a **conformance corpus** — each corpus is emitted from the Lean definition and run 1:1
 through the node by a Rust consumer, so a definition cannot drift from its corpus without the gate
 noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
 
 **Reviewed, adversarially, repeatedly.** The pass record is
-[`spec/audit/passes.md`](spec/audit/passes.md) — 147 sections of findings, refutations and remediations,
+[`spec/audit/passes.md`](spec/audit/passes.md) — 149 sections of findings, refutations and remediations,
 from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
 full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
 and closes by construction — a row is `done` only when the bad state is no longer representable, with
-the citation that forbids it, or as a recorded decision. It reads **TODO 0**, with four rows in progress.
+the citation that forbids it, or as a recorded decision. Read the file for the current figures; it is
+the only place they are stated.
 
 **HAZOP, and a tabletop wargame.** A failure-mode HAZOP dispositions all eleven IEC guide words across
 21 study nodes and 96 deviations, with six bow-tie top events
@@ -168,8 +170,8 @@ clock — asking which of seven personas can act against each: **97 rows**, each
 and a falsifier, held to shape by a CI gate and driven against one live devnet boot with the runs
 committed ([`docs/src/spec/adversary.md`](docs/src/spec/adversary.md)).
 
-**Tested in-process and live, and gated.** ~2,593 test functions (counted 2026-10-30), a 165-file
-Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 52
+**Tested in-process and live, and gated.** ~2,607 test functions (counted 2026-10-30), a 165-file
+Scala differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 55
 committed evidence directories (40 campaign runs) from live drills. Static gates run in CI on every
 push beside `cargo fmt --check`,
 clippy with `-D warnings`, `cargo deny check`, the `wasm32` reducer check and a nightly formal gate,
@@ -178,37 +180,36 @@ under an 87 % line-coverage floor
 
 ### Comparison with other chains
 
-The September 2026 pass read this node and three live mainnets — Solana, Sui and Bitcoin SV — from
-their own source at pinned revisions. It found **no chain split, no fund loss and no remote code
-execution** here, and probed all four with the same adversarial question: is there an operation
-reachable by an unauthenticated remote attacker whose cost to the node is superlinear in attacker input
-while the charge is flat? Every one of the four has such an operation — a defect class in VM cost
-models, not one chain's weakness — so the table is what separates them, and on the structural axes the
-pre-testnet node leads.
+**Comparison with three live mainnets.** The October 2026 pass read this node and Solana (Agave), Sui
+and Bitcoin SV at pinned revisions — `v4.4.0`, `testnet-v1.83.0`, `v1.2.3` — with one question: *is
+there an operation reachable by an unauthenticated remote attacker whose cost is superlinear in
+attacker input while the charge is flat?* **At the pin every one of the four had such an operation**;
+the table is what separates them, and on the structural axes the pre-testnet node leads.
 
-| | **This node** (pre-testnet) | **Solana** (~$70bn) | **Sui** (~$5bn) | **Bitcoin SV** (~$400m) |
+| | **This node** (pre-testnet) | **Solana** (Agave) | **Sui** | **Bitcoin SV** |
 |---|---|---|---|---|
 | **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all fourteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
-| **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name; a name exists only to be received | Checked — a program-derived address has no key, but granting the privilege is a runtime check | **Unrepresentable** — a linear `UID`, minted from the transaction digest | Absent as a concept — authority is a private key |
-| **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls to capture through |
-| **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->90 laws<!-- counts:end -->; every registered witness runs by name; no registered witness is `#[ignore]`d; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
-| **Peer identity** | Mutual TLS — the certificate's key is **bound to the identity the peer claims in the message**, so a peer cannot speak as another. **Which keys are admitted is unconstrained**: any valid certificate is a peer. That is a recorded decision, not an oversight — block validation, not the transport, is the authorization boundary. Of the ten findings under this precondition, six are closed at the layer where the harm was real, one is refuted, and three are deliberately open with their arguments stated ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
+| **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name | Checked at runtime — a program-derived address has no key, but granting the privilege is a check | **Unrepresentable** — a linear `UID` minted from the transaction digest | Absent as a concept |
+| **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls |
+| **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->91 laws<!-- counts:end -->; every registered witness runs by name; `sorry`/`admit`/`opaque` refused | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
+| **Peer identity** | Mutual TLS; the certificate key is bound to the identity the peer claims. Which keys are admitted is unconstrained — a recorded decision, not an oversight ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ✅ a per-block phlo cap, and the operations that were charged less than their work now charge for it (four of the five planned fixes; the fifth was reverted because the finding did not survive implementation) | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
+| **Cost model bounds attacker work** | ⚠️ a per-block phlo cap (25.5e9) and a 255-deploy cap; the collection conversions now charge three phlo per element of the output they build (C345, Law 91a) — the remaining gap is the log factor of a sort, and the 600 s deadline bounds the waiter, not the work | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
-**The last row is the one this node did not lead, and it is the one it closed in this tree** — a defect
-class **all four nodes share**, and the close-out is not claimed to be more than it is: those charges
-were found by reading the cost table, so the claim is "these charges" rather than "the cost model is now
-sound".
+The cost row is the one this node does not lead, and it is the row that has moved twice. September
+closed its specific instances (the union dedup and the governance folds); the October pass found the
+class live again in the collection conversions, which sorted for a flat 18 phlo, and opened C345 and
+C346; **the same PR closed both** — the conversions now charge their output, the union charges both
+operands, and `rho:gov:censure` is charged the cube of its universe (Law 91). The warning stays because
+the charge is linear for `O(n log n)` work: bounded amplification, not an exact price.
 
-Two limits bind the table, and both are part of the result: two of the four trees could not be read in
-full — unvendored dependencies — so those columns are marked traced rather than cleared; and this node's
-assurance ends where the review says it does — the language and calculus are safe-by-structure and
-partly proved, the chain layer's authority distribution is access control by another name, and
-unforgeability is axiomatised at the crypto boundary (law 19) rather than proved.
+Two limits: Sui's crypto/P2P and Solana's Agave VM are unvendored, so those cells are **could not trace**, not
+cleared; and this node's assurance ends where the review says — the chain layer's authority is access
+control by another name, and unforgeability is axiomatised at the crypto boundary (law 19), not proved.
 
-**The September review in full — every citation, the reverted fixes, the open questions, and the ten
-candidate findings it refuted, including the one it opened expecting to lead with:
+**The October 2026 re-audit in full — the cost-model class, the new ingress surface, the referee
+verdicts, the comparison at pinned revisions, and the remediation of all eight findings in the same
+PR; September 2026 is kept at §9:
 [`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
 **How the apparatus was built is written up too, because the method is the part that is unusual here.**
@@ -224,7 +225,7 @@ that they are drafts. Every claim in either one is checkable against this tree.
 
 The rewrite is governed by [`AGENTS.md`](AGENTS.md) — the binding intent + formal specification —
 and the machine-checked formalizations in [`spec/`](spec/) (the law register
-[`spec/INVENTORY.md`](spec/INVENTORY.md) — <!-- counts:laws -->90 laws<!-- counts:end -->, counted and
+[`spec/INVENTORY.md`](spec/INVENTORY.md) — <!-- counts:laws -->91 laws<!-- counts:end -->, counted and
 emitted by `Rchain/Laws.lean` so the number cannot drift — plus the Lean/Coq tracks). The prime
 directive is a **faithful implementation of the ρ-calculus**: the laws are the oracle; the Scala node
 was the port reference.

@@ -328,6 +328,44 @@ theorem a_gate_without_the_bound_admits_a_private_chain :
     unboundedGate .running (MAX_PROPOSAL_FINALITY_LAG + 1) 0 = .allow := by
   decide
 
+/-- **The height the gate measures from when the view has no finalised block**: genesis. The Rust is
+`finalized_floor` (`casper/src/blocks/proposer/proposer.rs`), and it is the same answer
+`RewindPlan` gives — "no anchor" is not "no bound". -/
+def finalizedFloor : Option Nat → Nat
+  | none => 0
+  | some f => f
+
+/-- The floor is a floor, not a sentinel: it never exceeds the anchor it is given. -/
+theorem floor_never_exceeds_the_anchor (f : Option Nat) : finalizedFloor f ≤ f.getD 0 := by
+  cases f <;> simp [finalizedFloor]
+
+/-- The gate as the Rust spells it now: the anchor is an `Option`, and the height measured from is
+`finalizedFloor`. -/
+def totalGate (phase : Phase) (tip : Nat) (anchor : Option Nat) : GateResult :=
+  gate phase tip (finalizedFloor anchor)
+
+/-- **88b's third falsifier, and the defect C351 names**: a gate that *skips* the bound when there
+is no anchor accepts a private chain — the shape the Rust had behind `if let Some(finalized)`. -/
+def skipWithoutAnchor (anchor : Option Nat) (tip finalized : Nat) : GateResult :=
+  match anchor with
+  | none => .allow
+  | some _ => gate .running tip finalized
+
+theorem a_gate_that_skips_the_bound_without_an_anchor_admits_a_private_chain :
+    skipWithoutAnchor none (MAX_PROPOSAL_FINALITY_LAG + 1) 0 = .allow := by
+  decide
+
+/-- **A view with no finalised block is still bounded**: the total gate refuses one height past the
+bound with no anchor, exactly as it does with genesis. -/
+theorem a_view_without_a_finalized_block_is_still_bounded :
+    totalGate .running (MAX_PROPOSAL_FINALITY_LAG + 1) none = .refuse .tooFarAhead := by
+  decide
+
+/-- An anchor that exists is passed through unchanged, so totalising the gate did not move it. -/
+theorem the_anchor_is_passed_through (f tip : Nat) :
+    totalGate .running tip (some f) = gate .running tip f := by
+  simp [totalGate, finalizedFloor]
+
 /-! ## 88c — an overflow refusal is a deferral, not an orphan
 
 The receiver's capacity path stores the body and writes the `Pending` row **before** it can refuse,

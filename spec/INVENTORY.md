@@ -7,10 +7,11 @@ gates it) is in [`../docs/src/contributor/laws-to-rust.md`](../docs/src/contribu
 
 **Scope note.** This long-form table ends at **Law 77**. The register
 ([`LAWS.md`](LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate) is the authority
-for **Laws 1–90**: rows 78–90 — the developer allocation and its vesting, root publication, the
+for **Laws 1–91**: rows 78–91 — the developer allocation and its vesting, root publication, the
 verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state,
 admission/concurrency (86), the decimal value algebra (87), block disposition (88), PoS liveness
-enforcement (89), and the published node hostlist (90) — are in the register and read in
+enforcement (89), the published node hostlist (90), and the collection/censure charge magnitudes
+(91) — are in the register and read in
 [`../docs/src/formal/laws.md`](../docs/src/formal/laws.md).
 Backfilling them here is open work; where this page and the register disagree, the register is right.
 

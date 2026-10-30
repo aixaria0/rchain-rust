@@ -797,6 +797,25 @@
       "required_acceptance_test": "A landed protocol change must exercise both allowed/refused transitions and historical replay; a deferral must record its owner and reason.",
       "decision_owner": "@jimscarver",
       "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:cost-tracks-work",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "rholang/src/accounting.rs::canonicalization_cost, union_cost and gov_censure_cost \u2014 the charges C345/C346 add, whose magnitude is Law 91",
+      "related_issue_pr": [
+        "#51",
+        "#514"
+      ],
+      "existing_evidence": {
+        "branch": "audit/security-2026-10",
+        "pass": "spec/audit/passes.md 149",
+        "law": "91a, 91b"
+      },
+      "missing_proof": "The change is not on dev: no pre-fork replay refusal, no populated-store upgrade and no second binary are established, and the \u00a76 deviation row is owed against the new dev SHA.",
+      "smallest_corrective_action": "Merge #514 as a lockstep (category A) change, re-pin the \u00a76 inventory to the post-merge dev SHA with the cost-deviation row, and regenerate every pinned genesis hash.",
+      "required_acceptance_test": "A pre-fork block containing a conversion or a censure is refused at replay with replay_cost_mismatch, and a post-fork chain replays identically on two independent binaries.",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
     }
   ],
   "section6_inventory": "section6-gap-inventory.json"

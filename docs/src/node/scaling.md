@@ -177,7 +177,14 @@ Ranked by leverage against cost, honestly:
 6. **The on-chain speculation extension.** The design's actual thesis. Largest payoff, and it is
    specified rather than implemented.
 
-One non-lever worth naming: **the fee schedule does not track work.** A 229 KB deploy was measured
-buying roughly 98 CPU-seconds for 13 phlo ([Security audit](security-audit.md), since bounded). Until
-gas is cost-linked, "contract throughput" is not a single number — it is whatever the mispricing
-admits, which matters more for the credibility of an estimate than for its magnitude.
+One non-lever worth naming: **the fee schedule tracks work only part of the way.** A 229 KB deploy was
+measured buying roughly 98 CPU-seconds for 13 phlo ([Security audit](security-audit.md) §9, as measured
+in September; the union instance is since bounded). The October re-audit found the *class* still live in
+the collection conversions — a sort for a flat 18 phlo — and the same remediated it: `toSet`, `toMap`,
+`set`, `keys` and the set/map unions now charge three phlo per element of the output they build, in both
+operands for a union (Law 91a). **What remains is the shape of the charge, not a flat one**: it is
+linear for `O(n log n)` work, so a phlo buys work bounded by `charge · log charge` — bounded, but not an
+exact comparison count — and a collection *literal* is still uncharged because its bytes were charged at
+parse. Until gas is cost-linked all the way down, "contract throughput" is not a single number, it is
+whatever the remaining mispricing admits, which matters more for the credibility of an estimate than
+for its magnitude.

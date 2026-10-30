@@ -128,11 +128,44 @@ impl Costs {
             format!("{universe}-member governance fold"),
         )
     }
-    pub fn union_cost(num_elements: i64) -> Cost {
+    /// The cost of `rho:gov:censure`, proportional to the **cube** of the member universe (C346).
+    ///
+    /// `qucalc::censure` iterates a decreasing fixed point for at most `universe + 1` rounds, and each
+    /// round asks, of every member, how many censurers clear a level over the whole universe — so the
+    /// work is Θ(U³), not the Θ(U²) `gov_fold_cost` charged. At `MAX_GOV_UNIVERSE` that is the
+    /// leading term by a wide margin, which is why the bound exists (see the measurement in
+    /// `system_processes.rs`).
+    pub fn gov_censure_cost(universe: i64) -> Cost {
+        let rounds = universe.saturating_add(1);
         Cost::new(
-            Self::add_cost().mul(num_elements).value,
-            format!("{num_elements} union cost"),
+            rounds.saturating_mul(rounds).saturating_mul(rounds),
+            format!("{universe}-member censure fold"),
         )
+    }
+    /// The cost of canonicalising a collection of `elements` items (C345).
+    ///
+    /// `par_set` and `par_map` sort and deduplicate their input, so every method that builds one — the
+    /// `toSet`/`toMap` conversions, `set`, `keys`, and the set/map unions — does work proportional to
+    /// the output it is about to build. Charged at the same constant-3-per-element the table uses for
+    /// `lookup`/`add`/`remove`, and **computed from the operand size before the work**, so the phlo
+    /// budget is what stops it rather than the node's CPU.
+    ///
+    /// **What it does not claim:** the sort is `O(n log n)` and the charge is linear, so a phlo buys
+    /// work that grows by a logarithm. That is bounded (`charge · log charge`), not unbounded, which is
+    /// the defect C345 names; it is not an exact model of the comparison count.
+    pub fn canonicalization_cost(elements: i64) -> Cost {
+        Cost::new(
+            Self::add_cost().mul(elements).value,
+            format!("{elements}-element canonicalisation"),
+        )
+    }
+    /// The cost of a set or map union: both operands are canonicalised into one result (C345).
+    ///
+    /// The old charge was `3 · right`, so `bigSet ++ {}` cost nothing while the union still rebuilt
+    /// `bigSet`. Charging the sum is what makes the charge symmetric in the operands, which is the
+    /// property the Lean model states (`Rchain.unionCost_symmetric`).
+    pub fn union_cost(left: i64, right: i64) -> Cost {
+        Self::canonicalization_cost(left.saturating_add(right))
     }
     pub fn list_append_cost(size: i64) -> Cost {
         Cost::new(size, "list append")
@@ -363,9 +396,6 @@ impl Costs {
     }
     pub fn nth_method_call_cost() -> Cost {
         Cost::new(10, "nth method call")
-    }
-    pub fn keys_method_cost() -> Cost {
-        Cost::new(10, "keys method")
     }
     pub fn length_method_cost() -> Cost {
         Cost::new(10, "length method")
@@ -636,5 +666,38 @@ mod tests {
         assert_eq!(Costs::to_byte_array_cost(&par).operation, "to byte array");
         assert_eq!(Costs::storage_cost(std::slice::from_ref(&par)).value, len);
         assert_eq!(Costs::equality_check_cost(&par, &par).value, len);
+    }
+
+    /// **The canonicalisation charge is linear in the elements and the union charges both operands**
+    /// (C345), and the censure charge is the cube of its universe (C346). The Lean model carries the
+    /// same three statements (`Rchain/Cost.lean`, law 91).
+    #[test]
+    fn collection_and_censure_charges_are_the_models() {
+        // A canonicalisation is 3 phlo per element, at every size, and computed from the size alone.
+        for n in [0i64, 1, 7, 512, 40_000] {
+            assert_eq!(Costs::canonicalization_cost(n).value, 3 * n);
+        }
+        // A union charges the sum: symmetric, and exactly the two canonicalisations.
+        for (l, r) in [(0i64, 0i64), (1, 1), (0, 40_000), (40_000, 0), (7, 11)] {
+            assert_eq!(
+                Costs::union_cost(l, r),
+                Costs::union_cost(r, l),
+                "the union charge must not depend on which operand is which"
+            );
+            assert_eq!(
+                Costs::union_cost(l, r).value,
+                Costs::canonicalization_cost(l).value + Costs::canonicalization_cost(r).value
+            );
+        }
+        // Censure is cubic in the universe: the fixed point runs up to `U + 1` rounds, each scanning
+        // the universe per member.
+        for u in [0i64, 1, 8, 512] {
+            assert_eq!(Costs::gov_censure_cost(u).value, (u + 1).pow(3));
+        }
+        assert_eq!(
+            Costs::gov_censure_cost(512).value,
+            135_005_697,
+            "at the bound the charge is (512+1)³"
+        );
     }
 }

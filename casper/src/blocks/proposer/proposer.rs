@@ -910,6 +910,33 @@ pub fn within_proposal_finality_bound(tip_height: i64, finalized_height: i64) ->
     tip_height.saturating_sub(finalized_height) <= MAX_PROPOSAL_FINALITY_LAG
 }
 
+/// **The height the gate measures from when the view has no finalised block** (C351).
+///
+/// `last_finalized_block_hash()` is `None` on a view with no fringe, and the gate used to be wrapped
+/// in `if let Some(finalized)`, so *both* the bound and the isolation latch were skipped entirely —
+/// the shape the Lean model refuses with `a_gate_without_the_bound_admits_a_private_chain`. A node
+/// that early in a chain has no safe state to name, and "no anchor" is not "no bound": genesis is
+/// the floor, which is the same answer `RewindPlan` already gives (`block-storage/src/dag/
+/// representation.rs::rewind_plan`), and it is what the model's `finalizedFloor` states.
+pub fn finalized_floor(finalized: Option<BlockHeight>) -> BlockHeight {
+    finalized.unwrap_or_else(BlockHeight::zero)
+}
+
+/// The gate's decision, as a pure function so the **no-finality arm** is testable without a DAG.
+///
+/// This is the property C351 is about: `proposal_is_within_bound(n, None)` is `false` beyond the
+/// bound. The gate this replaced could be written `finalized.is_some_and(|f| within(n, f))`, which
+/// answers `true` for `None` — no bound at all — and that is the falsifier the test exhibits.
+pub fn proposal_is_within_bound(
+    next_block_num: BlockHeight,
+    finalized: Option<BlockHeight>,
+) -> bool {
+    within_proposal_finality_bound(
+        i64::from(next_block_num),
+        i64::from(finalized_floor(finalized)),
+    )
+}
+
 /// Set when the height-gap gate refuses a proposal. It is a process-local fail-safe latch: it
 /// stops proposing and attesting and tells a peer/operator why; a restart (or an explicit
 /// operator resume) is the recovery. No proposal path may clear it just because one later tick
@@ -1105,27 +1132,28 @@ where
         repr.last_finalized_block_hash()
             .and_then(|hash| repr.block_height_of(&hash))
     };
-    if let Some(finalized) = last_finalized_height {
-        let gap = i64::from(next_block_num) - i64::from(finalized);
-        if !within_proposal_finality_bound(i64::from(next_block_num), i64::from(finalized)) {
-            let reason = format!(
-                "tip {} is {gap} heights beyond last finalized {} (bound \
-                 {MAX_PROPOSAL_FINALITY_LAG})",
-                i64::from(next_block_num),
-                i64::from(finalized)
-            );
-            PROPOSAL_ISOLATED.store(true, Ordering::Relaxed);
-            *PROPOSAL_ISOLATION_REASON.lock().unpoison() = Some(reason.clone());
-            log.warn(
-                LogSource::new("casper.blocks.Proposer"),
-                &format!(
-                    "refusing to propose at height {}: {reason}; this node cannot show that its \
-                     chain is accepted",
-                    i64::from(next_block_num)
-                ),
-            );
-            return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
-        }
+    // **The gate is total** (C351): a view with no finalised block measures from genesis rather than
+    // skipping the bound and the latch. Before this, `if let Some(finalized)` made "no anchor" mean
+    // "no bound", which is `Disposition.a_gate_without_the_bound_admits_a_private_chain`.
+    let finalized = finalized_floor(last_finalized_height);
+    let gap = i64::from(next_block_num) - i64::from(finalized);
+    if !proposal_is_within_bound(next_block_num, last_finalized_height) {
+        let reason = format!(
+            "tip {} is {gap} heights beyond last finalized {} (bound {MAX_PROPOSAL_FINALITY_LAG})",
+            i64::from(next_block_num),
+            i64::from(finalized)
+        );
+        PROPOSAL_ISOLATED.store(true, Ordering::Relaxed);
+        *PROPOSAL_ISOLATION_REASON.lock().unpoison() = Some(reason.clone());
+        log.warn(
+            LogSource::new("casper.blocks.Proposer"),
+            &format!(
+                "refusing to propose at height {}: {reason}; this node cannot show that its chain \
+                 is accepted",
+                i64::from(next_block_num)
+            ),
+        );
+        return Ok(BlockCreatorResult::TooFarAheadOfLastFinalized);
     }
 
     // **The proposer's half of #153's bound.** A justification set wider than the protocol allows is
@@ -1533,6 +1561,30 @@ mod tests {
             0
         ));
         assert!(within_proposal_finality_bound(4, 0));
+    }
+
+    /// **A view with no finalised block is still bounded** (C351). The gate used to be wrapped in
+    /// `if let Some(finalized)`, so `None` skipped the bound *and* the isolation latch: a node whose
+    /// fringe had not formed could extend a private chain without limit — the Lean model's own
+    /// `Disposition.a_gate_without_the_bound_admits_a_private_chain`. Genesis is the floor, the same
+    /// answer `rewind_plan` gives, so the no-anchor arm refuses exactly where the anchored arm does.
+    #[test]
+    fn a_view_without_a_finalized_block_still_trips_the_bound() {
+        let height = |v: i64| BlockHeight::try_from(v).expect("non-negative");
+        let bound_plus_one = height(MAX_PROPOSAL_FINALITY_LAG + 1);
+        // The floor is genesis, and it is a floor rather than a sentinel: an anchor is passed through.
+        assert_eq!(finalized_floor(None), BlockHeight::zero());
+        assert_eq!(finalized_floor(Some(height(0))), BlockHeight::zero());
+        assert_eq!(finalized_floor(Some(height(7))), height(7));
+        // The falsifier: `finalized.is_some_and(|f| within(n, f))` answers `true` here.
+        assert!(!proposal_is_within_bound(bound_plus_one, None));
+        assert!(!proposal_is_within_bound(bound_plus_one, Some(height(0))));
+        // And the arm still admits a tip at the bound, so the gate did not become a refuse-all.
+        assert!(proposal_is_within_bound(
+            height(MAX_PROPOSAL_FINALITY_LAG),
+            None
+        ));
+        assert!(proposal_is_within_bound(height(1), None));
     }
 
     /// The clock begins at the first blocked observation, and resetting the round

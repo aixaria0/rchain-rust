@@ -979,6 +979,10 @@ fn wire_block_processing_observed(
     // A second handle for the stored-pending sweep: it claims the receiver's in-memory state
     // under the same lock, so it cannot race a release.
     let reoffer_state = receiver_state.clone();
+    // **The body and its pending row are one transaction** (C350), which needs the store manager
+    // rather than the two already-opened typed stores: the atomic write names both databases.
+    let body_writer =
+        rchain_casper::block_disposition::BodyDispositionWriter::new(parts.store_manager.clone());
     let validation_rx = block_receiver::apply_with_queue_observer(
         receiver_state,
         incoming_blocks_rx,
@@ -987,6 +991,7 @@ fn wire_block_processing_observed(
         shard_id.to_string(),
         parts.block_store.clone(),
         parts.block_disposition.clone(),
+        body_writer,
         parts.dag.clone(),
         comm_state.block_retriever.clone(),
         put_to_incoming_queue,
