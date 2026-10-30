@@ -375,6 +375,15 @@ stating what it does and does not do, because **it is not a sync**.
   rather than guessing below it. The tool prints the fraction it computed, the nodes it counted, and the ones
   it left out and why. It does not require every node to report the *identical* finalised block, which is
   not a property a producing chain has.
+- **It states the snapshot it audits, and reports movement.** Section 1 prints
+  `snapshot: MAXH=<n> taken at <utc>`; section 2 audits heights `0..MAXH`, and section 4 prints
+  `(heights <meet+1>..<MAXH>; snapshot …)`. A producing chain legitimately advances while the audit
+  runs: after section 4, and before either the plan or the apply path, the tool re-samples every node
+  and prints `NOTE: <name> advanced <sampled> → <now> since the snapshot; the audit above covers only
+  heights 0..<n>` for each node that moved. Movement is **not** a failure — the plan remains bounded to
+  the snapshot — and section 10, which verifies finality and may read above `MAXH`, says so when it
+  does. The tool also refuses to audit a subset: if a transport consumed the node table (the old `ssh`
+  without `-n` defect), the rows read no longer match the rows listed and it exits 2 naming both counts.
 - **Where nothing is finalised, you name the block.** A net with no usable finalised block anywhere is
   exactly the state where a computed anchor is impossible — there is nothing to meet *on*. It takes
   `RECONCILE_ANCHOR=<block hash>`: the block you know the net last agreed on. The tool

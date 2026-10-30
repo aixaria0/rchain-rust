@@ -470,10 +470,16 @@ trigger_block() {
     || { echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2; return 1; }
 }
 
+SNAPSHOT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NAMES=()
 echo "== 1. what each node is showing =="
 while read -r host port unit name master; do
   [ -z "${name:-}" ] && continue
+  if [ -n "${HOST[$name]:-}" ]; then
+    echo "  REFUSING: node name '$name' appears more than once in the table." >&2
+    echo "            A table that repeats a name weights one validator twice and is not an audit." >&2
+    exit 2
+  fi
   NAMES+=("$name"); HOST[$name]=$host; PORT[$name]=$port; UNIT[$name]=$unit
   LFB[$name]=$(lfb_num "$host" "$port"); LFH[$name]=$(lfb_hash "$host" "$port")
   HGT[$name]=$(height_of "$host" "$port")
@@ -481,8 +487,43 @@ while read -r host port unit name master; do
   printf "  %-2s h=%-6s finalised=%-6s %s\n" "$name" "${HGT[$name]:-?}" "${LFB[$name]:-?}" "${LFH[$name]:0:44}"
 done <<< "$NODES"
 
+# **An audit of a subset is not an audit.** `ssh` reads stdin by default, so a transport without `-n`
+# consumes the remaining rows and ends the loop after the first node — the tool then reports the
+# first node's silence as the chain's ("no strict supermajority …"), which is the most dangerous
+# failure mode it has. The row count is the guard that turns that from a silent one-node audit into
+# a named refusal.
+EXPECTED_ROWS=$(awk 'NF { n++ } END { print n + 0 }' <<< "$NODES")
+if [ "${#NAMES[@]}" -ne "$EXPECTED_ROWS" ]; then
+  echo "  REFUSING: read ${#NAMES[@]} of $EXPECTED_ROWS node row(s) from the table." >&2
+  echo "            A transport that consumes the table's stdin (ssh without -n) ends this loop early," >&2
+  echo "            and an audit of a subset is not an audit. No node was touched." >&2
+  exit 2
+fi
 if [ "${#NAMES[@]}" -eq 0 ]; then echo "no nodes in the table — nothing to reconcile" >&2; exit 2; fi
 MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null && MAXH=${HGT[$n]}; done
+echo "  snapshot: MAXH=$MAXH taken at $SNAPSHOT_TS (the highest latestBlockNumber in this sample)."
+echo "  Sections 2 and 4 are bounded by this snapshot; a producing chain may advance past it."
+
+# A producing chain is legitimate. The audit is a snapshot; movement during it is reported, not fatal,
+# and it does not widen what the audit above claims. §10 says when it reads above the snapshot.
+report_movement() {
+  local n now moved=0
+  for n in "${NAMES[@]}"; do
+    now=$(height_of "${HOST[$n]}" "${PORT[$n]}")
+    case "$now" in ''|*[!0-9]*) continue ;; esac
+    case "${HGT[$n]:-}" in ''|*[!0-9]*) continue ;; esac
+    if [ "$now" -gt "${HGT[$n]}" ]; then
+      moved=1
+      printf '  NOTE: %s advanced %s → %s since the snapshot; the audit above covers only heights 0..%s\n' \
+        "$n" "${HGT[$n]}" "$now" "$MAXH"
+    fi
+  done
+  if [ "$moved" = "1" ]; then
+    echo "  Movement during an audit is normal on a producing chain, not a failure: the plan is bounded"
+    echo "  to the snapshot above, and section 10 states any range it reads above it."
+  fi
+  return 0
+}
 
 # **One range request per node, not one request per height.** `/api/blocks/{start}/{end}` is a range
 # route (`node/src/web/http.rs`), and the two scans below ask about every height in 0..MAXH — 0..MAXH for
@@ -995,6 +1036,7 @@ echo "== 4. what is above the point =="
 echo "  The survivor is ${MASTER}'s DAG, not a chain: every validator proposes its own block each round, so"
 echo "  a height legitimately holds one sibling per validator and there is no single line to extract. The"
 echo "  joiners resync onto this DAG; the writers re-submit what they can see is missing."
+echo "  (heights $((MEET + 1))..$MAXH; snapshot $MAXH taken at ${SNAPSHOT_TS:-unknown})"
 REPORT="${RECONCILE_REPORT:-/tmp/reconcile-deploys.jsonl}"
 : > "$REPORT"
 total=0; ublocks=0; nobs=0
@@ -1052,6 +1094,10 @@ done
 echo "  $total deploy(s) above the point across $ublocks unique block(s); the per-block record is $REPORT"
 echo "  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights"
 echo "   route carries counts. The owners re-submit; this tool does not claim to replay them.)"
+
+# --- movement: report nodes that advanced past the snapshot -----------------
+# Before the plan/apply split, so plan-only and apply both see it and nothing has been stopped.
+report_movement
 
 if [ "$APPLY" != "1" ]; then
   echo "== plan only =="
@@ -1276,6 +1322,10 @@ for i in $(seq 1 "${RECONCILE_FINALITY_ROUNDS:-40}"); do
         fi
       done
     done
+    if [ "$range_top" -gt "$MAXH" ] && [ "${RANGE_WIDEN_NOTED:-0}" = "0" ]; then
+      echo "  (verifying up to $range_top, above the $MAXH snapshot; this round re-reads 0..$range_top)"
+      RANGE_WIDEN_NOTED=1
+    fi
     refresh_block_ranges "$range_top"
     for n in "${NAMES[@]}"; do
       fh="${FINH[$n]}"; fb="${FINB[$n]}"

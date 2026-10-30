@@ -10185,9 +10185,11 @@ entries**.
   it prints is true when printed.
 
 **What this pass does not claim.** The tool's rows carry `candidate:` slugs, not laws — the tool is not
-modelled, and a shell refusal is not a theorem; the four rows whose falsifier is a fault-injection point
-the tree does not have (law 74's fold, law 75's write, F-U16-01's refusal, F-U16-02's swap) stay **owed**
-in the HAZOP's debt line rather than claimed. F-U11-02's law is owed too — law 73's model is a one-shot
+modelled, and a shell refusal is not a theorem; the two rows whose falsifier is a fault-injection point
+the tree does not have (law 74's fold, law 75's write) stay **owed** in the HAZOP's debt line rather
+than claimed. **F-U16-01/02 are no longer owed** (2026-10-30): their refusals are driven by
+`tests/reconcile-docker-lifecycle.sh::test_backup_collision_is_refused` and
+`tests/reconcile-systemd-restore-regression.sh::test_mid_stream_failure_leaves_joiner_unchanged`. F-U11-02's law is owed too — law 73's model is a one-shot
 cell with one lane, and stating it per shard is a change to that model, not a citation. And the devnet arm
 that would exercise a real reset end to end remains **unrun**.
 
