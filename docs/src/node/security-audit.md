@@ -267,20 +267,20 @@ The question is the same for all four: *is there an operation reachable by an un
 attacker whose cost to the node is superlinear in attacker input while the charge is flat?* **Every
 one has one** — a defect class in VM cost models, not one chain's weakness.
 
-Pinned and read 2026-10-30: Agave `v4.4.0` / `9ef63128`; Sui `testnet-v1.83.0` / `16d2dc1e`; Bitcoin SV
+Pinned and read 2026-10-30: Solana (Agave) `v4.4.0` / `9ef63128`; Sui `testnet-v1.83.0` / `16d2dc1e`; Bitcoin SV
 `v1.2.3` / `6504a3af`.
 
 | chain | worst instance at the pin | attacker pays | containment |
 |---|---|---|---|
 | **This node** | conversions sort for a flat 18 phlo; `set`/`keys` flat; `censure` N² for Θ(U³); asymmetric `++` 3 phlo | 18–22 phlo, or N² | per-block phlo cap (25.5e9), 255-deploy cap, 600 s deadline that bounds the waiter, not the work |
-| **Agave** | bignum is a complexity formula (base 422 / divisor 189), not September's flat 8 042; account data copied under a 64 MiB cap with no per-byte charge in the files read | 5 000 lamports whether it loads anything or not | compute-unit budget; 64 MiB cap |
+| **Solana (Agave)** | bignum is a complexity formula (base 422 / divisor 189), not September's flat 8 042; account data copied under a 64 MiB cap with no per-byte charge in the files read | 5 000 lamports whether it loads anything or not | compute-unit budget; 64 MiB cap |
 | **Sui** | gas charges bytes proportionally; September's zkLogin cell could not be re-established at this pin | gas; transactions bounded | instruction tiers; size bound; verifier meter |
 | **Bitcoin SV** | `OP_CAT` doubling with the 520-byte guard **pre-Genesis only** | fees on a failing transaction collect nothing | opcode cap is a parameter, not a consensus constant |
 
 This node is mid-pack on amplification. Its containment now includes the caps and the deadline, but the
 deadline bounds the waiter, not a synchronous builtin, and the conversion family is still unpriced. The
 structural axes — authority, encapsulation, machine-checking — are unchanged from September; the
-[README's table](../../../README.md) carries them. Sui's crypto/P2P and Agave's VM are unvendored, so
+[README's table](../../../README.md) carries them. Sui's crypto/P2P and Solana's Agave VM are unvendored, so
 those cells are **could not trace**, not cleared. Market-cap figures are dropped: they age fastest and
 have no gate.
 

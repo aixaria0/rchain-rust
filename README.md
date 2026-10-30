@@ -14,7 +14,7 @@ its authority cannot be forged — there is no syntax that writes a private name
 
 **Whole classes of defect are absent by construction**: no `unsafe` in any of the fourteen crates, so
 memory-safety bugs are unwritable rather than mitigated. The October 2026 adversarial audit read this node and
-Agave (Solana), Sui and Bitcoin SV at pinned revisions: no chain split, no fund loss, no remote code
+Solana (Agave), Sui and Bitcoin SV at pinned revisions: no chain split, no fund loss, no remote code
 execution here.
 
 **A small artifact, deliberately**: recounted <!-- recount:date -->2026-10-30<!-- recount:end -->,
@@ -180,13 +180,13 @@ under an 87 % line-coverage floor
 
 ### Comparison with other chains
 
-**Comparison with three live mainnets.** The October 2026 pass read this node and Agave (Solana), Sui
+**Comparison with three live mainnets.** The October 2026 pass read this node and Solana (Agave), Sui
 and Bitcoin SV at pinned revisions — `v4.4.0`, `testnet-v1.83.0`, `v1.2.3` — with one question: *is
 there an operation reachable by an unauthenticated remote attacker whose cost is superlinear in
 attacker input while the charge is flat?* **Every one of the four has such an operation**; the table is
 what separates them, and on the structural axes the pre-testnet node leads.
 
-| | **This node** (pre-testnet) | **Agave** (Solana) | **Sui** | **Bitcoin SV** |
+| | **This node** (pre-testnet) | **Solana** (Agave) | **Sui** | **Bitcoin SV** |
 |---|---|---|---|---|
 | **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all fourteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
 | **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name | Checked at runtime — a program-derived address has no key, but granting the privilege is a check | **Unrepresentable** — a linear `UID` minted from the transaction digest | Absent as a concept |
@@ -200,7 +200,7 @@ The cost row is the one this node does not lead. September closed its specific i
 dedup and the governance folds); the October pass found the class live again in the collection
 conversions, which sort for a flat 18 phlo, and opened C345.
 
-Two limits: Sui's crypto/P2P and Agave's VM are unvendored, so those cells are **could not trace**, not
+Two limits: Sui's crypto/P2P and Solana's Agave VM are unvendored, so those cells are **could not trace**, not
 cleared; and this node's assurance ends where the review says — the chain layer's authority is access
 control by another name, and unforgeability is axiomatised at the crypto boundary (law 19), not proved.
 

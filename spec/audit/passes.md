@@ -11921,7 +11921,7 @@ primitive; one (string `length`) was **refuted** with a positive artifact.
 
 **Why believed.** Measurements in `spec/audit/evidence/n20261030-reaudit/gas-probe.log` (release,
 env-gated probe `rholang/tests/gas_amplification.rs`); the referee verdicts and their artifacts in
-`verdicts.md`; the three-chain refresh pinned in `three-chain.json` (Agave `v4.4.0`/`9ef63128`, Sui
+`verdicts.md`; the three-chain refresh pinned in `three-chain.json` (Solana/Agave `v4.4.0`/`9ef63128`, Sui
 `testnet-v1.83.0`/`16d2dc1e`, BSV `v1.2.3`/`6504a3af`). Every confirmed finding names a mechanism
 (`path::symbol`) and the test or measurement that would kill it.
 
