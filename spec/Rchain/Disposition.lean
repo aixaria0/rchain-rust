@@ -399,6 +399,51 @@ theorem an_inflight_row_is_not_eligible (now : Nat) :
     eligible ⟨Stage.retry, 0⟩ now = false := by
   simp [eligible]
 
+/-! ### 88d — the regression check's classification
+
+The check cannot be evaluated when a justification is absent from the message map. The current rule
+**passes** (the Scala's own `None`), and that verdict is deliberate; what changes is that the outcome
+is *named*, so a later failure is recorded as a missing justification rather than an unclassified
+internal fault. Making the unresolved case a refusal would be a consensus change, which is why the
+model proves it does not refuse. -/
+
+inductive Outcome where
+  | pass
+  | regression
+  | unresolved
+  | noOwn
+  deriving DecidableEq, Repr
+
+/-- The check's answer from whether the justification is in the message map and whether the
+    regression relation holds. -/
+def classify (in_msg_map regression : Bool) : Outcome :=
+  match in_msg_map with
+  | false => Outcome.unresolved
+  | true => if regression then Outcome.regression else Outcome.pass
+
+/-- The outcome's corpus name. -/
+def outcomeName : Outcome → String
+  | Outcome.pass => "pass"
+  | Outcome.regression => "regression"
+  | Outcome.unresolved => "unresolved"
+  | Outcome.noOwn => "no_own"
+
+/-- Whether the outcome refuses the block. Only `regression` does. -/
+def refuses : Outcome → Bool
+  | Outcome.regression => true
+  | _ => false
+
+/-- **An unresolved justification does not refuse**, whatever the relation would have said. -/
+theorem unresolved_does_not_refuse (regression : Bool) :
+    refuses (classify false regression) = false := by
+  cases regression <;> rfl
+
+theorem regression_refuses : refuses (classify true true) = true := by
+  decide
+
+theorem pass_does_not_refuse : refuses (classify true false) = false := by
+  decide
+
 end Recovery
 
 end Disposition

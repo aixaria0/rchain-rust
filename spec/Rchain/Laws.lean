@@ -4975,6 +4975,41 @@ def lawsC : List Law := [
       makes the window small, and the restart-under-load arm is the place to look for duplicate \
       proposals before adding an in-flight hash set." },
 
+  { number := 88, clause := "d", layer := "Disposition",
+    statement := "**An unresolvable justification is named, not silently passed into an \
+      unclassified fault.** The regression check cannot be evaluated when a justification is absent \
+      from the DAG message map; the current rule **passes** (the Scala's own `None`), and that \
+      verdict is deliberate — only a detected regression refuses. What the outcome must carry is its \
+      name: `Unresolved` is distinct from `Pass`, `NoOwnJustification` from both, and a later \
+      height/sequence failure is recorded under the stage `missing justification`, not \
+      `validation internal`",
+    status := .provedTied,
+    corpus := some "recovery",
+    declarations := [`Rchain.Disposition.Recovery.Outcome,
+      `Rchain.Disposition.Recovery.classify, `Rchain.Disposition.Recovery.refuses,
+      `Rchain.Disposition.Recovery.outcomeName,
+      `Rchain.Disposition.Recovery.unresolved_does_not_refuse,
+      `Rchain.Disposition.Recovery.regression_refuses,
+      `Rchain.Disposition.Recovery.pass_does_not_refuse],
+    axioms := [],
+    rust := ["casper/src/validate.rs", "casper/src/blocks/block_processor.rs"],
+    rustWitness := ["casper/src/validate.rs:an_unknown_justification_passes_the_regression_check_and_is_named",
+      "casper/src/blocks/block_processor.rs:a_missing_justification_is_recorded_under_its_own_stage"],
+    witness := [`Rchain.Disposition.Recovery.unresolved_does_not_refuse,
+      `Rchain.Disposition.Recovery.regression_refuses,
+      `Rchain.Disposition.Recovery.pass_does_not_refuse],
+    falsifiable := "Making `Unresolved` a refusal flips `unresolved_does_not_refuse` and the \
+      corpus `classify false true unresolved` row — and is a consensus change, which is why the test \
+      `an_unknown_justification_passes_the_regression_check_and_is_named` pins the passing verdict. \
+      Folding the reason back into `validation internal` fails \
+      `a_missing_justification_is_recorded_under_its_own_stage`.",
+    note := "The verdicts are **unchanged**: a block that passed the regression check still passes \
+      it, and one that failed still refuses with `JustificationRegression`. The later failure is the \
+      height/sequence check's `Err(\"missing justification <hex>\")`, which the processor now records \
+      under its own stage; the retry semantics are the same durable `Faulted` row. This is \
+      classification and observability, not a validity rule — a design pass corrected an earlier \
+      reading that called it a live drop (the processor already records and retries the fault)." },
+
   { number := 89, layer := "PoS",
     statement := "**Liveness enforcement is jail first; only a vote reaches the bond.** A validator \
       absent across advancing epoch boundaries is removed from the active set for `J` boundaries and \

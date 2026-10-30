@@ -9,3 +9,7 @@ recovery	eligible	stored	0	59999	false
 recovery	eligible	stored	0	60000	true
 recovery	eligible	validating	0	60000	false
 recovery	eligible	retry	0	60000	false
+recovery	classify	true	true	regression
+recovery	classify	true	false	pass
+recovery	classify	false	true	unresolved
+recovery	classify	false	false	unresolved

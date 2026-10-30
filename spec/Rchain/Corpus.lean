@@ -1929,6 +1929,7 @@ inductive RecoveryCase where
   | pace (first : Option Nat) (now : Nat) (expected : Bool × Option Nat)
   | eligible (stage : Rchain.Disposition.Recovery.Stage) (since : Nat) (now : Nat)
       (expected : Bool)
+  | classify (inMap regression : Bool) (expected : String)
   deriving Repr
 
 def recoveryHolds : RecoveryCase → Bool
@@ -1936,6 +1937,9 @@ def recoveryHolds : RecoveryCase → Bool
       decide (Rchain.Pacing.take ⟨first⟩ now = (expected.1, { since := expected.2 }))
   | .eligible stage since now expected =>
       decide (Rchain.Disposition.Recovery.eligible ⟨stage, since⟩ now = expected)
+  | .classify inMap regression expected =>
+      decide (Rchain.Disposition.Recovery.outcomeName
+        (Rchain.Disposition.Recovery.classify inMap regression) = expected)
 
 def recoveryCases : List RecoveryCase :=
   [ .pace none 0 (false, some 0)
@@ -1949,9 +1953,13 @@ def recoveryCases : List RecoveryCase :=
   , .eligible .stored 0 60000 true
   , .eligible .validating 0 60000 false
   , .eligible .retry 0 60000 false
+  , .classify true true "regression"
+  , .classify true false "pass"
+  , .classify false true "unresolved"
+  , .classify false false "unresolved"
   ]
 
-def recoveryCaseCount : Nat := 11
+def recoveryCaseCount : Nat := 15
 
 theorem recoveryCases_decide : recoveryCases.all recoveryHolds = true := by decide
 
@@ -1974,6 +1982,10 @@ def recoveryLine : RecoveryCase → String
       String.intercalate "\t"
         ["recovery", "eligible", recoveryStageName stage,
           toString since, toString now, if expected then "true" else "false"]
+  | .classify inMap regression expected =>
+      String.intercalate "\t"
+        ["recovery", "classify", if inMap then "true" else "false",
+          if regression then "true" else "false", expected]
 
 
 /-! ## Law 87 — the decimal value algebra -/

@@ -10,6 +10,7 @@
 
 use rchain_casper::block_disposition::{eligible_stored_pending, BlockDisposition, PendingStage};
 use rchain_casper::blocks::proposer::proposer::take_escape_permit;
+use rchain_casper::validate::JustificationOutcome;
 use rchain_shared::refined::BlockHeight;
 
 #[test]
@@ -68,6 +69,22 @@ fn the_paced_gate_is_the_lean_models() {
                     eligible_stored_pending(&row, now),
                     expected,
                     "case {line:?}"
+                );
+            }
+            "classify" => {
+                assert_eq!(
+                    cols.len(),
+                    5,
+                    "a classify row is kind/in-map/regression/expected: {line:?}"
+                );
+                let in_map: bool = cols[2].parse().expect("in-map");
+                let regression: bool = cols[3].parse().expect("regression");
+                let outcome = JustificationOutcome::classify(in_map, regression);
+                assert_eq!(outcome.name(), cols[4], "case {line:?}");
+                assert_eq!(
+                    outcome.refuses(),
+                    cols[4] == "regression",
+                    "only a regression refuses — the unresolved case is not a consensus change"
                 );
             }
             other => panic!("no Rust arm for the recovery case {other:?}"),
