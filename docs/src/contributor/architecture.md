@@ -93,16 +93,16 @@ Total in-scope (non-orphaned): roughly **200–220 person-days**.
 
 | Crate | Rust LOC | Crate | Rust LOC |
 |---|---|---|---|
-| `sdk` | <!-- recount:crate:sdk-lines -->3,111<!-- recount:end --> | `rholang` | <!-- recount:crate:rholang-lines -->41,138<!-- recount:end --> |
-| `shared` | <!-- recount:crate:shared-lines -->4,725<!-- recount:end --> | `casper` | <!-- recount:crate:casper-lines -->73,411<!-- recount:end --> |
-| `crypto` | <!-- recount:crate:crypto-lines -->4,744<!-- recount:end --> | `node` | <!-- recount:crate:node-lines -->41,546<!-- recount:end --> |
-| `graphz` | <!-- recount:crate:graphz-lines -->837<!-- recount:end --> | `ocapn` | <!-- recount:crate:ocapn-lines -->11,812<!-- recount:end --> |
+| `sdk` | <!-- recount:crate:sdk-lines -->3,111<!-- recount:end --> | `rholang` | <!-- recount:crate:rholang-lines -->41,610<!-- recount:end --> |
+| `shared` | <!-- recount:crate:shared-lines -->4,864<!-- recount:end --> | `casper` | <!-- recount:crate:casper-lines -->74,600<!-- recount:end --> |
+| `crypto` | <!-- recount:crate:crypto-lines -->4,744<!-- recount:end --> | `node` | <!-- recount:crate:node-lines -->43,424<!-- recount:end --> |
+| `graphz` | <!-- recount:crate:graphz-lines -->837<!-- recount:end --> | `ocapn` | <!-- recount:crate:ocapn-lines -->12,019<!-- recount:end --> |
 | `models` | <!-- recount:crate:models-lines -->13,187<!-- recount:end --> | `rspace-bench` | <!-- recount:crate:rspace-bench-lines -->495<!-- recount:end --> |
-| `block-storage` | <!-- recount:crate:block-storage-lines -->4,888<!-- recount:end --> | `qucalc` | <!-- recount:crate:qucalc-lines -->1,087<!-- recount:end --> |
+| `block-storage` | <!-- recount:crate:block-storage-lines -->5,073<!-- recount:end --> | `qucalc` | <!-- recount:crate:qucalc-lines -->1,087<!-- recount:end --> |
 | `comm` | <!-- recount:crate:comm-lines -->9,206<!-- recount:end --> | *(workspace-level)* | <!-- recount:workspace-lines -->281<!-- recount:end --> |
-| `rspace` | <!-- recount:crate:rspace-lines -->16,506<!-- recount:end --> | **total** | **<!-- recount:rs-lines -->226,974<!-- recount:end --> over <!-- recount:rs-files -->508<!-- recount:end --> files** |
+| `rspace` | <!-- recount:crate:rspace-lines -->16,506<!-- recount:end --> | **total** | **<!-- recount:rs-lines -->231,044<!-- recount:end --> over <!-- recount:rs-files -->513<!-- recount:end --> files** |
 
-`casper` is the largest crate at <!-- recount:crate:casper-lines -->73,411<!-- recount:end --> lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
+`casper` is the largest crate at <!-- recount:crate:casper-lines -->74,600<!-- recount:end --> lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
 
 ### Rewrite order (bottom-up)
 
