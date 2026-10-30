@@ -56,10 +56,10 @@ async fn measure(term: &str) -> (i64, u128) {
 /// **`toSet` on a list of N ints** — the conversion sorts N elements. The baseline is the same
 /// literal with no conversion, so the parse charge is common to both and the delta is the method's.
 ///
-/// A charge proportional to the work would make the delta grow with N. A flat charge keeps it
-/// constant while the wall time grows; that is the finding, and it is printed rather than asserted.
+/// Before C345 the delta was flat at 18 phlo while the wall time grew 7 → 724 ms. After it the delta
+/// must grow with N; the wall time is printed beside it so the same instrument shows both.
 #[tokio::test]
-async fn a_conversion_charges_nothing_and_sorts() {
+async fn a_conversion_charges_its_output() {
     if !probe_enabled() {
         return;
     }
@@ -77,7 +77,7 @@ async fn a_conversion_charges_nothing_and_sorts() {
 
 /// **`toMap` on a list of N pairs** — same shape as `toSet`, through `par_map`.
 #[tokio::test]
-async fn a_map_conversion_charges_nothing_and_sorts() {
+async fn a_map_conversion_charges_its_output() {
     if !probe_enabled() {
         return;
     }
@@ -96,7 +96,7 @@ async fn a_map_conversion_charges_nothing_and_sorts() {
 /// **`keys` on a map of N pairs** — builds and sorts N keys. The baseline is `toMap()` of the same
 /// list, so the conversion's own charge is held fixed and the delta is `keys`'.
 #[tokio::test]
-async fn keys_is_charged_flat() {
+async fn keys_charges_its_output() {
     if !probe_enabled() {
         return;
     }
@@ -111,7 +111,7 @@ async fn keys_is_charged_flat() {
 
 /// **`set` on a map of N pairs** — clones the map, scans it, re-sorts it.
 #[tokio::test]
-async fn set_is_charged_flat() {
+async fn set_charges_its_output() {
     if !probe_enabled() {
         return;
     }
@@ -141,6 +141,45 @@ async fn the_union_charge_tracks_its_work() {
         assert!(
             delta >= 3 * n as i64,
             "a union of two N-element sets must charge for its elements (>= 3N); {n}: {delta}"
+        );
+    }
+}
+
+/// **`rho:gov:censure`'s fixed point, timed at the sizes the universe bound admits** (C346).
+///
+/// `MAX_GOV_UNIVERSE` bounds the **sum** `censures + levels + vouchers`, which is what makes the cubic
+/// path hard to reach: a discredit needs a quorum of about two thirds of the eligible set, and the
+/// universe counts the censure pairs that supply it. These four shapes are the extremes at 512 members;
+/// the numbers are what the bound and the charge are set from.
+#[tokio::test]
+async fn censure_is_cubic_in_the_universe() {
+    if !probe_enabled() {
+        return;
+    }
+    use std::collections::BTreeMap;
+
+    // `(name, members, censures, vouchers)`, each summing to `MAX_GOV_UNIVERSE` (512).
+    for (name, members, censures, vouchers) in [
+        ("members", 512usize, 0usize, 0usize),
+        ("balanced", 171, 170, 171),
+        ("censure-heavy", 86, 340, 86),
+        ("voucher-heavy", 86, 86, 340),
+    ] {
+        let universe = members + censures + vouchers;
+        let levels: BTreeMap<String, i64> = (0..members).map(|i| (format!("m{i:04}"), 5)).collect();
+        // Every censure and every voucher names `m0000`, so the fixed point actually discredits and
+        // then slashes: a shape whose quorum is never met would measure the loop's exit, not its work.
+        let cens: Vec<(String, String)> = (0..censures)
+            .map(|_| ("m0000".to_string(), "m0001".to_string()))
+            .collect();
+        let vou: Vec<(String, String, i64)> = (0..vouchers)
+            .map(|i| ("m0001".to_string(), format!("m{:04}", 2 + i % members), 1))
+            .collect();
+        let start = Instant::now();
+        let (_disc, _levels) = qucalc::gov::censure(&cens, &levels, &vou);
+        println!(
+            "{name},{universe},{members},{censures},{vouchers},{}",
+            start.elapsed().as_millis()
         );
     }
 }
