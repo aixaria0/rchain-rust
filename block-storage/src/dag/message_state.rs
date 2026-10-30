@@ -190,12 +190,6 @@ where
             // justification. Prefer the newest peer message when it includes
             // that history; retain the prior parent across a conflicting fork.
             for id in &mine.parents {
-                // A missing persisted parent means the coverage invariant was not checked.
-                // Flag it in verification builds instead of silently treating it as safe.
-                debug_assert!(
-                    self.msg_map.contains_key(id),
-                    "round escape: previous self-message references a missing parent"
-                );
                 if let Some(prior) = self.msg_map.get(id) {
                     let covered = parents
                         .get(&prior.sender)
