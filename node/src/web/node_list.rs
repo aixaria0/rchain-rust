@@ -363,9 +363,15 @@ async fn resolve_dialable(host: &str, allow_local: bool) -> Option<IpAddr> {
     if is_local_address_resolved(host).await != allow_local {
         return None;
     }
-    let mut addrs: Vec<IpAddr> = tokio::net::lookup_host((host, 0))
-        .await
-        .ok()?
+    // A name that does not resolve is not a place to dial: the refusal is the decision, not a
+    // fallback — the same fail-closed rule `is_local_address_resolved` applies one line up. Written
+    // as an explicit match rather than `.ok()?` because the class the audit forbids is precisely
+    // the silent discard of a resolution failure.
+    let resolved = match tokio::net::lookup_host((host, 0)).await {
+        Ok(addrs) => addrs,
+        Err(_) => return None,
+    };
+    let mut addrs: Vec<IpAddr> = resolved
         .map(|a| a.ip())
         .filter(|ip| is_local_address(&ip.to_string()) == allow_local)
         .collect();
