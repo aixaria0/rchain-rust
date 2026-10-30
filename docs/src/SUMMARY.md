@@ -39,6 +39,7 @@
 - [Sorted matching (proposal)](node/sorted-matching.md)
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
+- [Ingress admission](node/admission.md)
 - [Running a node: testnet and future mainnet, validator and observer](node/validator-observer-setup.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [OCapN interoperability](node/ocapn.md)
@@ -53,6 +54,7 @@
 - [Running a public testnet of your own](node/running-a-public-testnet.md)
 - [The history chain](node/history-chain.md)
 - [Security audit (September 2026)](node/security-audit.md)
+- [Incident history](node/incident-history.md)
 
 # Part IV — Building applications
 
@@ -67,7 +69,6 @@
 - [Architecture & port status](contributor/architecture.md)
 - [The laws → Rust code](contributor/laws-to-rust.md)
 - [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
-- [Formal specification & audit](contributor/spec.md)
 - [Plan: post-quantum migration](contributor/post-quantum-plan.md)
 
 # Part VI — QuCalc: native AI & governance

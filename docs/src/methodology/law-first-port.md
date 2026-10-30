@@ -214,7 +214,7 @@ register archaeology away.
 
 - `spec/INVENTORY.md`, `spec/TYPE-SYSTEM.md`, `spec/AUDIT.md`, `spec/findings.tsv`, `spec/audit/passes.md`
 - `docs/src/spec/failure-hazop.md`, `docs/src/spec/adversary.md`, `docs/src/spec/testnet-acceptance.md`
-- [`docs/src/contributor/spec.md`](../contributor/spec.md) — the gates index
+- [`spec/README.md`](../../../spec/README.md) — the specification tree and its gates
 - [Kaizen: Building a Performant Blockchain System Verified for Consensus and Integrity](https://dprg.cs.uiuc.edu/data/files/2019/FMCAD%20Slides.pdf) (FMCAD 2019)
 - [Formal Methods for Blockchains (FMBC 2019)](https://link.springer.com/book/10.1007/978-3-030-54994-7?page=2) — the Algorand Coq model, Mi-Cho-Coq, and companion work
 - [Making Tezos smart contracts more reliable with Coq](http://export-test.arxiv.org/pdf/2106.12973)
