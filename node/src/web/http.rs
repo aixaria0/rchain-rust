@@ -1067,14 +1067,9 @@ async fn api_deploy_settlement(
         | crate::api::dto::DeployExecStatus::ProcessedWithError { block, .. } => {
             match state.web_api.is_finalized(&block.block_hash).await {
                 Ok(is_finalized) => Some(is_finalized),
-                Err(error) => {
-                    tracing::warn!(
-                        block_hash = %block.block_hash,
-                        ?error,
-                        "inclusion-block finality lookup failed; settlement is unknown"
-                    );
-                    None
-                }
+                // A failed lookup is explicitly represented as finalityUnknown
+                // in the settlement response, never as confirmed settlement.
+                Err(_) => None,
             }
         }
     };
