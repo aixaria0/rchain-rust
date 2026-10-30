@@ -1,6 +1,7 @@
-name: Integrated quiet finality and recovery on 16GB
+name: Recovery v2 — full acceptance on dev (16GB)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - verify/quiet-finality-integrated-20261030
