@@ -86,24 +86,19 @@
     {
       "id": "A:bigint-decimal",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
-      "exact_file_function_or_invariant": "models Decimal::scaled_value, wire tag 35; rholang exact arithmetic",
+      "exact_file_function_or_invariant": "BigInt #49: models BigInt and rholang exact big-integer arithmetic (the Decimal half was removed by #527)",
       "related_issue_pr": [
         "#49",
-        "#389",
-        "#390",
+        "#51",
         "#380",
-        "#373",
-        "#391"
+        "#527"
       ],
       "existing_evidence": {
-        "source_dev_sha": "93d16d7d865ddade5a47b19dbffa86b954407f05",
-        "pr": 389,
-        "merge_commit": "666ddb75e2d2787f099e05f983e31fb9728e7ed6",
-        "scope": "BigInt #49 and Decimal #389/#390 are on the pinned dev, together with #373 and #391. This is landed code, not proof of a scanned archive or uniform live validator rollout; Release:decimal-genesis remains open."
+        "source": "BigInt is on the pinned dev; the exact Decimal was removed by issue #527"
       },
-      "missing_proof": "Implementation is merged. The separately tracked release still needs source-pinned distributed acceptance and operator archive/genesis/validator evidence.",
-      "smallest_corrective_action": "Reuse the merged implementation; attach exact integrated acceptance evidence and complete the separate release obligations.",
-      "required_acceptance_test": "Existing decimal_bridge, lean_sort_corpus, lean_parse_corpus; #391 source/history/validator preflight",
+      "missing_proof": "Landed code does not establish a scanned archive or a uniform live validator rollout.",
+      "smallest_corrective_action": "Preserve the BigInt landing evidence; do not carry a decimal obligation.",
+      "required_acceptance_test": "Existing big-integer source/history/validator preflight; no decimal scan.",
       "decision_owner": "maintainers",
       "recorded_owner_reason_deferral": false
     },
@@ -727,23 +722,24 @@
     },
     {
       "id": "Release:decimal-genesis",
-      "classification": "RELEASE BLOCKER",
-      "exact_file_function_or_invariant": "tools/decimal_release_preflight.py; #373 genesis and validator digest inventory",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "the decimal genesis and tag-35 release evidence, withdrawn with the type (issue #527)",
       "related_issue_pr": [
         "#373",
         "#380",
-        "#391"
+        "#391",
+        "#527"
       ],
       "existing_evidence": {
-        "source_dev_sha": "93d16d7d865ddade5a47b19dbffa86b954407f05",
-        "source": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required.",
-        "release_preflight_merge": "f24e0b7e86618938eb5e5558531f469d9c985c55"
+        "decision_url": "https://github.com/rhovision-org/rholo/issues/527",
+        "decision_by": "@PatrickMockridge"
       },
-      "missing_proof": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required.",
-      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
-      "required_acceptance_test": "Reuse 27 preflight controls; real archive/native tag-35/source scan and complete live binary inventory",
-      "decision_owner": "Jim / operators",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "None owed: the decimal type was removed before mainnet, so no decimal genesis or tag-35 release evidence exists to produce.",
+      "smallest_corrective_action": "The named decision owner withdraws the obligation with the type.",
+      "required_acceptance_test": "A withdrawal must record its owner and reason; no execution evidence is claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Decimal was removed before mainnet by issue #527; no decimal genesis or tag-35 release evidence is required."
     },
     {
       "id": "Audit:merge-resolution-stage4",

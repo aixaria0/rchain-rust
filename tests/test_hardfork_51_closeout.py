@@ -34,12 +34,20 @@ class CloseoutTests(unittest.TestCase):
     def test_jim_20261021_deferrals_are_source_attributed(self):
         out = self.inspect()
         self.assertEqual(out["merged"], 13)
-        self.assertEqual(out["deferred"], 12)
-        for item in self.payload["items"]:
-            if item["status"] == "deferred":
-                self.assertIn(item["decision_owner"], ("@PatrickMockridge","@aixaria0"))
-                self.assertEqual(item["approval_url"],
-                  "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399")
+        # The 2026-10-21 close-clause deferrals, by their own decision URL ...
+        legacy = [i for i in self.payload["items"] if i["status"] == "deferred"
+                  and i.get("approval_url")
+                  == "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399"]
+        # ... plus the decimal withdrawal (#527), which carries its own issue as the decision.
+        self.assertEqual(out["deferred"], len(legacy) + 1)
+        for item in legacy:
+            self.assertIn(item["decision_owner"], ("@PatrickMockridge","@aixaria0"))
+        withdrawn = next(x for x in self.payload["items"] if x["id"] == "Release:decimal-genesis")
+        self.assertEqual(withdrawn["status"], "deferred")
+        self.assertEqual(withdrawn["decision_owner"], "@PatrickMockridge")
+        self.assertIn("#527", withdrawn["reason"])
+        self.assertEqual(withdrawn["approval_url"],
+                         "https://github.com/rhovision-org/rholo/issues/527")
 
     def test_merged_allocation_track_does_not_resolve_economics_deferral(self):
         self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="A:rev-economics")["status"], "deferred")

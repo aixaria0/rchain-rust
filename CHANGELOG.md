@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The built-in exact decimal type is removed before mainnet** (issue #527, option R). Wire tag 35 is
+  `reserved` and a sender gets the existing `Malformed("expr_instance")` refusal; the `1.5d` literal no
+  longer parses; sort rank 14 is retired and never reused. `models/src/decimal.rs` and
+  `spec/Rchain/Decimal.lean` are archived in place as commented code, Law 87a–e are `retired` in the
+  register, and [`docs/src/formal/decimal-removed.md`](docs/src/formal/decimal-removed.md) records what
+  was built, why it went and what a future attempt must do differently. A chain that was decimal-free
+  replays unchanged; a chain that ever carried tag 35 or a `d` literal cannot be replayed and needs a
+  fresh genesis. `Release:decimal-genesis` is withdrawn in the #51 ledger.
+
 ## v0.1.0 — 2026-10-25 (pre-release)
 
 The first tagged release of rholo, the Rust RChain node rewritten from the Scala rnode. It is the build

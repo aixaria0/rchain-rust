@@ -53,7 +53,7 @@
     },
     {
       "id": "A:bigint-decimal",
-      "title": "RCHIP #51: BigInt and exact Decimal",
+      "title": "RCHIP #51: BigInt (the exact Decimal was removed by #527)",
       "status": "merged",
       "decision_owner": "maintainers",
       "references": [
@@ -62,13 +62,14 @@
         "#390",
         "#380",
         "#373",
-        "#391"
+        "#391",
+        "#527"
       ],
       "evidence": {
         "pr": 389,
         "merge_commit": "666ddb75e2d2787f099e05f983e31fb9728e7ed6"
       },
-      "notes": "BigInt #49 and Decimal #389/#390 are on the pinned dev, together with #373 and #391. This is landed code, not proof of a scanned archive or uniform live validator rollout; Release:decimal-genesis remains open."
+      "notes": "BigInt #49 is on the pinned dev. The exact Decimal (#389/#390) was removed before mainnet by issue #527; there is no decimal release obligation. This is landed code, not proof of a scanned archive or uniform live validator rollout."
     },
     {
       "id": "A:double-mint",
@@ -478,15 +479,17 @@
     },
     {
       "id": "Release:decimal-genesis",
-      "title": "Uniform Decimal/PoS genesis with evidence-bound history scan",
-      "status": "open",
-      "decision_owner": "Jim / operators",
+      "title": "Decimal genesis \u2014 withdrawn with the decimal type (issue #527)",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#373",
         "#380",
-        "#391"
+        "#391",
+        "#527"
       ],
-      "blocker": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required."
+      "reason": "Decimal was removed before mainnet by issue #527; no decimal genesis or tag-35 release evidence is required.",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/527"
     },
     {
       "id": "Audit:merge-resolution-stage4",

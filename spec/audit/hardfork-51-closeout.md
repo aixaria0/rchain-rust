@@ -4,14 +4,14 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 44 overlapping tracker, audit and release obligations: **13 landed implementation references, 12 maintainer-recorded deferrals and 19 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 44 overlapping tracker, audit and release obligations: **13 landed implementation references, 13 maintainer-recorded deferrals and 18 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
 | Timestamp, #44/#529 | #44: `228b66742f`; #529: `d0fa65b12c` | Parent-relative bound retired; mixed-version acceptance, historical replay and coordinated activation remain separate |
 | String functions, #47 | `f07a2628a7` | Client and historical behavior remain distinct |
 | Attachments, #53 | `9a04285a6b` | Appears in both §A and §B; uniform validator/client rollout is separate |
-| BigInt/Decimal, #49/#389/#390 | #389: `666ddb75e2` | #373 and #391 are also merged; archive scans, uniform validators and the new-genesis ceremony remain open |
+| BigInt, #49 (Decimal removed by #527) | #389: `666ddb75e2` | #373 and #391 are also merged; archive scans and uniform validators remain open. The decimal half was removed before mainnet by issue #527 |
 | Activation schedule, committed bounds, params format and fundPot, #373/#376 | `c42440716d` | Integrated distributed acceptance remains separate |
 | Parent-bound integration, #160/#373 | `c42440716d` | Historical and distributed release evidence remains separate |
 | Live finality partition, #108 | `a4dd4ede66` | Full bonded-stake denominator remains required |
@@ -23,13 +23,13 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Complete source inventory
 
-[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 93 current §6 rows**, with 46 conservative category-A candidates. The timestamp row retains its conservative A-candidate classification after #529; retirement is not an execution or release sign-off. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
+[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 93 current §6 rows**, with 46 conservative category-A candidates. The timestamp row retains its conservative A-candidate classification after #529; retirement is not an execution or release sign-off. The refresh accounts for C334, the #527 decimal removal, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
 
 The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, existing evidence, missing proof, next action and acceptance condition. Source-row hashes, line numbers and evidence URLs must agree with the pinned register. A documented deferral must agree between the matrix and the validated ledger. Neither file can invent an independent sign-off or a passed execution.
 
 ## Maintainer-recorded deferrals
 
-The [owner decision](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399) records 11 distinct deferred proposal rows, represented by 12 ledger entries because RCHIP #32 has an interface cross-reference. C173, #127 stage 4, RCHIPs #4, #32, #31, #47, #46, #7/#8, #38 and #30 are owned by @PatrickMockridge; the inactivity leak is owned by @aixaria0. Each entry retains the specific one-line reason, decision author and source URL. These are actual maintainer dispositions, not inferred approvals.
+The [owner decision](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399) records 11 distinct deferred proposal rows, represented by 12 ledger entries because RCHIP #32 has an interface cross-reference. The thirteenth deferred entry is `Release:decimal-genesis`, withdrawn by issue #527 under the same owner-and-reason discipline. C173, #127 stage 4, RCHIPs #4, #32, #31, #47, #46, #7/#8, #38 and #30 are owned by @PatrickMockridge; the inactivity leak is owned by @aixaria0. Each entry retains the specific one-line reason, decision author and source URL. These are actual maintainer dispositions, not inferred approvals.
 
 The two newly explicit technical proposals and the separate allocation-track choice were added to the required inventory, bringing it from 39 to 42 obligations. [The integrated run evidence](evidence/hardfork-51-integrated-20261021.md) records successful scoped arms alongside the failed partition arms.
 
