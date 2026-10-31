@@ -1805,6 +1805,19 @@ mod effectful_tests {
         parent.timestamp = parent_ms;
         let store = block_store(vec![parent]).await;
 
+        // An equality-only oracle can pass vacuously when every variant fails
+        // for an unrelated reason. First prove this fixture is otherwise valid.
+        let mut on_time = block(1, 1, 1, vec![parent_hash]);
+        on_time.timestamp = parent_ms;
+        let reference = block_summary(&dag, &store, &on_time, "root", 100, 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            reference,
+            Ok(()),
+            "the on-time control must be admitted before comparing timestamps"
+        );
+
         for stamp in [
             parent_ms - 3_600_000,  // an hour before the parent
             parent_ms + 86_400_000, // a day after it (a catching-up validator)
@@ -1813,13 +1826,6 @@ mod effectful_tests {
         ] {
             let mut child = block(1, 1, 1, vec![parent_hash]);
             child.timestamp = stamp;
-            let reference = {
-                let mut on_time = block(1, 1, 1, vec![parent_hash]);
-                on_time.timestamp = parent_ms;
-                block_summary(&dag, &store, &on_time, "root", 100, 1, 0)
-                    .await
-                    .unwrap()
-            };
             assert_eq!(
                 block_summary(&dag, &store, &child, "root", 100, 1, 0)
                     .await
