@@ -2256,6 +2256,94 @@ mod effectful_tests {
             "and it round-trips"
         );
     }
+    /// The stalled-round escape must produce a block accepted by the *actual*
+    /// justification regression validator, not just the expected parent IDs.
+    /// The same DAG with the stale peer parent must be rejected with the named
+    /// BlockStatus. This is the before/after validation control for PR #492.
+    #[tokio::test]
+    async fn escaped_child_passes_real_justification_validation() {
+        use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+
+        let a = Validator::new([0u8; 65]);
+        let b = Validator::new([1u8; 65]);
+        let bonds = BTreeMap::from([
+            (a, NonNegI64::try_from(250).unwrap()),
+            (b, NonNegI64::try_from(250).unwrap()),
+            (Validator::new([2u8; 65]), NonNegI64::try_from(250).unwrap()),
+            (Validator::new([3u8; 65]), NonNegI64::try_from(250).unwrap()),
+        ]);
+        let mut state: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        let a1 = state.create_message(
+            hash(10),
+            BlockHeight::try_from(1).unwrap(),
+            a,
+            SeqNum::try_from(1).unwrap(),
+            bonds.clone(),
+            &BTreeSet::new(),
+        );
+        let b1 = state.create_message(
+            hash(20),
+            BlockHeight::try_from(1).unwrap(),
+            b,
+            SeqNum::try_from(1).unwrap(),
+            bonds.clone(),
+            &BTreeSet::new(),
+        );
+        state.insert_msg_mut(&a1);
+        state.insert_msg_mut(&b1);
+        let b2 = state.create_message(
+            hash(21),
+            BlockHeight::try_from(2).unwrap(),
+            b,
+            SeqNum::try_from(2).unwrap(),
+            bonds.clone(),
+            &[b1.clone()].into_iter().collect(),
+        );
+        state.insert_msg_mut(&b2);
+        let a2 = state.create_message(
+            hash(11),
+            BlockHeight::try_from(3).unwrap(),
+            a,
+            SeqNum::try_from(2).unwrap(),
+            bonds.clone(),
+            &[a1.clone(), b2.clone()].into_iter().collect(),
+        );
+        state.insert_msg_mut(&a2);
+
+        // The round snapshot predates B2, which A2 already justified.
+        state.round_parents = [(a, a1), (b, b1.clone())].into_iter().collect();
+        let repaired = state.parents_for_new_block_escaping_checked(&a).unwrap();
+        let actual_child = state.create_message(
+            hash(12),
+            BlockHeight::try_from(4).unwrap(),
+            a,
+            SeqNum::try_from(3).unwrap(),
+            bonds,
+            &repaired,
+        );
+        let repaired_ids = actual_child.parents.iter().copied().collect();
+        let stale_ids = vec![a2.id, b1.id];
+
+        let mut dag = mock(BTreeMap::new());
+        dag.representation.dag_message_state = state;
+        let accepted = block(0, 4, 3, repaired_ids);
+        let refused = block(0, 4, 3, stale_ids);
+
+        assert_eq!(
+            justification_regressions(&dag, &accepted).await.unwrap(),
+            Ok(()),
+            "the actual block validator must admit the escaped child's justifications"
+        );
+        assert_eq!(
+            justification_regressions(&dag, &refused).await.unwrap(),
+            Err(BlockStatus::JustificationRegression),
+            "the original stale round parent must be rejected by the real validator"
+        );
+        // The proposer-produced child carries the same selected justifications;
+        // its other validation stages (execution, signatures and finality) are
+        // deliberately outside this focused rejection-path regression test.
+    }
+
     /// **An unresolvable justification is named, and the verdict is unchanged** (Law 88d). The
     /// regression check cannot evaluate a justification absent from the message map; the current
     /// rule passes (Scala fidelity), so the block reaches the height check, where it fails naming
