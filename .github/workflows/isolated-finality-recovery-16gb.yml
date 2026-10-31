@@ -54,6 +54,13 @@ jobs:
             -v "$PWD/spec/conformance:/app/spec/conformance:ro" quiet-safety:local \
             bash tests/verify-quiet-finality-safety.sh \
             2>&1 | tee target/verified-image/rust-regressions.log
+      - name: Block-retriever rejoin regression
+        run: |
+          set -euo pipefail
+          docker run --rm quiet-safety:local \
+            cargo test --release --locked -p rchain-casper --lib blocks::block_retriever \
+            2>&1 | tee target/verified-image/block-retriever-regressions.log
+
       - name: Package the tested node for every acceptance arm
         run: |
           set -euo pipefail

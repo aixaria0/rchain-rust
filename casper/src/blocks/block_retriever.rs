@@ -112,105 +112,70 @@ impl RequestState {
     }
 }
 
-/// Add a new request if the hash is unknown (port of `addNewRequest`).
-fn add_new_request(
-    state: &BTreeMap<BlockHash, RequestState>,
+/// In-place request transition used by the executable block-retrieval path.
+///
+/// During rejoin, hundreds of hashes can arrive in a burst. Whole-map cloning
+/// for each insertion and acknowledgment was quadratic and held a shared lock.
+fn admit_hash_state_mut(
+    state: &mut BTreeMap<BlockHash, RequestState>,
     hash: &BlockHash,
     now: i64,
-    source_peer: Option<PeerNode>,
-) -> BTreeMap<BlockHash, RequestState> {
-    if state.contains_key(hash) {
-        state.clone()
-    } else {
-        let mut new_state = state.clone();
-        new_state.insert(*hash, RequestState::new(now, source_peer));
-        new_state
-    }
-}
-
-/// Append a peer to an existing request's waiting list (port of `addSourcePeerToRequest`).
-fn add_source_peer_to_request(
-    state: &BTreeMap<BlockHash, RequestState>,
-    hash: &BlockHash,
-    peer: &PeerNode,
-) -> BTreeMap<BlockHash, RequestState> {
-    match state.get(hash) {
-        None => state.clone(),
-        Some(request_state) => {
-            if request_state.waiting_list.len() >= MAX_WAITING_LIST_PER_HASH {
-                return state.clone();
-            }
-            let mut updated = request_state.clone();
-            updated.waiting_list.push(peer.clone());
-            let mut new_state = state.clone();
-            new_state.insert(*hash, updated);
-            new_state
+    peer: Option<&PeerNode>,
+) -> AdmitHashResult {
+    if !state.contains_key(hash) {
+        if state.len() >= MAX_REQUESTED_BLOCKS {
+            return AdmitHashResult {
+                status: AdmitHashStatus::CapacityReached,
+                broadcast_request: false,
+                request_block: false,
+            };
         }
+        state.insert(*hash, RequestState::new(now, peer.cloned()));
+        return AdmitHashResult {
+            status: AdmitHashStatus::NewRequestAdded,
+            broadcast_request: peer.is_none(),
+            request_block: peer.is_some(),
+        };
+    }
+    match peer {
+        Some(peer) => {
+            let request = state.get_mut(hash).expect("hash was checked above");
+            if request.waiting_list.contains(peer) {
+                return AdmitHashResult {
+                    status: AdmitHashStatus::Ignore,
+                    broadcast_request: false,
+                    request_block: false,
+                };
+            }
+            let was_empty = request.waiting_list.is_empty();
+            if request.waiting_list.len() < MAX_WAITING_LIST_PER_HASH {
+                request.waiting_list.push(peer.clone());
+            }
+            // Preserve the old result when the waiting list is already full.
+            AdmitHashResult {
+                status: AdmitHashStatus::NewSourcePeerAddedToRequest,
+                broadcast_request: false,
+                request_block: was_empty,
+            }
+        }
+        None => AdmitHashResult {
+            status: AdmitHashStatus::Ignore,
+            broadcast_request: false,
+            request_block: false,
+        },
     }
 }
 
-/// The pure state transition for `admit_hash` (port of the `RequestedBlocks.modify` block).
+/// Pure adapter for existing callers and transition tests.
 pub fn admit_hash_state(
     state: &BTreeMap<BlockHash, RequestState>,
     hash: &BlockHash,
     now: i64,
     peer: Option<&PeerNode>,
 ) -> (BTreeMap<BlockHash, RequestState>, AdmitHashResult) {
-    let unknown_hash = !state.contains_key(hash);
-    if unknown_hash {
-        if state.len() >= MAX_REQUESTED_BLOCKS {
-            return (
-                state.clone(),
-                AdmitHashResult {
-                    status: AdmitHashStatus::CapacityReached,
-                    broadcast_request: false,
-                    request_block: false,
-                },
-            );
-        }
-        let new_state = add_new_request(state, hash, now, peer.cloned());
-        let result = AdmitHashResult {
-            status: AdmitHashStatus::NewRequestAdded,
-            broadcast_request: peer.is_none(),
-            request_block: peer.is_some(),
-        };
-        (new_state, result)
-    } else {
-        match peer {
-            Some(peer) => {
-                let already_known = state[hash].waiting_list.contains(peer);
-                if already_known {
-                    (
-                        state.clone(),
-                        AdmitHashResult {
-                            status: AdmitHashStatus::Ignore,
-                            broadcast_request: false,
-                            request_block: false,
-                        },
-                    )
-                } else {
-                    let was_empty = state[hash].waiting_list.is_empty();
-                    let new_state = add_source_peer_to_request(state, hash, peer);
-                    let result = AdmitHashResult {
-                        status: AdmitHashStatus::NewSourcePeerAddedToRequest,
-                        broadcast_request: false,
-                        // Request from the first peer in the waiting list; otherwise requests are
-                        // triggered by the casper loop.
-                        request_block: was_empty,
-                    };
-                    (new_state, result)
-                }
-            }
-            None => (
-                state.clone(),
-                AdmitHashResult {
-                    status: AdmitHashStatus::Ignore,
-                    broadcast_request: false,
-                    request_block: false,
-                },
-            ),
-        }
-    }
+    let mut updated = state.clone();
+    let result = admit_hash_state_mut(&mut updated, hash, now, peer);
+    (updated, result)
 }
 
 /// Block retriever (port of `BlockRetriever[F]`).
@@ -247,9 +212,7 @@ impl BlockRetriever {
         let now = current_millis();
         let result = {
             let mut state = self.requested.lock().await;
-            let (new_state, result) = admit_hash_state(&state, hash, now, peer);
-            *state = new_state;
-            result
+            admit_hash_state_mut(&mut state, hash, now, peer)
         };
 
         match result.status {
@@ -389,9 +352,7 @@ impl BlockRetriever {
     pub async fn ack_received(&self, hash: &BlockHash) {
         let is_received = {
             let mut state = self.requested.lock().await;
-            let old = state.clone();
-            state.remove(hash);
-            *state != old
+            state.remove(hash).is_some()
         };
         if !is_received {
             return;
@@ -612,6 +573,29 @@ mod tests {
         assert_eq!(result.status, AdmitHashStatus::NewSourcePeerAddedToRequest);
         assert!(!result.request_block);
         assert_eq!(new_state[&hash(1)].waiting_list.len(), 2);
+    }
+
+    #[test]
+    fn in_place_rejoin_burst_preserves_pending_requests_and_peer_deduplication() {
+        let mut requests = BTreeMap::new();
+        for index in 0..1_000 {
+            requests.insert(numbered(index), RequestState::new(100, None));
+        }
+        let before = requests.get(&numbered(0)).unwrap().clone();
+        let source = peer("rejoining-peer", 40400);
+        for index in 1_000..1_200 {
+            let result = admit_hash_state_mut(&mut requests, &numbered(index), 200, Some(&source));
+            assert_eq!(result.status, AdmitHashStatus::NewRequestAdded);
+            assert!(result.request_block);
+        }
+        assert_eq!(requests.len(), 1_200);
+        assert_eq!(requests.get(&numbered(0)), Some(&before));
+        let result = admit_hash_state_mut(&mut requests, &numbered(1_000), 300, Some(&source));
+        assert_eq!(result.status, AdmitHashStatus::Ignore);
+        assert_eq!(requests[&numbered(1_000)].waiting_list.len(), 1);
+        assert!(requests.remove(&numbered(1_000)).is_some());
+        assert!(requests.remove(&numbered(1_000)).is_none());
+        assert_eq!(requests.len(), 1_199);
     }
 
     // --- effectful integration (mock transport) -------------------------------------------
