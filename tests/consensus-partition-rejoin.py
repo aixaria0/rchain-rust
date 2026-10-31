@@ -2,6 +2,7 @@
 """Bounded same-volume partition/rejoin under explicit supporting deploy workload."""
 import argparse
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -14,6 +15,60 @@ spec=importlib.util.spec_from_file_location("acceptance",ROOT/"tools/consensus-a
 a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
 
 class WorkloadDrill(a.Drill):
+    def snapshot(self):
+        # The cluster continues finalizing while each HTTP request runs. A
+        # sequential eight-node read can compare different rounds as if they
+        # were one observation. Sample the eight nodes concurrently instead.
+        def read(i):
+            started = time.monotonic()
+            status = a.get(i, "/api/v1/status/operator", admin=True)
+            try:
+                finalized = a.get(i, "/api/last-finalized-block")
+            except a.urllib.error.HTTPError as error:
+                finalized = {"http_error": error.code,
+                             "body": error.read().decode(errors="replace")}
+            return (i, status, finalized, started, time.monotonic())
+        with ThreadPoolExecutor(max_workers=self.args.validators) as pool:
+            readings = list(pool.map(read, range(self.args.validators)))
+        for i, status, finalized, start, end in readings:
+            self.record(node=i, status=status, finalized=finalized,
+                        sample_started=start, sample_finished=end)
+        self.record(phase="parallel_finality_snapshot",
+                    first_start=min(r[3] for r in readings),
+                    last_start=max(r[3] for r in readings),
+                    first_finish=min(r[4] for r in readings),
+                    last_finish=max(r[4] for r in readings))
+        return [(status, finalized) for _, status, finalized, _, _ in readings]
+
+    def finalized_marker(self, min_height, required=False):
+        identities = []
+        for i, (_, finalized) in enumerate(self.snapshot()):
+            try:
+                height, block_hash = a.finalized_identity(finalized)
+            except ValueError:
+                return None
+            if height < min_height:
+                return None
+            identities.append({"node": i, "height": height, "hash": block_hash})
+        # Query each independent finalized snapshot in parallel. The marker
+        # must still exist at each exact returned hash; no common-ancestor
+        # substitution, deadline extension or synthetic proposal is allowed.
+        def check(identity):
+            i = identity["node"]
+            answer = a.probe(i, self.marker, identity["hash"])
+            return (i, answer)
+        with ThreadPoolExecutor(max_workers=self.args.validators) as pool:
+            probes = list(pool.map(check, identities))
+        for (i, answer), identity in zip(probes, identities):
+            self.record(node=i, finalized_marker_at=identity["hash"], response=answer)
+            if not a.marker_present(answer, self.value):
+                if not required:
+                    return None
+                raise RuntimeError(
+                    f"validator {i} lost or changed the marker in finalized post-state"
+                )
+        return identities
+
     def wait(self, description, condition, drive=True):
         # This arm explicitly supplies work; it cannot establish quiet-chain liveness.
         return super().wait(description,condition,drive=True)
@@ -35,11 +90,10 @@ class WorkloadDrill(a.Drill):
         # A real execution always passes through Drill.__init__ and must capture
         # the operator's irreversible-divergence verdict before its marker read.
         if getattr(self, "events", None) is not None:
-            statuses = []
-            for i in range(self.args.validators):
+            def read_health(i):
                 operator = a.get(i, "/api/v1/status/operator", admin=True)
                 health = a.get(i, "/health")
-                statuses.append({
+                return {
                     "node": i,
                     "ready": health.get("ready"),
                     "orphan_bodies": health.get("orphanBodies"),
@@ -51,7 +105,9 @@ class WorkloadDrill(a.Drill):
                     "unrestorable_records": operator.get("unrestorableRecords"),
                     "unrestorable_block": operator.get("unrestorableBlock"),
                     "undelivered_sends": operator.get("undeliveredSends"),
-                })
+                }
+            with ThreadPoolExecutor(max_workers=self.args.validators) as pool:
+                statuses = list(pool.map(read_health, range(self.args.validators)))
             self.record(phase="healing_probe", target_min_height=min_height, nodes=statuses)
             # A missing counter is unknown, not proof of zero divergence.
             if any(type(x["unrestorable_records"]) is not int for x in statuses):

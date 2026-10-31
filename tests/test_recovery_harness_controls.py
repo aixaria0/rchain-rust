@@ -23,6 +23,68 @@ class RecoveryHarnessTests(unittest.TestCase):
             with self.assertRaises(AssertionError):m.durable_state_volume({"Mounts":mounts})
 
 
+class ParallelHealingSnapshotTests(unittest.TestCase):
+    def fixture(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        run = object.__new__(m.WorkloadDrill)
+        run.args = SimpleNamespace(validators=8, window=150)
+        run.marker = "accepted-marker"
+        run.value = 42
+        run.record = Mock()
+        return run
+
+    def test_eight_finalized_head_reads_begin_concurrently(self):
+        from threading import Barrier
+        from unittest.mock import patch
+        run = self.fixture()
+        barrier = Barrier(8)
+        head = {"blockInfo": {"blockNumber": 70, "blockHash": "ab" * 32}}
+        def get(i, path, admin=False):
+            if admin:
+                barrier.wait(timeout=3)
+                return {"latestBlockNumber": 72}
+            if path == "/api/last-finalized-block":
+                return head
+            raise AssertionError(path)
+        with patch.object(m.a, "get", side_effect=get):
+            snapshot = run.snapshot()
+        self.assertEqual(len(snapshot), 8)
+        self.assertTrue(all(x[1] == head for x in snapshot))
+        self.assertEqual(run.record.call_args.kwargs["phase"],
+                         "parallel_finality_snapshot")
+
+    def test_marker_probes_parallelize_without_loosening_identity(self):
+        from threading import Barrier
+        from unittest.mock import patch
+        run = self.fixture()
+        barrier = Barrier(8)
+        row = {"blockInfo": {"blockNumber": 70, "blockHash": "cd" * 32}}
+        run.snapshot = lambda: [({}, row) for _ in range(8)]
+        def probe(i, marker, block_hash):
+            barrier.wait(timeout=3)
+            self.assertEqual(marker, "accepted-marker")
+            self.assertEqual(block_hash, "cd" * 32)
+            return {"expr": [{"ExprInt": {"data": 42}}]}
+        with patch.object(m.a, "probe", side_effect=probe):
+            accepted = run.finalized_marker(70, required=True)
+        self.assertEqual(len(accepted), 8)
+        self.assertEqual({(v["height"], v["hash"]) for v in accepted},
+                         {(70, "cd" * 32)})
+
+    def test_parallel_probe_never_accepts_missing_marker(self):
+        from unittest.mock import patch
+        run = self.fixture()
+        row = {"blockInfo": {"blockNumber": 70, "blockHash": "cd" * 32}}
+        run.snapshot = lambda: [({}, row) for _ in range(8)]
+        def probe(i, marker, block_hash):
+            return {"expr": []} if i == 7 else {"expr": [{"ExprInt": {"data": 42}}]}
+        with patch.object(m.a, "probe", side_effect=probe):
+            with self.assertRaisesRegex(RuntimeError, "validator 7 lost"):
+                run.finalized_marker(70, required=True)
+
+
+
 class RejoinAgreementTests(unittest.TestCase):
     def drill(self, identities):
         from types import SimpleNamespace
