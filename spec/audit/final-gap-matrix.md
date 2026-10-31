@@ -1,16 +1,16 @@
-# Release gap matrix — 2026-10-21
+# Release gap matrix — 2026-10-31
 
-Pinned upstream dev: 93d16d7d865ddade5a47b19dbffa86b954407f05. #404, #373 (including #376), #391, #392 and #402 are merged. #379, #389 and #390 are also in its ancestry.
+Upstream dev baseline: `d0fa65b12c9a6fbde386f7bde7bf31802f314fa4`. Authored register snapshot: `0186933004152efb4d7e1d9bc1804786efd88b22` (documentation-only child; `source_dev_sha` pins the snapshot and `source_dev_base_sha` records the baseline). #404, #373 (including #376), #391, #392 and #402 are merged. #379, #389 and #390 are also in its ancestry.
 
 The machine-readable final-gap-matrix.json enumerates all 44 tracker/batch/release obligations with their invariant, source evidence, remaining proof, next action and acceptance. These obligations overlap; their count is not a defect count.
 
-The section6-gap-inventory.json inventory covers all 92 §6 rows, including C334, the revised Decimal decision, the activation schedule, committed bounds, fundPot and C335. 45 rows are conservative category-A candidates. Source-row hashes, line locations and source links are checked against the pinned register. Classification and source coverage do not establish historical replay or independent sign-off.
+The section6-gap-inventory.json inventory covers all 93 §6 rows, including C334, the revised Decimal decision, the activation schedule, committed bounds, fundPot and C335. 46 rows are conservative category-A candidates. Source-row hashes, line locations and source links are checked against the pinned register. Classification and source coverage do not establish historical replay or independent sign-off.
 
 The [2026-10-21 close-clause decision](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117) accepts a named decision owner and one-line reason without a release name. The [maintainer's recorded owner decisions](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399) supply 12 deferral records (11 distinct proposal rows, including the staking-interface cross-reference). Landed implementation and outstanding release evidence remain distinct.
 
 | Obligation | Classification | Exact invariant / path | Acceptance |
 |---|---|---|---|
-| A:block-timestamp | IMPLEMENTED / EVIDENCE INCOMPLETE | models block-header timestamp / hash_block | Attachment-free and timestamped block wire/hash fixtures; cross-version replay |
+| A:block-timestamp | IMPLEMENTED / EVIDENCE INCOMPLETE | models header / hash_block; block_summary timestamp bound retired by #529 | On-time admitted control and four abnormal stamps; old-bound negative control, cross-version replay and coordinated validator activation |
 | A:binary-attachments | IMPLEMENTED / EVIDENCE INCOMPLETE | DeployData attachments and deploy-content hash (#53) | Signed attachment deploy round-trip and old/new client refusal; uniform validator/client rollout |
 | B:binary-attachments | IMPLEMENTED / EVIDENCE INCOMPLETE | DeployData attachment-bearing client signing/hash contract (#53) | Old/new deploy clients produce the declared hash and explicit refusal behavior |
 | B:string-functions | IMPLEMENTED / EVIDENCE INCOMPLETE | rholang string length Unicode scalar semantics (#47) | Non-ASCII S.length corpus and historical replay of affected deploys |
