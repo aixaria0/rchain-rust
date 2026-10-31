@@ -44,7 +44,6 @@ parse	42	accept	printer
 parse	true	accept	printer
 parse	false	accept	printer
 parse	BigInt(1234)	accept	printer
-parse	1.10d	accept	printer
 parse	"s"	accept	printer
 parse	`rho:id:x`	accept	printer
 parse	[1]	accept	printer

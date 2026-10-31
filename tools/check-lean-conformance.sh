@@ -290,7 +290,6 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       block)    test_name="lean_block_corpus";     crate="rchain-node" ;;
       liveness) test_name="lean_liveness_corpus";  crate="rchain-node" ;;
       admission) test_name="lean_admission_corpus"; crate="rchain-casper" ;;
-      decimal)  test_name="lean_decimal_corpus";   crate="rchain-models" ;;
       hostlist) test_name="lean_hostlist_corpus";  crate="rchain-node" ;;
       recovery) test_name="lean_recovery_corpus";  crate="rchain-casper" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;

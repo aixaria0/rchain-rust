@@ -900,26 +900,10 @@ mod tests {
         let p = par(vec![Expr::GInt(43)]);
         assert_eq!(spatial_match_result(&t, &p).unwrap(), None);
 
-        // A decimal pattern matches by canonical value — `1.50d` and `1.5d` are one term — while
-        // a decimal and an integer stay distinct in pattern position, as Int and BigInt do.
-        let decimal = |c: i64, s: u32| {
-            par(vec![Expr::GDecimal(
-                rchain_models::decimal::Decimal::new(c.into(), s).expect("canonical"),
-            )])
-        };
-        assert_eq!(
-            spatial_match_result(&decimal(15, 1), &decimal(150, 2)).unwrap(),
-            Some(FreeMap::new())
-        );
-        assert_eq!(spatial_match_result(&decimal(1, 0), &t).unwrap(), None);
-        assert_eq!(
-            spatial_match_result(&decimal(1, 0), &par(vec![Expr::GInt(1)])).unwrap(),
-            None
-        );
-        assert_eq!(
-            spatial_match_result(&decimal(1, 0), &par(vec![Expr::GBigInt(1.into())])).unwrap(),
-            None
-        );
+        // **A decimal pattern block was here and is retired** (issue #527): it pinned canonical
+        // value matching (`1.50d` matched `1.5d`) and the decimal/Int/BigInt distinction in pattern
+        // position. The distinction between Int and BigInt is the same trap and still holds —
+        // `1` does not match `1n` — and `docs/src/formal/decimal-removed.md` records it.
     }
 
     /// **The composite terms: a `match`, a bundle, an unforgeable, and a receive bind.** Everything

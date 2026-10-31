@@ -11,7 +11,6 @@ use std::marker::PhantomData;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
-use crate::decimal::Decimal;
 use crate::types::FreeCount;
 
 /// serde helpers encoding byte vectors as lowercase hex (the Scala `encodeByteString`/
@@ -314,9 +313,11 @@ pub enum Expr {
     GBool(bool),
     GInt(i64),
     GBigInt(BigInt),
-    /// An exact decimal (issue #380, option B). Always canonical: `coefficient × 10^-scale`,
-    /// with factors of ten stripped while the scale is positive and zero stored as `(0, 0)`.
-    GDecimal(Decimal),
+    // **A decimal variant was here and is retired** (issue #527, 2026-10-31). `GDecimal` held the
+    // exact decimal added for #380 option B; wire tag 35 is now `reserved` and a sender gets
+    // `Malformed("expr_instance")`, and sort rank 14 is retired and never reused. The implementation
+    // is archived at `models/src/decimal.rs` and the decision at
+    // `docs/src/formal/decimal-removed.md` — read the latter before proposing a fractional type.
     GString(String),
     GUri(String),
     GByteArray(#[serde(with = "hex_serde")] Vec<u8>),

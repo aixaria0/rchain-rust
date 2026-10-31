@@ -108,7 +108,6 @@ mutual
     | Expr.eset ps _ => 1 + listDepthPar ps
     | Expr.emap kvs _ => 1 + listDepthPair kvs
     | Expr.ebigint _ => 1
-    | Expr.edecimal _ => 1
     | Expr.emethod _ p args => 1 + max (parDepth p) (listDepthPar args)
     | Expr.epercentPercent p q => 1 + max (parDepth p) (parDepth q)
     | Expr.eplusPlus p q => 1 + max (parDepth p) (parDepth q)
@@ -331,7 +330,7 @@ mutual
   termination_by m _ => sizeOf m
 
   def walkExpr : Expr → Nat → Bool
-    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k | Expr.edecimal _, k =>
+    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k =>
         (match k with | 0 => true | _ + 1 => false)
     | Expr.eneg p, k | Expr.enot p, k =>
         (match k with | 0 => true | j + 1 => walkPar p j)
@@ -535,7 +534,7 @@ mutual
         omega
 
   theorem walkExpr_iff_exprDepth : (e : Expr) → ∀ k, walkExpr e k = false ↔ exprDepth e ≤ k
-    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k | Expr.edecimal _, k => by
+    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k => by
       cases k <;> simp [walkExpr, exprDepth]
     | Expr.eneg p, k | Expr.enot p, k => by
       cases k with

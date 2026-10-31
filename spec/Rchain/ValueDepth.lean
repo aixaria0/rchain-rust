@@ -116,7 +116,6 @@ mutual
     | Expr.eset ps _ => listNestPar ps
     | Expr.emap kvs _ => listNestPair kvs
     | Expr.ebigint _ => 0
-    | Expr.edecimal _ => 0
     | Expr.emethod _ p args => max (parNestDepth p) (listNestPar args)
     | Expr.epercentPercent p q => max (parNestDepth p) (parNestDepth q)
     | Expr.eplusPlus p q => max (parNestDepth p) (parNestDepth q)
@@ -247,7 +246,7 @@ mutual
   termination_by m _ => sizeOf m
 
   def walkValueExpr : Expr → Nat → Bool
-    | Expr.ground _, _ | Expr.evar _, _ | Expr.ebigint _, _ | Expr.edecimal _, _ => false
+    | Expr.ground _, _ | Expr.evar _, _ | Expr.ebigint _, _ => false
     | Expr.eneg p, k | Expr.enot p, k => walkValuePar p k
     | Expr.eplus p q, k | Expr.eminus p q, k | Expr.emult p q, k | Expr.ediv p q, k
     | Expr.emod p q, k | Expr.elt p q, k | Expr.ele p q, k | Expr.egt p q, k
@@ -407,7 +406,7 @@ mutual
 
   theorem walkValueExpr_iff_exprNestDepth :
       (e : Expr) → ∀ k, walkValueExpr e k = false ↔ exprNestDepth e ≤ k
-    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k | Expr.edecimal _, k => by
+    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k => by
       simp [walkValueExpr, exprNestDepth]
     | Expr.eneg p, k | Expr.enot p, k => by
       simp only [walkValueExpr, exprNestDepth, walkValuePar_iff_parNestDepth]
@@ -640,7 +639,6 @@ mutual
     | Expr.ground _ => by simp [exprDepth, exprNestDepth]
     | Expr.evar _ => by simp [exprDepth, exprNestDepth]
     | Expr.ebigint _ => by simp [exprDepth, exprNestDepth]
-    | Expr.edecimal _ => by simp [exprDepth, exprNestDepth]
     | Expr.eneg p => by
       have h1 := parDepth_le_three_mul_parNestDepth p
       simp only [exprDepth, exprNestDepth]; omega

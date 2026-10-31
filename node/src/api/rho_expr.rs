@@ -248,10 +248,11 @@ fn expr_from_expr(exp: &Expr) -> Option<RhoExpr> {
             }
             Some(RhoExpr::ExprMap(fields))
         }
-        // `GBigInt` and `GDecimal` are **deliberately outside this view today**: the published
-        // `RhoExpr` schema has an `Int` arm only, and adding a numeric arm is a client-contract
-        // decision, not a side effect of the value type (issue #380 follow-up). Named here so the
-        // drop is a recorded gap rather than a bare `_`.
+        // `GBigInt` is **deliberately outside this view today**: the published `RhoExpr` schema has
+        // an `Int` arm only, and adding a numeric arm is a client-contract decision, not a side
+        // effect of the value type. Named here so the drop is a recorded gap rather than a bare
+        // `_`. **A `GDecimal` shared that gap and is retired** with the type (issue #527) — there is
+        // nothing left to drop.
         _ => None,
     }
 }
@@ -410,8 +411,8 @@ mod tests {
     }
 
     /// The exact numerics have no arm in the published schema, and this pins that they are dropped
-    /// rather than silently coerced into an `ExprInt`. `GBigInt` predates the decimal; the decimal
-    /// is the new member of the same gap (issue #380 follow-up).
+    /// rather than silently coerced into an `ExprInt`. **The decimal half of this test is retired**
+    /// with the type (issue #527); `GBigInt` is the member that remains.
     #[test]
     fn exact_numerics_are_outside_the_json_view_today() {
         let bigint = Par {
@@ -419,14 +420,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(expr_from_par(&bigint), None);
-
-        let decimal = Par {
-            exprs: vec![Expr::GDecimal(
-                rchain_models::Decimal::new(15.into(), 1).expect("canonical"),
-            )],
-            ..Default::default()
-        };
-        assert_eq!(expr_from_par(&decimal), None);
     }
 
     /// **The wire shape is the reference document's, arm for arm** (AUDIT C38). Every string here is

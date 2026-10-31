@@ -164,7 +164,8 @@ def exprTag : Expr → Nat
   | .eset _ _ => 8
   | .emap _ _ => 9
   | .ebigint _ => 13
-  | .edecimal _ => 14
+  -- **Rank 14 was `.edecimal`** (issue #527): retired with the type and never reused; ranks are
+  -- non-contiguous (13 → 100), so nothing renumbers.
   | .evar _ => 100
   | .eneg _ => 101
   | .emult _ _ => 102
@@ -241,7 +242,6 @@ mutual
         | Expr.ground g, Expr.ground g' => cmpGround g g'
         | Expr.evar v, Expr.evar v' => cmpVar v v'
         | Expr.ebigint n, Expr.ebigint n' => _root_.cmp n n'
-        | Expr.edecimal n, Expr.edecimal n' => _root_.cmp n n'
         | Expr.eneg p, Expr.eneg p' | Expr.enot p, Expr.enot p' => cmpPar p p'
         | Expr.elist ps r, Expr.elist ps' r'
         | Expr.eset ps r, Expr.eset ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
@@ -414,10 +414,8 @@ set_option maxHeartbeats 8000000 in
     cmpExpr (.ebigint n) (.ebigint n') = _root_.cmp n n' := by
   simp only [cmpExpr.eq_def, exprTag, Nat.reduceLT, ite_false, ite_true]
 
-set_option maxHeartbeats 8000000 in
-@[simp] theorem cmpExpr_edecimal (n n' : Int) :
-    cmpExpr (.edecimal n) (.edecimal n') = _root_.cmp n n' := by
-  simp only [cmpExpr.eq_def, exprTag, Nat.reduceLT, ite_false, ite_true]
+-- **`cmpExpr_edecimal` was here and is retired** (issue #527): the tag arm and its theorem went
+-- with the constructor. The comparator now covers 29 classes over the node's 33 expression variants.
 
 set_option maxHeartbeats 8000000 in
 @[simp] theorem cmpExpr_evar (v v' : Var) :
@@ -724,10 +722,6 @@ private theorem exprTag_eq_ebigint {s : Expr} (h : exprTag s = 13) : ∃ n, s = 
   cases s <;> first | exact ⟨n, rfl⟩ | simp_all [exprTag]
 
 set_option maxHeartbeats 8000000 in
-private theorem exprTag_eq_edecimal {s : Expr} (h : exprTag s = 14) : ∃ n, s = .edecimal n := by
-  cases s <;> first | exact ⟨n, rfl⟩ | simp_all [exprTag]
-
-set_option maxHeartbeats 8000000 in
 private theorem exprTag_eq_emethod {s : Expr} (h : exprTag s = 115) :
     ∃ name tgt args, s = .emethod name tgt args := by
   cases s <;> first | exact ⟨name, tgt, args, rfl⟩ | simp_all [exprTag]
@@ -914,12 +908,6 @@ mutual
         cases t
         case ebigint n' =>
           simp [cmpExpr_ebigint, cmp_eq_eq_iff, Expr.ebigint.injEq]
-        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
-          reduceCtorEq]
-    | (.edecimal n), t => by
-        cases t
-        case edecimal n' =>
-          simp [cmpExpr_edecimal, cmp_eq_eq_iff, Expr.edecimal.injEq]
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           reduceCtorEq]
     | (.emethod name tgt args), t => by
@@ -1333,12 +1321,6 @@ mutual
         cases t
         case ebigint n' =>
           rw [cmpExpr_ebigint, cmpExpr_ebigint, ← cmp_swap n n']
-        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
-          Ordering.swap, reduceCtorEq]
-    | (.edecimal n), t => by
-        cases t
-        case edecimal n' =>
-          rw [cmpExpr_edecimal, cmpExpr_edecimal, ← cmp_swap n n']
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           Ordering.swap, reduceCtorEq]
     | (.emethod name tgt args), t => by
@@ -1836,14 +1818,6 @@ mutual
         obtain ⟨n₂, rfl⟩ := exprTag_eq_ebigint ht
         obtain ⟨n₃, rfl⟩ := exprTag_eq_ebigint hu
         rw [cmpExpr_ebigint] at hst htu ⊢
-        exact (linearOrderComparator Int).lt_trans hst htu
-      by_cases h14 : exprTag s = 14
-      · have ht : exprTag t = 14 := by rw [← hst', h14]
-        have hu : exprTag u = 14 := by rw [← hsu', h14]
-        obtain ⟨n₁, rfl⟩ := exprTag_eq_edecimal h14
-        obtain ⟨n₂, rfl⟩ := exprTag_eq_edecimal ht
-        obtain ⟨n₃, rfl⟩ := exprTag_eq_edecimal hu
-        rw [cmpExpr_edecimal] at hst htu ⊢
         exact (linearOrderComparator Int).lt_trans hst htu
       by_cases h115 : exprTag s = 115
       · have ht : exprTag t = 115 := by rw [← hst', h115]
@@ -2545,7 +2519,6 @@ mutual
     -- (`sorter.rs:677-698` sorts each scored argument and rebuilds `arguments` in place) — an
     -- argument list is ordered, unlike a `Par` field.
     | Expr.ebigint n => Expr.ebigint n
-    | Expr.edecimal n => Expr.edecimal n
     | Expr.emethod name t args => Expr.emethod name (sortPar t) (sortListPar args)
     | Expr.epercentPercent p q => Expr.epercentPercent (sortPar p) (sortPar q)
     | Expr.eplusPlus p q => Expr.eplusPlus (sortPar p) (sortPar q)
@@ -2746,7 +2719,6 @@ mutual
         simp [sortExpr]
         exact sortList_field_idem (cmpPair parComparator parComparator) sortParPair kvs hkvs
     | Expr.ebigint n => by simp [sortExpr]
-    | Expr.edecimal n => by simp [sortExpr]
     -- `emethod`'s arguments are sorted element-wise but keep their order (`sorter.rs:677-698`), so its
     -- law is the order-preserving list's: `sortListPar` is a map, and the induction below is that map's
     -- idempotence. (No `sortListPar_idempotent` exists to reuse — this is the first caller.)

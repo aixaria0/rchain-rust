@@ -7,8 +7,8 @@ use crate::proc_ast::*;
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
     Long(i64),
-    /// A decimal literal, carrying its raw source text including the `d` suffix.
-    Decimal(String),
+    // **A `Decimal(String)` token was here and is retired** (issue #527): a `d`-suffixed literal no
+    // longer lexes, so `1.5d` / `2d` are a syntax error. See `docs/src/formal/decimal-removed.md`.
     Str(String),
     Uri(String),
     Ident(String),
@@ -154,33 +154,14 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
             toks.push(Tok::Uri(chars[start..i].iter().collect()));
             continue;
         }
-        // number, or a decimal literal (`digits ['.' digits] 'd'`)
+        // number. **A `d`-suffixed decimal literal was lexed here and is retired** (issue #527): the
+        // lookahead consumed a fraction only when `d` followed it (so a bare `1.5` stayed
+        // `Long Dot Long` and `1.foo()` remained a method call). With the type gone, `1.5d` is a
+        // `Long Dot Ident` sequence that the parser refuses.
         if c.is_ascii_digit() {
             let start = i;
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
-            }
-            // A fraction is consumed only when the `d` suffix follows it: a bare `1.5` must stay
-            // `Long Dot Long`, or `1.foo()` stops being a method call.
-            let mut end = None;
-            if chars.get(i) == Some(&'d') {
-                end = Some(i + 1);
-            } else if chars.get(i) == Some(&'.')
-                && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())
-            {
-                let mut j = i + 1;
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    j += 1;
-                }
-                if chars.get(j) == Some(&'d') {
-                    end = Some(j + 1);
-                }
-            }
-            if let Some(end) = end {
-                let raw: String = chars[start..end].iter().collect();
-                i = end;
-                toks.push(Tok::Decimal(raw));
-                continue;
             }
             let n: i64 = chars[start..i]
                 .iter()
@@ -1388,7 +1369,7 @@ impl Parser {
             return true;
         }
         match self.peek() {
-            Tok::Long(_) | Tok::Decimal(_) | Tok::Str(_) | Tok::Uri(_) => true,
+            Tok::Long(_) | Tok::Str(_) | Tok::Uri(_) => true,
             Tok::Ident(s) => s == "true" || s == "false",
             _ => false,
         }
@@ -1411,7 +1392,6 @@ impl Parser {
         }
         match self.next() {
             Tok::Long(n) => Ok(Ground::GroundInt(n.to_string())),
-            Tok::Decimal(raw) => Ok(Ground::GroundDecimal(raw)),
             Tok::Str(s) => Ok(Ground::GroundString(s)),
             Tok::Uri(u) => Ok(Ground::GroundUri(u)),
             Tok::Ident(s) if s == "true" => Ok(Ground::GroundBool(BoolLiteral::BoolTrue)),
@@ -2249,45 +2229,27 @@ mod tests {
         assert_eq!(p, Proc::PGround(Ground::GroundInt("42".to_string())));
     }
 
-    /// A decimal literal is `digits ['.' digits] 'd'`; the raw text is kept for the normalizer,
-    /// which owns canonicalization.
+    /// **A `d`-suffixed decimal literal no longer parses** (issue #527). The two tests that were
+    /// here pinned the literal (`2d`, `1.5d`, `007.50d`, `1.5d.toString()`) and its malformed
+    /// forms; the type is withdrawn and the lexer no longer has the token. What matters now is the
+    /// refusal, and that a bare `1.5` and `1.toString()` still behave as they did — the lookahead
+    /// that used to consume a fraction only before `d` is gone, so `1.5d` is `Long Dot Ident` and
+    /// the parser refuses it.
     #[test]
-    fn parses_decimal_literals() {
-        let ground = |raw: &str| Proc::PGround(Ground::GroundDecimal(raw.to_string()));
-        assert_eq!(parse("2d").unwrap(), ground("2d"));
-        assert_eq!(parse("1.5d").unwrap(), ground("1.5d"));
-        assert_eq!(parse("0.5d").unwrap(), ground("0.5d"));
-        assert_eq!(parse("007.50d").unwrap(), ground("007.50d"));
-        // A negative decimal is `PNeg` over the ground, exactly as a negative integer is.
-        assert_eq!(
-            parse("-1.5d").unwrap(),
-            Proc::PNeg(Box::new(ground("1.5d")))
-        );
-        // A decimal literal is a method receiver.
-        assert!(parse("1.5d.toString()").is_ok());
-    }
-
-    /// The lookahead that makes `1.5` a method call and not a decimal, and the forms that are not
-    /// literals at all.
-    #[test]
-    fn malformed_decimal_literals_are_refused() {
+    fn decimal_literals_no_longer_parse() {
         for src in [
-            ".5d",
-            "1.d",
-            "1.5",
-            "1.5D",
-            "1.5e3d",
-            "1.5dx",
-            "1..5d",
-            "1.5dd",
+            "2d",
+            "1.5d",
+            "-1.5d",
+            "0.5d",
+            "1.5d.toString()",
             "BigInt(1.5d)",
         ] {
             assert!(
                 parse(src).is_err(),
-                "{src:?} must not parse as a term or a decimal literal"
+                "{src:?} must not parse now that the decimal type is withdrawn"
             );
         }
-        // The method-call form is preserved: the dot is not consumed as a fraction without `d`.
         assert!(parse("1.toString()").is_ok());
     }
 

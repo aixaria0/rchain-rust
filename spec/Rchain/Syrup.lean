@@ -123,9 +123,9 @@ mutual
     | .ground (.bool b) => some (.bool b)
     | .ground (.int n) => some (.int n)
     | .ebigint n => some (.int n)
-    -- Syrup has no exact decimal: named rather than left to the catch-all, so the refusal is part
-    -- of the domain statement (Law 59c).
-    | .edecimal _ => none
+    -- **A `GDecimal` refusal arm was here and is retired** (issue #527): Syrup has no exact decimal
+    -- type, so a decimal could not cross (Law 59c's domain statement named the refusal). The type
+    -- is gone; a bigint still crosses as a Syrup `int`.
     | .ground (.str l) => some (.str l)
     | .ground (.uri l) => some (.sym l)
     | .ground (.bytes l) => some (.bytes l)
@@ -207,7 +207,6 @@ than an unfolding of a large `mutual` block, which does not survive the heartbea
 @[simp] theorem exprToSy_bool (b : Bool) : exprToSy (.ground (.bool b)) = some (.bool b) := rfl
 @[simp] theorem exprToSy_int (n : Int) : exprToSy (.ground (.int n)) = some (.int n) := rfl
 @[simp] theorem exprToSy_bigint (n : Int) : exprToSy (.ebigint n) = some (.int n) := rfl
-@[simp] theorem exprToSy_edecimal (n : Int) : exprToSy (.edecimal n) = none := rfl
 @[simp] theorem exprToSy_str (l : List Nat) : exprToSy (.ground (.str l)) = some (.str l) := rfl
 @[simp] theorem exprToSy_uri (l : List Nat) : exprToSy (.ground (.uri l)) = some (.sym l) := rfl
 @[simp] theorem exprToSy_bytes (l : List Nat) : exprToSy (.ground (.bytes l)) = some (.bytes l) := rfl
@@ -506,9 +505,6 @@ mutual
         simp only [exprToSy_int] at h; rw [← Option.some.inj h]; rfl
     | .ebigint n, s, h => by
         simp only [exprToSy_bigint] at h; rw [← Option.some.inj h]; rfl
-    | .edecimal n, s, h => by
-        simp only [exprToSy_edecimal] at h
-        exact Option.noConfusion h
     | .ground (.str l), s, h => by
         simp only [exprToSy_str] at h; rw [← Option.some.inj h]; rfl
     | .ground (.uri l), s, h => by

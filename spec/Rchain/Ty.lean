@@ -157,7 +157,6 @@ mutual
     -- The five added 2026-09-25. `emethod`'s name is a code-point list (no variables in it) and its
     -- arguments are closed exactly when each is; `ebigint` is a ground.
     | Expr.ebigint _ => true
-    | Expr.edecimal _ => true
     | Expr.emethod _ t args => closed t && closedListPar args
     | Expr.epercentPercent p q => closed p && closed q
     | Expr.eplusPlus p q => closed p && closed q
@@ -642,7 +641,6 @@ mutual
         simp only [sortExpr, sortListParPair_eq_map, closedExpr]
         rw [closedListParPair_sorted kvs hkv]
     | Expr.ebigint _ => by simp [sortExpr, closedExpr]
-    | Expr.edecimal _ => by simp [sortExpr, closedExpr]
     | Expr.emethod _ t args => by
         have hps : ∀ x ∈ args, closed (sortPar x) = closed x := fun x _ => closed_sortPar x
         -- `emethod`'s arguments are `sortListPar`'s plain map, not a `sortList` of one — the node sorts
