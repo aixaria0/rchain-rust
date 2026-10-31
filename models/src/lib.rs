@@ -19,7 +19,9 @@ pub mod block_metadata;
 pub mod block_version;
 pub mod casper;
 pub mod comm;
-pub mod decimal;
+// **`decimal` is no longer a module** (issue #527, 2026-10-31): the exact decimal value type was
+// removed before mainnet and `models/src/decimal.rs` is archived in place — full source as comments,
+// not compiled. See `docs/src/formal/decimal-removed.md`. Wire tag 35 and sort rank 14 are retired.
 pub mod errors;
 pub mod murmur_hash3;
 pub mod normalizer_env;
@@ -34,8 +36,6 @@ pub mod string_syntax;
 pub mod types;
 pub mod validator;
 pub mod wire;
-
-pub use decimal::{Decimal, DecimalError, MAX_SCALE};
 
 #[cfg(test)]
 mod property_tests;

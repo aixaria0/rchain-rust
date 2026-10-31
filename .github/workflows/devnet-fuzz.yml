@@ -581,7 +581,6 @@ jobs:
       - name: Verify Decimal release-preflight controls
         run: |
           set -euo pipefail
-          python3 tests/test_decimal_release_preflight.py -v
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Test block-version and activation schedule invariants
@@ -733,7 +732,6 @@ jobs:
       - name: Release and harness controls present on this source
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
           python3 tests/consensus-drill-regression.py
           python3 tests/test_quiet_chain_evidence.py
           python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
@@ -756,9 +754,6 @@ jobs:
           required_test -p rchain-block-storage --lib fast_proposer_cannot_retire_an_online_quorum_or_advance_round_alone
           cargo test --locked -p rchain-block-storage --lib
           required_test -p rchain-models block_version
-          # The historical decimal_bridge target is not present on dev; verify the
-          # merged Decimal implementation and model properties on this exact source.
-          required_test -p rchain-models --lib decimal::tests
           required_test -p rchain-models --lib property_tests
           required_test -p rchain-casper --lib initial_fringe
           required_test -p rchain-casper --lib engine::node_syncing::tests

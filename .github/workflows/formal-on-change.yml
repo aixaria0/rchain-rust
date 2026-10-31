@@ -49,13 +49,14 @@ on:
       - "node/tests/lean_*.rs"
       - "rholang/tests/lean_*.rs"
       - "casper/tests/lean_*.rs"
-      - "models/tests/lean_*.rs"
+      # `models/tests/lean_*.rs` was dropped with the decimal corpus (issue #527); models/tests now
+      # holds only the wire-refusal tests, which the Lean cannot make stale.
       # The admission consumer drives the pool policy and the permit arithmetic; a change to either
       # moves what the corpus checks (C340, Law 86a/86d).
       - "casper/src/pool.rs"
       - "casper/src/budget.rs"
-      # The decimal consumer drives the value algebra and the sorter's payload (Law 87a–e).
-      - "models/src/decimal.rs"
+      # The value algebra consumer is gone with the decimal type (issue #527); the sort consumer
+      # still drives the sorter's payload and the comparator family (Law 1).
       - "models/src/property_tests.rs"
       - "models/src/sorter.rs"
       # **A corpus consumer outside `tests/`.** `rholang/src/system_processes.rs`'s test module reads

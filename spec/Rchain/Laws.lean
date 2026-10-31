@@ -251,7 +251,7 @@ def lawsA : List Law := [
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
       clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: \
-      `conformance/sort.tsv`'s 50 verdicts, each `decide`d against the model's `cmpPar`, read back from \
+      `conformance/sort.tsv`'s 42 verdicts, each `decide`d against the model's `cmpPar`, read back from \
       the node by which element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
       element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
@@ -278,9 +278,10 @@ def lawsA : List Law := [
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
       `ESHORTOR`(124). **All eight are in the model as of 2026-09-25** — three were conflations \
-      (below) and the other five were constructors (further below) — so the count is closed. **The
-      decimal class (`edecimal`, tag 14) joined on 2026-10-19**, so the model's 30 classes cover all
-      34 of the node's variants, and rows 43–50 pin it. **Three of those eight were *conflations* rather than missing arms, and all \
+      (below) and the other five were constructors (further below) — so the count is closed. **The \
+      decimal class (`edecimal`, tag 14) joined on 2026-10-19 and was retired on 2026-10-31** (issue \
+      #527, option R): the model is 29 classes covering the node's 33 variants, and rows 43–50 are \
+      gone with the type. **Three of those eight were *conflations* rather than missing arms, and all \
       three are closed** (re-measured 2026-09-25, and this sentence is the correction): `EMATCHES`, \
       `ESHORTAND` and `ESHORTOR` have constructors (`ematches`, `eshortand`, `eshortor`, \
       `Par.lean:67-69`), `Surface.lean`'s arms now **emit** them (`.eshortand`, `.eshortor`, \
@@ -299,9 +300,7 @@ def lawsA : List Law := [
       after every operator — so each of the five is a class of its own, and `exprTag` gives it the \
       node's literal. The two consequences the earlier note predicted are the two that landed: \
       `cmpExpr`'s arm-lemma family grew from 24 classes to 29 (5 pair lemmas, 5 extraction lemmas, \
-      10 cross lemmas, and five arms in each of the three laws); the decimal took it to 30 (one more \
-      pair lemma, one extraction lemma, two cross lemmas, and one arm in each law, rows 43–50), and \
-      `emethod`'s score needed \
+      10 cross lemmas, and five arms in each of the three laws), and `emethod`'s score needed \
       `Rchain.Comparator.lex_lt_trans_at3` because its children are three deep. C58 carries the measurement of \
       the *gap*; the rows carry the closure. `Ground` is untouched and `ebigint` is an `Expr` leaf \
       because that is what the node has — the protobuf's `g_big_int` is an `Expr` variant and the \
@@ -315,16 +314,13 @@ def lawsA : List Law := [
       every node sorts by the score tree). The alignment is safe for the proofs: \
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
       `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change. \
-      **What the tie does not claim (2026-10-19).** The model's `edecimal` payload is the canonical \
-      scaled integer (`coefficient × 10^(38−scale)`), so the comparator laws are stated over that \
-      representation and over `Int` order. The bridge from the Rust `(coefficient, scale)` pair to \
-      that integer — `scaled_value`'s injectivity and order-preservation on canonical values — is \
-      **not** a theorem here, and neither are canonicalization, exact `+ - * /`, division's \
-      exact-or-error condition, the wire's minimal-byte form, the reducer's dispatch, or the cost \
-      model. Those are carried today by the Rust refinement (`Decimal::new`/`from_wire`, private \
-      fields) and its unit and corpus tests; the standalone `Rchain/Decimal.lean` plus the `decimal` \
-      corpus is **Law 87** (87a–e), whose boundary is the same: wire bytes/tag 35, serde ingress, the \
-      literal surface, reducer dispatch and the cost model remain Rust-tested, not modelled" },
+      **What the tie does not claim (2026-10-19, withdrawn 2026-10-31).** The retired `edecimal` \
+      payload was the canonical scaled integer, and the bridge from the Rust `(coefficient, scale)` \
+      pair to it — `scaled_value`'s injectivity and order-preservation on canonical values — was \
+      never a theorem here, and neither were canonicalization, exact `+ - * /`, division's \
+      exact-or-error condition, the wire's minimal-byte form, reducer dispatch or the cost model. \
+      Law 87 carried that boundary and is now `retired` with the type (issue #527); the archived \
+      algebra is `spec/Rchain/Decimal.lean`, and the record is `docs/src/formal/decimal-removed.md`" },
   { number := 1, clause := "b", layer := "Rholang",
     rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
@@ -3542,8 +3538,8 @@ def lawsB : List Law := [
       so the round trip descends structurally instead of through a label test the equation compiler \
       cannot see (`taggedRecord` is the same shape spelled as a record). **Three shapes are outside the \
       domain, named:** a `Float64` (Rholang has no float), a **small** `GBigInt` — Syrup's integer is \
-      one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form — and a \
-      `GDecimal` (Rholang has an exact decimal; Syrup has no counterpart). **What the tie \
+      one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form — and, until the \
+      type was removed (issue #527), a `GDecimal` — there is no decimal left to refuse. **What the tie \
       does not reach:** the refusals' *reason strings* are the node's (`BridgeError`), tied by the \
       corpus's sources rather than by a theorem." },
   { number := 59, clause := "b", layer := "Wire",
@@ -3579,7 +3575,7 @@ def lawsB : List Law := [
     falsifiable := some "**the URI was the violation, and it is why this clause exists.** `GUri → \
       `Symbol` outbound with `Symbol` refused inbound is a *lossy* map: the encoder emits a shape from \
       which the value does not come back, which is exactly what this clause forbids. The domain's \
-      `float`, small-`GBigInt` and `GDecimal` exclusions are the other side of it — shapes the encoder must not \
+      `float` and small-`GBigInt` exclusions are the other side of it — shapes the encoder must not \
       produce and the decoder must not accept. `node/tests/lean_syrup_corpus.rs`'s round trip is the \
       falsifier on the node: an encoder that emitted a lossy shape fails on the case that carries it.",
     note := "**This is the clause that turns a documented decision into a checked one.** The bridge's \
@@ -4696,154 +4692,35 @@ def lawsC : List Law := [
       bound; the Rust's is the receiver's own pool." },
 
   { number := 87, clause := "a", layer := "Decimal",
-    statement := "**Canonicalisation is a normal form.** `canonicalize` strips trailing zeros while \
-      the scale is positive and sends every zero to `(0,0)`; `new` canonicalises **before** the \
-      scale bound, and `fromParts` bounds **first** and then refuses a zero-with-scale or a \
-      trailing-zero pair **by name**",
-    status := .provedTied,
-    corpus := some "decimal",
-    declarations := [`Rchain.Decimal.Canonical, `Rchain.Decimal.canonicalize,
-      `Rchain.Decimal.new, `Rchain.Decimal.fromParts,
-      `Rchain.Decimal.canonicalize_idempotent, `Rchain.Decimal.canonicalize_cross,
-      `Rchain.Decimal.scaledValue_canonicalize, `Rchain.Decimal.new_ok_iff,
-      `Rchain.Decimal.new_error_iff, `Rchain.Decimal.fromParts_ok_iff,
-      `Rchain.Decimal.fromParts_zero_with_scale,
-      `Rchain.Decimal.fromParts_trailing_zero],
+    statement := "**Retired: the decimal's canonical form is no longer a rule of this tree.** The archived model canonicalised (stripping trailing zeros while the scale is positive, sending every zero to `(0,0)`), bounded the scale **after** canonicalising, and refused a non-canonical pair by name",
+    status := .retired,
     axioms := [],
     rust := ["models/src/decimal.rs"],
-    rustWitness := ["models/src/decimal.rs:canonicalisation_strips_trailing_zeros_and_normalises_zero",
-      "models/src/decimal.rs:the_scale_bound_is_inclusive",
-      "models/src/decimal.rs:strict_construction_refuses_a_noncanonical_pair",
-      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
-    witness := [`Rchain.Decimal.canonicalize_idempotent,
-      `Rchain.Decimal.new_ok_iff,
-      `Rchain.Decimal.fromParts_ok_iff,
-      `Rchain.Decimal.fromParts_zero_with_scale,
-      `Rchain.Decimal.fromParts_trailing_zero],
-    falsifiable := "`new 10^39,39` is accepted as `(1,0)` while `new 1,39` is \
-      `ScaleOutOfRange 39`: the bound is applied after canonicalisation. `new 0,39` is `(0,0)` \
-      because the zero is canonicalised before the bound is read. `fromParts 0,3` is \
-      `ZeroWithScale 3` and `fromParts 110,2` is `TrailingZero 2`; a constructor that classified by \
-      the wrong test fails those rows, and deleting canonicalisation before the bound flips the \
-      `10^39,39` row.",
-    note := "The model's `Int`/`Nat` stand for the Rust `BigInt`/`u32`. The wire's minimal-byte form \
-      and tag 35, serde ingress, the literal surface, reducer dispatch and the cost model are \
-      outside Law 87 and remain Rust-tested. The corpus's `new`/`parts` rows take the raw pair, \
-      because those are the constructors where a non-canonical input is legal (and refused by name)." },
-
+    note := "**Retired 2026-10-31 by issue #527 (option R: remove the decimal type before mainnet).** The code read was the canonicalisation and the three constructor policies of the archived implementation, and the canonical-form refusals the wire and the literal parser applied. The port has no exact decimal value type: the type, its wire tag (35, now `reserved`) and its sort rank (14) are gone, `models/src/decimal.rs` and `spec/Rchain/Decimal.lean` are archived in place with dated headers, and the row is kept — not deleted — so the decision and the re-landing requirements travel with the number. `declarations`, `witness`, `rustWitness`, `corpus` and `falsifiable` were dropped with the model they named; the `rust` anchor survives because the archived file is the code that was read. Why it went, the evidence, and what a future attempt must do differently (model and corpus first, a versioned activation rather than an ungated pre-mainnet addition, and a wire-tag decision) are in `docs/src/formal/decimal-removed.md`." },
   { number := 87, clause := "b", layer := "Decimal",
-    statement := "**`scaledValue` is the value embedding.** On canonical values it is injective, \
-      and `cmpNumeric` is the order of the scaled payload: `cmpNumeric a b = cmp (scaledValue a) \
-      (scaledValue b)` with `eq_iff`, `swap` and `lt_trans`",
-    status := .provedTied,
-    corpus := some "decimal",
-    declarations := [`Rchain.Decimal.scaledValue, `Rchain.Decimal.cmpNumeric,
-      `Rchain.Decimal.canonical_zero_unique, `Rchain.Decimal.scaledValue_injective,
-      `Rchain.Decimal.cmpNumeric_eq_scaled, `Rchain.Decimal.cmpNumeric_eq_iff,
-      `Rchain.Decimal.cmpNumeric_swap, `Rchain.Decimal.cmpNumeric_lt_trans],
+    statement := "**Retired: there is no decimal value embedding in this tree.** The scaled-value injection (`scaled_value d = coefficient × 10^(38 − scale)`) and its order were the score the sorter's DECIMAL class used",
+    status := .retired,
     axioms := [],
-    rust := ["models/src/decimal.rs", "models/src/sorter.rs"],
-    rustWitness := ["models/src/decimal.rs:scaled_value_is_unique_for_canonical_values",
-      "models/src/decimal.rs:comparison_is_numeric_across_scales",
-      "models/src/sorter.rs:smaller_decimal_values_come_first_across_scales",
-      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
-    witness := [`Rchain.Decimal.scaledValue_injective,
-      `Rchain.Decimal.cmpNumeric_eq_scaled,
-      `Rchain.Decimal.cmpNumeric_eq_iff,
-      `Rchain.Decimal.cmpNumeric_swap,
-      `Rchain.Decimal.cmpNumeric_lt_trans],
-    falsifiable := "The pair `(10,1)` and `(1,0)` has one `scaledValue` and is not equal, so the \
-      `Canonical` hypothesis is load-bearing. `cmp 15:1 2:0` is `lt`; a lexicographic \
-      `(coefficient, scale)` order would say `gt`, which is the defect the sorter's DECIMAL score \
-      avoids. `cmp -15:1 -2:0` is `gt`, pinning the sign against an absolute-value comparator.",
-    note := "`scaledValue d = coefficient × 10^(MAX_SCALE − scale)`; `MAX_SCALE = 38` is the sorter's \
-      score and the `Expr.edecimal` payload (`spec/Rchain/Par.lean`). The row is tied to the decimal \
-      corpus for the value algebra and to `sort.tsv` rows 43–50 for the payload's class order." },
-
+    rust := ["models/src/decimal.rs"],
+    note := "**Retired 2026-10-31 by issue #527 (option R: remove the decimal type before mainnet).** The code read was the archived `scaled_value`/`cmp_numeric` pair and the sorter's removed DECIMAL (rank 14) score arm. The port has no exact decimal value type: the type, its wire tag (35, now `reserved`) and its sort rank (14) are gone, `models/src/decimal.rs` and `spec/Rchain/Decimal.lean` are archived in place with dated headers, and the row is kept — not deleted — so the decision and the re-landing requirements travel with the number. `declarations`, `witness`, `rustWitness`, `corpus` and `falsifiable` were dropped with the model they named; the `rust` anchor survives because the archived file is the code that was read. Why it went, the evidence, and what a future attempt must do differently (model and corpus first, a versioned activation rather than an ungated pre-mainnet addition, and a wire-tag decision) are in `docs/src/formal/decimal-removed.md`." },
   { number := 87, clause := "c", layer := "Decimal",
-    statement := "**`+`, `-` and `*` are exact.** The result is canonical; addition and \
-      subtraction satisfy `scaledValue (add a b) = scaledValue a + scaledValue b` and its \
-      subtraction dual, and a successful product satisfies `scaledValue q × 10^38 = scaledValue a × \
-      scaledValue b`. `add` commutes and `sub (add a b) b = a`",
-    status := .provedTied,
-    corpus := some "decimal",
-    declarations := [`Rchain.Decimal.add, `Rchain.Decimal.sub, `Rchain.Decimal.mul,
-      `Rchain.Decimal.add_canonical, `Rchain.Decimal.sub_canonical,
-      `Rchain.Decimal.scaledValue_add, `Rchain.Decimal.scaledValue_sub,
-      `Rchain.Decimal.add_new, `Rchain.Decimal.sub_new,
-      `Rchain.Decimal.add_comm, `Rchain.Decimal.add_sub_cancel,
-      `Rchain.Decimal.mul_ok_iff, `Rchain.Decimal.mul_error_iff,
-      `Rchain.Decimal.scaledValue_mul],
+    statement := "**Retired: there is no exact decimal arithmetic in this tree.** Addition, subtraction and multiplication were exact and canonical, and satisfied the scaled identity the value algebra stated",
+    status := .retired,
     axioms := [],
     rust := ["models/src/decimal.rs"],
-    rustWitness := ["models/src/decimal.rs:arithmetic_is_exact",
-      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
-    witness := [`Rchain.Decimal.add_canonical, `Rchain.Decimal.scaledValue_add,
-      `Rchain.Decimal.mul_ok_iff, `Rchain.Decimal.scaledValue_mul,
-      `Rchain.Decimal.add_sub_cancel],
-    falsifiable := "`9:38 + 1:38 = 1:37` and `5:1 + 5:1 = 1:0` pin carry and strip; `25:20 × 4:20 = \
-      1:38` while `1:20 × 1:20` is `ScaleOutOfRange 40`, so canonicalisation before the bound is \
-      observable. The product identity is `q.scaledValue × 10^38 = a.scaledValue × b.scaledValue`; \
-      dropping the `10^38` is false by that factor, and the corpus's `mul` rows catch it.",
-    note := "The Rust `add`/`sub` return `Result` because `Decimal::new` is fallible in general, but \
-      for canonical operands the aligned scale is at most 38 and the result is always `Ok`; the model \
-      is total and `add_new`/`sub_new` are the bridge. `mul` is `Except`: the only model error is \
-      `ScaleOutOfRange` after canonicalisation; the u32-only `ScaleOverflow` is outside. Mixed \
-      `Int`/`BigInt` promotion and the cost model are reducer concerns, Rust-tested, not modelled." },
-
+    note := "**Retired 2026-10-31 by issue #527 (option R: remove the decimal type before mainnet).** The code read was the archived `add`/`sub`/`mul` and the reducer arms that routed decimal operands to them. The port has no exact decimal value type: the type, its wire tag (35, now `reserved`) and its sort rank (14) are gone, `models/src/decimal.rs` and `spec/Rchain/Decimal.lean` are archived in place with dated headers, and the row is kept — not deleted — so the decision and the re-landing requirements travel with the number. `declarations`, `witness`, `rustWitness`, `corpus` and `falsifiable` were dropped with the model they named; the `rust` anchor survives because the archived file is the code that was read. Why it went, the evidence, and what a future attempt must do differently (model and corpus first, a versioned activation rather than an ungated pre-mainnet addition, and a wire-tag decision) are in `docs/src/formal/decimal-removed.md`." },
   { number := 87, clause := "d", layer := "Decimal",
-    statement := "**Division is exact or an explicit error.** A zero divisor is \
-      `DivisionByZero`; a nonzero divisor returns a canonical quotient exactly when one exists \
-      within `MAX_SCALE`, and otherwise `InexactDivision`. The quotient satisfies \
-      `q.scaledValue × b.scaledValue = a.scaledValue × 10^38`",
-    status := .provedTied,
-    corpus := some "decimal",
-    declarations := [`Rchain.Decimal.divAt, `Rchain.Decimal.divUpTo, `Rchain.Decimal.div,
-      `Rchain.Decimal.divAt_spec, `Rchain.Decimal.divUpTo_none_iff,
-      `Rchain.Decimal.divUpTo_some_spec, `Rchain.Decimal.div_zero,
-      `Rchain.Decimal.div_ok_spec, `Rchain.Decimal.div_error_iff],
+    statement := "**Retired: there is no decimal division rule in this tree.** Division was exact or an explicit `InexactDivision`, with a zero divisor refused by name — the limitation that made a fixed-point decimal useless for a ratio",
+    status := .retired,
     axioms := [],
     rust := ["models/src/decimal.rs"],
-    rustWitness := ["models/src/decimal.rs:division_is_exact_or_refused",
-      "rholang/src/reduce.rs:decimal_division_is_exact_or_an_explicit_error",
-      "models/tests/lean_decimal_corpus.rs:the_decimal_algebra_matches_the_lean_model"],
-    witness := [`Rchain.Decimal.divAt_spec, `Rchain.Decimal.divUpTo_none_iff,
-      `Rchain.Decimal.div_ok_spec, `Rchain.Decimal.div_error_iff,
-      `Rchain.Decimal.div_zero],
-    falsifiable := "`1/3` and `1/2^39` are `InexactDivision`; `1/2` and `1/2^38` are exact; `1/0` \
-      is `DivisionByZero`. A rounding division, or a 39th digit, changes one of those. The division \
-      corpus pins the inclusive 38-digit bound and the negative case `-1/2 = -5:1`.",
-    note := "The theorem is the **exactness criterion**, not the algorithm: the Rust computes the \
-      quotient one decimal digit at a time, while the model scans `divAt` over scales `0..=38`. The \
-      corpus is the tie between them. `Int`'s Euclidean `/` and `%` agree with the Rust's truncating \
-      `BigInt` on the only uses here — a divisibility test and an exact quotient — and the negative \
-      corpus rows pin it." },
-
+    note := "**Retired 2026-10-31 by issue #527 (option R: remove the decimal type before mainnet).** The code read was the archived division and the reducer's division arm. The port has no exact decimal value type: the type, its wire tag (35, now `reserved`) and its sort rank (14) are gone, `models/src/decimal.rs` and `spec/Rchain/Decimal.lean` are archived in place with dated headers, and the row is kept — not deleted — so the decision and the re-landing requirements travel with the number. `declarations`, `witness`, `rustWitness`, `corpus` and `falsifiable` were dropped with the model they named; the `rust` anchor survives because the archived file is the code that was read. Why it went, the evidence, and what a future attempt must do differently (model and corpus first, a versioned activation rather than an ungated pre-mainnet addition, and a wire-tag decision) are in `docs/src/formal/decimal-removed.md`." },
   { number := 87, clause := "e", layer := "Decimal",
-    statement := "**The `edecimal` payload bridge.** `edecimalOf d = Expr.edecimal d.scaledValue`; \
-      on canonical values it is injective, and `cmpExpr` on two payloads is `cmpNumeric`, so the \
-      model's value order is the sorter's DECIMAL class order",
-    status := .provedTied,
-    corpus := some "sort",
-    declarations := [`Rchain.Decimal.edecimalOf, `Rchain.Decimal.cmpExpr_edecimalOf,
-      `Rchain.Decimal.edecimalOf_eq_iff,
-      `Rchain.Decimal.cmpNumeric_eq_cmpExpr_edecimalOf],
+    statement := "**Retired: the `edecimal` payload bridge and sort rank 14 are gone.** The model's value order was the sorter's DECIMAL class order; both the class and the payload are retired, and rank 14 is never reused",
+    status := .retired,
     axioms := [],
-    rust := ["models/src/sorter.rs"],
-    rustWitness := ["models/src/sorter.rs:smaller_decimal_values_come_first_across_scales",
-      "models/src/sorter.rs:decimal_keys_normalise_within_the_class_but_not_against_an_int",
-      "rholang/tests/lean_sort_corpus.rs:the_canonical_order_is_the_lean_models_pairwise"],
-    witness := [`Rchain.Decimal.cmpExpr_edecimalOf,
-      `Rchain.Decimal.edecimalOf_eq_iff,
-      `Rchain.Decimal.cmpNumeric_eq_cmpExpr_edecimalOf],
-    falsifiable := "`sort.tsv` rows 43–50 put the Decimal class at rank 14 and order `1.5d` before \
-      `2d`; a payload that carried the `(coefficient, scale)` pair instead of `scaledValue` flips \
-      those rows, and a two-field `Expr.edecimal` would make the comparator's `eq_iff` false for \
-      `(10,1)` and `(1,0)`.",
-    note := "This clause is tied to the existing **`sort`** corpus (rows 43–50), not to the decimal \
-      corpus: the value algebra is tied by `decimal.tsv`, while `Expr.edecimal` is compared by the \
-      sorter corpus and `models/src/sorter.rs`'s DECIMAL score. Law 1a's note is updated to point \
-      here; its statement, status and declarations are not widened." },
+    rust := ["models/src/decimal.rs"],
+    note := "**Retired 2026-10-31 by issue #527 (option R: remove the decimal type before mainnet).** The code read was the archived payload bridge, the removed `Expr.edecimal` constructor and the sorter's DECIMAL score arm; the `sort` corpus rows 43–50. The port has no exact decimal value type: the type, its wire tag (35, now `reserved`) and its sort rank (14) are gone, `models/src/decimal.rs` and `spec/Rchain/Decimal.lean` are archived in place with dated headers, and the row is kept — not deleted — so the decision and the re-landing requirements travel with the number. `declarations`, `witness`, `rustWitness`, `corpus` and `falsifiable` were dropped with the model they named; the `rust` anchor survives because the archived file is the code that was read. Why it went, the evidence, and what a future attempt must do differently (model and corpus first, a versioned activation rather than an ungated pre-mainnet addition, and a wire-tag decision) are in `docs/src/formal/decimal-removed.md`." },
 
   { number := 88, clause := "a", layer := "Disposition",
     statement := "**A stored body is accounted for or visible.** A body in the block store is \

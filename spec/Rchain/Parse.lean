@@ -621,7 +621,7 @@ def deviationCaseCount : Nat := 14
 /-- How many cases the printer half carries (law 31's completeness direction): one per production
 witness, which the fragment now reads in full — `[1]` twice, because `Surface.lean`'s table witnesses
 `CollectList`/`ProcRemainderEmpty` with the same term as `CollectList`'s own row. -/
-def printerCaseCount : Nat := 82
+def printerCaseCount : Nat := 81
 
 /-- How many cases the layer carries, as the sum of its four halves. -/
 def parseCaseCount : Nat :=

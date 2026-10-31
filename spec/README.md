@@ -59,6 +59,9 @@ spec/
     Crypto/            Law 19: Random/Spec (axiomatized by design)
   INVENTORY.md         the law catalog (Laws 1–77; the register covers 1–91): source-of-truth → theorem → Rust test
   cost-register.tsv    the cost register: every priced operation, the shape of its charge, and its residual
+  (#527)               Law 87 is retired: the exact decimal value type was removed before mainnet;
+                       Rchain/Decimal.lean is archived in place and docs/src/formal/decimal-removed.md
+                       is the record
   COST.md              the rendered register (emitted from the TSV; refused stale)
   STYLE.md             conventions of this tree: naming, measured options, what is deliberately absent
 ```

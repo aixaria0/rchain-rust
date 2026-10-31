@@ -284,8 +284,8 @@ state.
    allow-list, an access-control list restoring a forgeable capability.
 
 New tied properties since September: the admission contract (law 86), the block disposition and
-proposal gates (law 88), liveness enforcement (law 89, a hard fork), the hostlist (law 90, advisory),
-and the exact decimal algebra (law 87, a hard fork). Each is machine-checked and tied to its Rust by a
+proposal gates (law 88), liveness enforcement (law 89, a hard fork) and the hostlist (law 90,
+advisory). Each is machine-checked and tied to its Rust by a
 corpus or named witnesses; none of them makes a cost charge proportional or a gate see work.
 
 ## 7. Comparison with other chains
@@ -343,7 +343,7 @@ These are decisions, not defects.
 - **Permissive defaults** (epoch length 0, bond minimum 0) remain reachable only on ad-hoc runtimes;
   **term-depth margin** remains a proof debt; the **fringe liveness predicate** still counts messages
   rather than senders.
-- **The hard-fork schedule** for laws 87 (decimal), 88 (disposition), 89 (liveness), 90 (hostlist) and
+- **The hard-fork schedule** for laws 88 (disposition), 89 (liveness), 90 (hostlist) and
   91 (the charge magnitudes): which network arms which, and when. **91 is the one that ships ungated
   and cannot wait for a schedule** — it changes a block's post-state hash, so every validator on a
   network must move together and every pinned genesis hash must be regenerated (§149).

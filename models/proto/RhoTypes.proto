@@ -168,11 +168,19 @@ message Match {
 // Any process may be an operand to an expression.
 // Only processes equivalent to a ground process of compatible type will reduce.
 message Expr {
+    // **Tag 35 is retired and must not be reused** (issue #527, 2026-10-31). It was
+    // `GDecimal g_decimal` — the exact decimal type added for issue #380 option B and removed
+    // before mainnet. `reserved` is message-scoped, which is why it sits here rather than in the
+    // oneof. A peer that still sends tag 35 decodes to no `expr_instance` and gets the
+    // `Malformed("expr_instance")` refusal (`models/src/wire.rs`); reusing the tag needs a versioned
+    // fork. The decision is `docs/src/formal/decimal-removed.md`.
+    reserved 35;
+    reserved "g_decimal";
+
     oneof expr_instance {
         bool g_bool = 1;
         sint64 g_int = 2;
         bytes g_big_int = 34;
-        GDecimal g_decimal = 35;
         string g_string = 3;
         string g_uri = 4;
         bytes g_byte_array = 25;
@@ -210,19 +218,6 @@ message Expr {
         EShortAnd e_short_and_body = 32;
         EShortOr  e_short_or_body = 33;
     }
-}
-
-/**
- * An exact decimal: `coefficient × 10^-scale`.
- *
- * The coefficient is a minimal signed two's-complement big-endian encoding; zero is `0x00`.
- * Canonical form strips factors of ten while `scale > 0`, and zero is `(0x00, 0)`. A decoder must
- * refuse a non-minimal coefficient, a zero with a nonzero scale, or a trailing zero at a positive
- * scale rather than accepting an alternative encoding of the same value.
- */
-message GDecimal {
-    bytes coefficient = 1;
-    uint32 scale = 2;
 }
 
 message EList {

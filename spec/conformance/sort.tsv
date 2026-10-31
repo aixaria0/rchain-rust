@@ -40,11 +40,3 @@ sort	1.foo(2)	1 %% 2	lt
 sort	1.foo(2)	2.foo(2)	lt
 sort	1.foo(2)	1.bar(2)	gt
 sort	1.foo(2)	1.foo(3)	lt
-sort	@"c"!(1.5d)	@"c"!(2d)	lt
-sort	@"c"!(2d)	@"c"!(1.5d)	gt
-sort	@"c"!(1.10d)	@"c"!(1.1d)	eq
-sort	@"c"!(1d)	@"c"!(1.5d)	lt
-sort	@"c"!(1.5d)	@"c"!(100)	gt
-sort	@"c"!(1.5d)	@"c"!(BigInt(100))	gt
-sort	@"c"!(1.5d)	@"c"!([1])	gt
-sort	@"c"!(1.5d)	@"c"!(1 + 2)	lt

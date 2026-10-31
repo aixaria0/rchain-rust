@@ -44,7 +44,7 @@ disagree, the register is right.
 | 78–79 | **Genesis** | the developer allocation and its vesting schedule |
 | 80–85 | **The join and the chain's identity** | root publication, the verified-answer join, the validator lifecycle, the trust model, the genesis anchor, the fringe state |
 | 86 | **Admission and the pool** | the pool is the throttle: a bounded queue, no silent loss, independent work in parallel, one permit progresses, pending work relays |
-| 87 | **Decimal** | the exact value algebra: canonical form, the scaled-value embedding, exact arithmetic, exact-or-error division, the `edecimal` payload |
+| 87 | **Decimal — retired** | the exact value algebra was **removed before mainnet** (issue #527); the clause rows are `retired` in the register and the record is [the decimal type, withdrawn](decimal-removed.md) |
 | 88–90 | **Disposition, liveness, hostlist** | a stored body is accounted for and the proposal gate is total in its anchor (88); jail before any vote reaches a bond (89); the published hostlist is earned, bounded and fresh (90) |
 | 91 | **The cost model** | a canonicalisation and a union charge their elements, `censure` its cubic fold, a tally its option lists; the register and the census that keep the shapes honest are [here](cost-model.md) |
 
@@ -226,15 +226,15 @@ catalog does not silently shrink.
 | 86d | One permit progresses; the permit budget bounds the batch, never the admission answer. |
 | 86e | Pending work is relocatable: a relay copies to a peer and leaves the sender's row intact. |
 
-## Decimal (Law 87)
+## Decimal (Law 87) — retired
 
-| Law | What it guarantees |
-|---|---|
-| 87a | Canonicalisation is a normal form; `new` canonicalises before the bound and `fromParts` refuses a zero-with-scale or a trailing-zero pair by name. |
-| 87b | `scaledValue` is an injective embedding of the canonical value, and `cmpNumeric` is the order of that payload. |
-| 87c | `+`, `-` and `*` are exact and canonical; the scaled identities hold, and `mul` refuses a scale above 38. |
-| 87d | Division is exact or an explicit error: zero divisor, or `InexactDivision` when no quotient fits in 38 digits. |
-| 87e | `Expr.edecimal` carries `scaledValue`; the model's value order is the sorter's DECIMAL class order. |
+**Rholang has no decimal value type.** The exact fixed-point decimal added on 2026-10-19 was removed
+before mainnet on 2026-10-31 (issue #527, option R): it was isomorphic to a scale-38 integer, it could
+not carry a ratio (`1d / 3d` was an error), no contract in the tree used it, and its wire tag and sort
+rank were irreversible commitments. The five clauses are `retired` in the register — kept, not
+deleted, so the decision travels with the number — and the archived algebra is
+`spec/Rchain/Decimal.lean`. What was built, why it went, and what a future attempt must do differently:
+[the decimal type, withdrawn](decimal-removed.md).
 
 ## The node hostlist (Law 90)
 
@@ -257,7 +257,7 @@ catalog does not silently shrink.
 The register classifies every entry; the words mean different things:
 
 - **proved-tied** — proved, *and* tied to the node by a conformance corpus the Rust consumer runs.
-  <!-- counts:proved-tied-entries -->36<!-- counts:end --> entries.
+  <!-- counts:proved-tied-entries -->31<!-- counts:end --> entries.
 - **proved-model** — proved about a model that a person keeps in sync with the Rust.
   <!-- counts:proved-model-entries -->86<!-- counts:end --> entries.
 - **axiom-by-design** — a primitive assumed rather than proved (cryptography): <!-- counts:axioms -->10 axioms<!-- counts:end --> across the tree.
@@ -267,8 +267,8 @@ The register classifies every entry; the words mean different things:
   rule of that shape, evidenced by naming the code that was read.
 
 The count arithmetic, in one sentence: **<!-- counts:laws -->91 laws<!-- counts:end -->, <!-- counts:entries -->131 entries<!-- counts:end -->**, because <!-- counts:clause-laws -->21<!-- counts:end --> laws
-carry clauses; **<!-- counts:proved-laws -->84<!-- counts:end --> laws are proved in at least one clause**, split over entries as
-<!-- counts:proved-tied-entries -->36<!-- counts:end --> tied and <!-- counts:proved-model-entries -->86<!-- counts:end --> over the model. The two status columns overlap on
+carry clauses; **<!-- counts:proved-laws -->83<!-- counts:end --> laws are proved in at least one clause**, split over entries as
+<!-- counts:proved-tied-entries -->31<!-- counts:end --> tied and <!-- counts:proved-model-entries -->86<!-- counts:end --> over the model. The two status columns overlap on
 laws 14, 16 and 86, which is why they do not add up to the law-level union. No total on this page is
 hand-written: the spans are emitted from the register.
 

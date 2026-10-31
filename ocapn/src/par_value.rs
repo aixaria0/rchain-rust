@@ -25,7 +25,7 @@
 //! | `ParMap` (string keys) | `Struct` | a non-string key is refused |
 //! | `GUnforgeable`, `Bundle` | — | **refused: a capability is not data** |
 //! | `ParSet` | — | refused: Syrup has no set, and a list would lose order-insensitivity silently |
-//! | `GDecimal` | — | refused: Syrup has no exact decimal type |
+//! | ~~`GDecimal`~~ | — | **retired** (issue #527): the type is gone, so there is nothing to refuse |
 //! | operators, `EMethod`, sends/receives/news/matches | — | refused: a process is not a value |
 //! | any other `Record` **inbound** | — | refused: a labelled record that is not the tagged tuple |
 //! | `Float64` **inbound** | — | refused: Rholang has no float |
@@ -138,9 +138,9 @@ fn expr_to_value(expr: &Expr) -> Result<Value, BridgeError> {
         Expr::GString(s) => Ok(Value::String(s.clone())),
         Expr::GUri(u) => Ok(Value::Symbol(u.clone())),
         Expr::GByteArray(b) => Ok(Value::Bytes(b.clone())),
-        Expr::GDecimal(_) => Err(BridgeError::NoCounterpart(
-            "a decimal — Syrup has no exact decimal type",
-        )),
+        // **A `GDecimal` refusal arm was here and is retired** (issue #527): Syrup has no exact
+        // decimal type, so a decimal could not cross. The type is gone; `BigInt` still crosses
+        // losslessly as a Syrup `Int`.
         Expr::EList(list) => {
             if list.remainder.is_some() {
                 return Err(BridgeError::NoCounterpart(
@@ -403,20 +403,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_decimal_outbound_is_refused_with_its_own_reason() {
-        // Syrup has no exact decimal; approximating one as a Float64 would be the lossy map the
-        // law forbids, so the refusal names the shape rather than the catch-all.
-        let decimal = ground(Expr::GDecimal(
-            rchain_models::Decimal::new(15.into(), 1).expect("canonical"),
-        ));
-        assert_eq!(
-            par_to_value(&decimal),
-            Err(BridgeError::NoCounterpart(
-                "a decimal — Syrup has no exact decimal type"
-            ))
-        );
-    }
+    // **`a_decimal_outbound_is_refused_with_its_own_reason` was here and is retired** (issue
+    // #527): Syrup has no exact decimal type, so a decimal could not cross; the type is gone.
 
     #[test]
     fn a_float_inbound_has_no_rholang_source() {

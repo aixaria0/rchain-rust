@@ -56,8 +56,9 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws
   (59–65), the distributed-system set (66–71), the durable reset, the stop and the read construction
   (72–77), the genesis's developer allocation (78) and the schedule it unlocks on (79), and the
-  sync, Proof-of-Stake, Casper, admission, decimal and disposition rows (80–89), the published
-  hostlist (90) and the charge magnitudes (91) — mapped to their machine-checked proofs.
+  sync, Proof-of-Stake, Casper, admission, disposition and liveness rows (80–89; 87, the decimal, is
+  retired), the published hostlist (90) and the charge magnitudes (91) — mapped to their machine-checked
+  proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building

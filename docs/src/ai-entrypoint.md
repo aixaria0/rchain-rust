@@ -26,6 +26,7 @@ catalogue is [`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus co
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
 | Map a language feature, or a **syntax, matching, reply-shape or JSON** feature, to its **law** and its proof | [The laws](formal/laws.md) |
 | Ask whether gas bounds work, or why a charge is the shape it is | [The cost model, and the gate that keeps it honest](formal/cost-model.md) |
+| Understand why Rholang has **no decimal type**, and what a future attempt must do differently | [The decimal type, withdrawn (issue #527)](formal/decimal-removed.md) |
 | **Work on the law register** — add or change a law, read a status, run the gates | [Laws reference for AI agents](ai/laws-reference.md) |
 | Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/scheduling.md) |
 | Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/scheduling.md) |

@@ -6,8 +6,6 @@
 
 use std::fmt;
 
-use crate::decimal::DecimalError;
-
 /// An error decoding a model from its protobuf or packet representation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelsError {
@@ -19,9 +17,8 @@ pub enum ModelsError {
     PacketTypeMismatch { got: String, expected: String },
     /// A fixed-width value had the wrong byte length (validate-on-ingress).
     Length { got: usize, expected: usize },
-    /// A decimal's wire form was not canonical (empty or non-minimal coefficient bytes, an
-    /// out-of-range scale, or a pair whose canonical form differs).
-    InvalidDecimal(DecimalError),
+    // **`InvalidDecimal` was here and is retired** with the decimal type (issue #527): tag 35 is
+    // reserved, so a decimal payload is refused as `Malformed("expr_instance")` instead.
 }
 
 impl fmt::Display for ModelsError {
@@ -35,7 +32,6 @@ impl fmt::Display for ModelsError {
             ModelsError::Length { got, expected } => {
                 write!(f, "expected {expected} bytes, got {got}")
             }
-            ModelsError::InvalidDecimal(e) => write!(f, "invalid decimal: {e}"),
         }
     }
 }
@@ -132,10 +128,8 @@ mod tests {
             .to_string(),
             "expected 32 bytes, got 5"
         );
-        assert_eq!(
-            ModelsError::InvalidDecimal(crate::decimal::DecimalError::CoefficientEmpty).to_string(),
-            "invalid decimal: decimal coefficient bytes are empty"
-        );
+        // `InvalidDecimal`'s case retired with the decimal type (issue #527); a decimal payload is
+        // now `Malformed("expr_instance")`, pinned by `models/tests/expr_refusal.rs`.
     }
 
     /// The type is a real `std::error::Error`, so `?` across the crate boundary and any
