@@ -209,6 +209,33 @@ where
         parents.values().cloned().collect()
     }
 
+    /// The production escape gate. A previous self-message must not lose an unresolved
+    /// parent while repairing its peer justification view: the unchecked escape path
+    /// cannot prove monotonicity if the message is absent from the local map.
+    ///
+    /// Return all missing IDs so the proposer can report precisely which DAG inputs
+    /// it needs, rather than silently treating missing history as covered.
+    /// Complete DAGs retain the exact parent-selection semantics above.
+    pub fn parents_for_new_block_escaping_checked(
+        &self,
+        sender: &S,
+    ) -> Result<BTreeSet<Message<M, S>>, Vec<M>> {
+        if !self.round_parents.is_empty() {
+            if let Some(mine) = self.latest_msgs.get(sender) {
+                let missing: Vec<M> = mine
+                    .parents
+                    .iter()
+                    .filter(|id| !self.msg_map.contains_key(*id))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(missing);
+                }
+            }
+        }
+        Ok(self.parents_for_new_block_escaping(sender))
+    }
+
     /// **Whether `sender` has already produced a block since the last round boundary** — and so must not
     /// propose again until the round closes, on pain of equivocating with itself.
     ///
@@ -566,6 +593,40 @@ mod tests {
         assert_eq!(
             fork_escape.iter().find(|m| m.sender == 1).unwrap().id,
             b2.id
+        );
+    }
+
+    /// The production escape gate must name unresolved previous justifications,
+    /// rather than silently skipping the monotonicity check for that peer.
+    #[test]
+    fn escape_checked_reports_missing_previous_justification() {
+        let bonds = [(0, 250), (1, 250), (2, 250), (3, 250)];
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        let a1 = at(10, 0, 1, 1, &bonds);
+        let b1 = at(20, 1, 1, 1, &bonds);
+        state.insert_msg_mut(&a1);
+        state.insert_msg_mut(&b1);
+        let a2 = state.create_message(
+            11,
+            BlockHeight::try_from(2).unwrap(),
+            0,
+            SeqNum::try_from(2).unwrap(),
+            a1.bonds_map.clone(),
+            &[a1.clone(), b1.clone()].into_iter().collect(),
+        );
+        state.insert_msg_mut(&a2);
+        state.round_parents = [(0, a1), (1, b1)].into_iter().collect();
+
+        assert_eq!(
+            state.parents_for_new_block_escaping_checked(&0).unwrap(),
+            state.parents_for_new_block_escaping(&0),
+            "the checked path must preserve healthy parent selection"
+        );
+        state.msg_map.remove(&20);
+        assert_eq!(
+            state.parents_for_new_block_escaping_checked(&0),
+            Err(vec![20]),
+            "the missing peer parent must be named, not silently ignored"
         );
     }
 

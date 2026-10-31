@@ -647,7 +647,18 @@ where
     let parents = if escape {
         dag_repr
             .dag_message_state
-            .parents_for_new_block_escaping(sender)
+            .parents_for_new_block_escaping_checked(sender)
+            .map_err(|missing| {
+                format!(
+                    "cannot select round-escape parents: {} unresolved previous justification(s) in the DAG message map: {}",
+                    missing.len(),
+                    missing
+                        .iter()
+                        .map(|id| id.to_hex())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?
     } else {
         dag_repr.dag_message_state.parents_for_new_block()
     };
