@@ -201,26 +201,71 @@ for x in b:
 # Refresh it after recovery and on every verification round: blocks already present do not change,
 # but the set a recovering node holds does. Failed/invalid refreshes discard the previous snapshot
 # and use live per-height requests instead of presenting stale or partial data as a current answer.
+# **The API refuses a wide range.** `/api/blocks/{start}/{end}` answers
+#   "Your request startBlockNumber 0 and endBlockNumber 968 exceed the max limit 50"
+# so a single request for `0..MAXH` only ever worked on a chain of fifty blocks or fewer. On anything
+# real it failed, printed the fallback NOTE, and issued one ssh per height for every height — the cost
+# the range cache exists to remove, restored silently. Walk the range in windows instead and merge the
+# arrays here, so `blocks_at` still reads one list. Any failed window discards the whole snapshot: a
+# partial inventory would look valid and answer for heights it never fetched.
+RANGE_CHUNK=${RECONCILE_RANGE_CHUNK:-50}
+# The server caps the *inclusive* height span at 50. An invalid override must
+# fail before querying or applying a reconciliation plan, not create an
+# unbounded loop (0/negative) or silently fall back to slow live reads (>50).
+if ! [[ "$RANGE_CHUNK" =~ ^([1-9]|[1-4][0-9]|50)$ ]]; then
+  echo "ERROR: RECONCILE_RANGE_CHUNK must be an integer from 1 through 50" >&2
+  exit 2
+fi
 refresh_block_ranges() { # inclusive upper height for this phase
   [ -z "${RECONCILE_NO_CACHE:-}" ] && [ -n "${CACHE_DIR:-}" ] || return 0
-  local upper="$1" n range_file pending
+  local upper="$1" n range_file pending lo hi ok
   for n in "${NAMES[@]}"; do
     range_file="$CACHE_DIR/blocks_${HOST[$n]}_${PORT[$n]}.json"
     pending="$range_file.pending"
-    rm -f -- "$range_file" "$pending"
-    if api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/0/$upper" > "$pending" 2>/dev/null \
-      && python3 -c '
+    rm -f -- "$range_file" "$pending" "$pending.merged"
+    : > "$pending"
+    ok=1
+    lo=0
+    while [ "$lo" -le "$upper" ]; do
+      hi=$(( lo + RANGE_CHUNK - 1 ))
+      [ "$hi" -gt "$upper" ] && hi=$upper
+      if ! api "${HOST[$n]}" "${PORT[$n]}" "/api/blocks/$lo/$hi" >> "$pending" 2>/dev/null; then
+        ok=0
+        break
+      fi
+      lo=$(( hi + 1 ))
+    done
+    if [ "$ok" = "1" ] && python3 -c '
 import json,sys
+# Windows are ordered, inclusive and bounded to 50. An empty, out-of-window,
+# or missing response must never publish a partial but apparently valid cache.
+upper, chunk = (int(x) for x in sys.argv[1:])
+raw=sys.stdin.read()
+data=[]; dec=json.JSONDecoder(); i=0
 try:
-    data=json.load(sys.stdin)
-    valid=isinstance(data,list) and bool(data) and all(isinstance(b,dict) and type(b.get("blockNumber")) is int for b in data)
+    for lo in range(0, upper+1, chunk):
+        hi=min(lo+chunk-1, upper)
+        while i < len(raw) and raw[i].isspace(): i += 1
+        part, i = dec.raw_decode(raw, i)
+        if not isinstance(part, list) or not part: raise ValueError("empty or non-list window")
+        if any(not isinstance(b, dict) or type(b.get("blockNumber")) is not int
+               for b in part):
+            raise ValueError("invalid block element")
+        # Require an in-window witness; some API/fixture responses also include
+        # adjacent heights, which blocks_at filters by requested height.
+        if not any(lo <= b["blockNumber"] <= hi for b in part):
+            raise ValueError("no blocks for requested window")
+        data.extend(part)
+    if raw[i:].strip(): raise ValueError("unexpected extra window")
 except (ValueError,TypeError):
-    valid=False
-sys.exit(0 if valid else 1)
-' < "$pending"; then
-      mv -- "$pending" "$range_file"
-    else
+    sys.exit(1)
+# Emit ONE document, not the concatenation: `blocks_at` reads the cache with json.load.
+sys.stdout.write(json.dumps(data))
+' "$upper" "$RANGE_CHUNK" < "$pending" > "$pending.merged"; then
+      mv -- "$pending.merged" "$range_file"
       rm -f -- "$pending"
+    else
+      rm -f -- "$pending" "$pending.merged"
       echo "  NOTE: range snapshot unavailable or invalid for ${HOST[$n]}:${PORT[$n]}; using live per-height requests" >&2
     fi
   done
