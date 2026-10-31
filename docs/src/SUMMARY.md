@@ -23,6 +23,7 @@
 - [The formal layer: how to read this set](formal/README.md)
 - [The laws](formal/laws.md)
 - [The cost model, and the gate that keeps it honest](formal/cost-model.md)
+- [The decimal type, withdrawn (issue #527)](formal/decimal-removed.md)
 - [Grammar and sorts](formal/grammar-sorts.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)

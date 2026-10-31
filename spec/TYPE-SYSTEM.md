@@ -135,24 +135,14 @@ value through the whole domain.
   result may leave the invariant (e.g. a height *difference*), the operator's output is the raw
   **signed** type, so the signedness is again visible in the type.
 
-`models::decimal::Decimal` (issue #380) is the AST's refinement-carrying scalar. Its coefficient and
-scale are private; the only ways in are `new` (canonicalize, then bound), `from_literal_parts` (the
-source path), `from_wire` (minimal coefficient bytes, canonical pair, scale ≤ 38) and a `Deserialize`
-routed through `from_parts`. A noncanonical decimal is therefore **not representable** in the AST:
-the wire decoder answers `ModelsError::InvalidDecimal`, and there is no `Deref`. Arithmetic methods
-return `Result` because a canonical result can leave the scale bound (`1d / 3d` is an error, not a
-rounded value); the comparator's `Ord` and derived `Eq` agree on every canonical value, which is what
-`par_set`/`par_map` deduplication relies on.
-
-**What this refinement does not establish.** It guarantees *representability* — a noncanonical
-decimal cannot enter the AST — not the value algebra. The Lean tie (`Rchain/Sort.lean`'s `edecimal`)
-models the value as the canonical scaled integer and proves the comparator laws over it; the bridge
-from the Rust `(coefficient, scale)` pair to that integer (`scaled_value`'s injectivity and
-order-preservation on canonical values), exact arithmetic, division's exact-or-error condition, the
-wire's minimal-byte form, reducer dispatch and the cost model are **outside the Lean model**. They
-rest today on this refinement and the unit/corpus tests in `models/src/decimal.rs`,
-`models/src/wire.rs` and `rholang/src/reduce.rs`; a standalone `Rchain/Decimal.lean` plus a `decimal`
-conformance corpus is the follow-up that would prove them.
+`models::decimal::Decimal` **was the AST's refinement-carrying scalar and is retired** (issue #527,
+2026-10-31): its private coefficient and scale, the four canonicalising constructors, and the
+`Result`-returning arithmetic that made `1d / 3d` an explicit `InexactDivision` are archived in
+`models/src/decimal.rs` — commented, not compiled. What the refinement could not establish is the
+reason it went: it guaranteed *representability*, not the value algebra, and the algebra it did have
+was a fixed-point one isomorphic to a scale-38 integer. The record, with what a future fractional
+type would have to do differently (model and corpus first, a versioned activation, a rational rather
+than a fixed-point value): `docs/src/formal/decimal-removed.md`.
 
 Concrete newtypes live in [`../shared/src/refined.rs`](../shared/src/refined.rs) (`Port`, `Hash32`,
 `BlockHeight`, `SeqNum`, `WireLen`, `NonNegI64`; `ByteLen`/`ShortLen` reserved for 1c); domain-specific

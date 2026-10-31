@@ -20,7 +20,7 @@ Proc ::=  Name ! ( Name,* )                -- send
 
 Name ::=  @ Proc                            -- quote a process
        |  * Name                            -- evaluate a name
-       |  Ground                            -- Int | BigInt | Decimal | String | Bool | Uri | ByteArray
+       |  Ground                            -- Int | BigInt | String | Bool | Uri | ByteArray
        |  Unforgeable                       -- new name | deployerId | deployId | sysAuthToken
        |  Bundle                            -- bundle{+|-|0|} Proc
        |  [ Name,* ] | ( Name,* ) | Set( Name,* ) | { Name : Name ,* }   -- collections
@@ -57,7 +57,12 @@ Parenthesize when in doubt — `( … )` always wins.
 |---|---|---|
 | Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps); `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `shiftLeft`, `shiftRight`, `shiftRightUnsigned` |
 | Big integer | arbitrary precision | same |
-| Decimal | `1.5d`, `2d`, `-0.05d` | `+ - * /`, `< <= > >= == !=`; **exact** — `1d / 3d` is an error, never rounded; `%` and the bitwise/shift methods are not defined on a decimal; `toInt`/`toBigInt` succeed only for integral values; `toString` gives the plain spelling (`1.5`) |
+
+**There is no decimal value type.** An exact decimal (written `1.5d`) existed from 19 to 31 October
+2026 and was removed before mainnet — it was a fixed-point value isomorphic to a scale-38 integer, and
+`1d / 3d` was an error rather than a ratio. A `d`-suffixed literal no longer parses. The decision, what
+was archived and what a future attempt must do differently are in
+[the decimal type, withdrawn](../formal/decimal-removed.md).
 | Boolean | `true` `false` | `and`, `or`, `not` |
 | String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `substring`, `indexOf`, `contains`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `capitalize`, `reverse`, `trim`, `isEmpty`, `nonEmpty`, `replace`, `split`, `format`, `toString`, `toUtf8Bytes`, `hexToBytes` |
 | URI | `` `rho:…` `` | — |

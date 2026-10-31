@@ -391,6 +391,20 @@ AC10 (operator/new-genesis acceptance) remains a release step.
 | **Liveness enforcement is a new PoS boundary rule (RCHIP #55, Law 89).** | Pos.rhox has no liveness jail, vote or ejection; the port adds five genesis parameters, five `pos:` leaves and the `voteSlash`/`unvoteSlash`/`getLiveness`/`getVotes` methods. | A chain that arms liveness enforcement changes its boundary post-state: a jailed validator is not drawn and earns nothing, and a passing >2/3 active-stake vote slashes and bans. Default-off and the format-2 params encoding keep unarmed chains byte-identical; arming requires a new genesis and is a hard fork. Pre-launch category A; every validator must run the binary; no live evidence yet. RCHIP #55, HAZOP U21, C344 |
 | **Cost charges track the work of collection canonicalisation, union, set insertion, the tallies and `rho:gov:censure`.** | Archived `legacy/rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala` at `1b7583649` charges `unionCost(other.size)` — the right operand only — a flat `KEYS_METHOD_COST = 10`, a flat `ADD_COST` for a set insertion that re-canonicalises the set, no charge on a tally's option lists at all, and no canonicalisation charge beyond the method call; the Rust-native `rho:gov:*` folds have no Scala oracle. | Rust charges `canonicalization_cost(n) = 3n` for the conversions, `set`, `keys` and `add` output, both union operands, `(u+1)^3` for censure and the scanned entries for a tally (Law 91, `spec/Rchain/Cost.lean`; C345/C346, pass §149, and C353/C354, pass §150, whose cost register found the last two). **Hard fork (#51 category A):** `refund_amount`/`burned_amount` and every post-state hash move; a pre-fork block containing a conversion, a set insertion, a tally or a censure does not replay under the new code (`replay_cost_mismatch`); every network's genesis post-state hash moves; the block-version activation gate is owed. |
 
+**Correction, 2026-10-31 — the decimal row is superseded.** Issue #527 (option R) removed the
+`GDecimal` value type before mainnet. Wire tag 35 is now `reserved` (with `reserved "g_decimal"`) and
+a sender gets the existing `ModelsError::Malformed("expr_instance")` refusal; sort rank 14, the
+`edecimal` Lean class and the `decimal` corpus are gone (the `sort` corpus drops rows 43–50, 50 → 42);
+the literal surface, reducer dispatch and the decimal cost rows were removed; `models/src/decimal.rs`
+and `spec/Rchain/Decimal.lean` are archived in place with dated headers; Law 87a–e are `retired` in
+the register. The §6 row above is retained unedited as the record of the 2026-10-19 decision — its
+digest and line are pinned by `section6-gap-inventory.json`, which is why this correction is prose
+after the table rather than an edit to the row. A block or state with no tag-35 term and no decimal
+source literal hashes identically: the block hash is over the `BlockMessageProto` bytes, the canonical
+hash is over the serialized sorted `Par`, and removing one oneof arm changes no other field's encoding.
+A chain that ever carried either cannot be replayed, so such a chain requires a fresh genesis;
+otherwise no new genesis is *caused* by this removal.
+
 ## 7. Verification
 
 - `cargo check --workspace` — clean.
