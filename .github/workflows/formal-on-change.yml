@@ -49,7 +49,8 @@ on:
       - "node/tests/lean_*.rs"
       - "rholang/tests/lean_*.rs"
       - "casper/tests/lean_*.rs"
-      - "models/tests/lean_*.rs"
+      # `models/tests/lean_*.rs` was dropped with the decimal corpus (issue #527); models/tests now
+      # holds only the wire-refusal tests, which the Lean cannot make stale.
       # The admission consumer drives the pool policy and the permit arithmetic; a change to either
       # moves what the corpus checks (C340, Law 86a/86d).
       - "casper/src/pool.rs"

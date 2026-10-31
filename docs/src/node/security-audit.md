@@ -284,8 +284,8 @@ state.
    allow-list, an access-control list restoring a forgeable capability.
 
 New tied properties since September: the admission contract (law 86), the block disposition and
-proposal gates (law 88), liveness enforcement (law 89, a hard fork), the hostlist (law 90, advisory),
-and liveness enforcement. Each is machine-checked and tied to its Rust by a
+proposal gates (law 88), liveness enforcement (law 89, a hard fork) and the hostlist (law 90,
+advisory). Each is machine-checked and tied to its Rust by a
 corpus or named witnesses; none of them makes a cost charge proportional or a gate see work.
 
 ## 7. Comparison with other chains

@@ -57,12 +57,6 @@ Parenthesize when in doubt — `( … )` always wins.
 |---|---|---|
 | Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps); `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `shiftLeft`, `shiftRight`, `shiftRightUnsigned` |
 | Big integer | arbitrary precision | same |
-
-**There is no decimal value type.** An exact decimal (written `1.5d`) existed from 19 to 31 October
-2026 and was removed before mainnet — it was a fixed-point value isomorphic to a scale-38 integer, and
-`1d / 3d` was an error rather than a ratio. A `d`-suffixed literal no longer parses. The decision, what
-was archived and what a future attempt must do differently are in
-[the decimal type, withdrawn](../formal/decimal-removed.md).
 | Boolean | `true` `false` | `and`, `or`, `not` |
 | String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `substring`, `indexOf`, `contains`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `capitalize`, `reverse`, `trim`, `isEmpty`, `nonEmpty`, `replace`, `split`, `format`, `toString`, `toUtf8Bytes`, `hexToBytes` |
 | URI | `` `rho:…` `` | — |
@@ -75,13 +69,16 @@ promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` 
 (so `42.toString() ++ " units"` works). The bit operations (RCHIP #12) are methods too, since `|` and
 `~` already belong to the grammar — see [Data structures](data-structures.md#bit-operations).
 
-A **decimal** is a separate value type, not a spelling of an integer: `1.5d` is `15 × 10⁻¹`, the value
-has one canonical form (trailing zeros are stripped, so `1.50d` and `1.5d` are the same term, and zero
-is `0d`), and there is no NaN, infinity or negative zero. Arithmetic is exact; division either
-terminates within 38 fractional digits or fails with an arithmetic error. Scalar equality and order
-span integers and decimals (`1d == 1`), while structural identity does not: a decimal and an integer
-are distinct map keys and a decimal pattern does not match an integer, exactly as `Int` and `BigInt`
-already behave. Negative decimals are written `-1.5d`; the minus is the ordinary negation operator.
+Scalar equality is numeric while structural identity is not: `1 == 1n` is true, but `1` and `1n` are
+distinct map keys and a pattern for one does not match the other. Canonical ordering is also
+class-major — integers sort before big integers whatever their value — so the canonical form of a
+structure is not its numeric order.
+
+**There is no decimal value type.** An exact decimal (written `1.5d`) existed from 19 to 31 October
+2026 and was removed before mainnet: it was a fixed-point value isomorphic to a scale-38 integer, and
+`1d / 3d` was an error rather than a ratio. A `d`-suffixed literal no longer parses, and a wire term
+carrying its reserved tag 35 is refused. The decision, what was archived and what a future attempt must
+do differently are in [the decimal type, withdrawn](../formal/decimal-removed.md).
 
 ## Collections
 

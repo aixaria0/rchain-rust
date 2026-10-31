@@ -278,9 +278,9 @@ def lawsA : List Law := [
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
       `ESHORTOR`(124). **All eight are in the model as of 2026-09-25** — three were conflations \
-      (below) and the other five were constructors (further below) — so the count is closed. **The
-      decimal class (`edecimal`, tag 14) joined on 2026-10-19 and was retired on 2026-10-31** (issue
-      #527, option R): the model is 29 classes covering the node's 33 variants, and rows 43–50 are
+      (below) and the other five were constructors (further below) — so the count is closed. **The \
+      decimal class (`edecimal`, tag 14) joined on 2026-10-19 and was retired on 2026-10-31** (issue \
+      #527, option R): the model is 29 classes covering the node's 33 variants, and rows 43–50 are \
       gone with the type. **Three of those eight were *conflations* rather than missing arms, and all \
       three are closed** (re-measured 2026-09-25, and this sentence is the correction): `EMATCHES`, \
       `ESHORTAND` and `ESHORTOR` have constructors (`ematches`, `eshortand`, `eshortor`, \
@@ -300,9 +300,7 @@ def lawsA : List Law := [
       after every operator — so each of the five is a class of its own, and `exprTag` gives it the \
       node's literal. The two consequences the earlier note predicted are the two that landed: \
       `cmpExpr`'s arm-lemma family grew from 24 classes to 29 (5 pair lemmas, 5 extraction lemmas, \
-      10 cross lemmas, and five arms in each of the three laws); the decimal took it to 30 (one more \
-      pair lemma, one extraction lemma, two cross lemmas, and one arm in each law, rows 43–50), and \
-      `emethod`'s score needed \
+      10 cross lemmas, and five arms in each of the three laws), and `emethod`'s score needed \
       `Rchain.Comparator.lex_lt_trans_at3` because its children are three deep. C58 carries the measurement of \
       the *gap*; the rows carry the closure. `Ground` is untouched and `ebigint` is an `Expr` leaf \
       because that is what the node has — the protobuf's `g_big_int` is an `Expr` variant and the \
@@ -316,16 +314,13 @@ def lawsA : List Law := [
       every node sorts by the score tree). The alignment is safe for the proofs: \
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
       `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change. \
-      **What the tie does not claim (2026-10-19).** The model's `edecimal` payload is the canonical \
-      scaled integer (`coefficient × 10^(38−scale)`), so the comparator laws are stated over that \
-      representation and over `Int` order. The bridge from the Rust `(coefficient, scale)` pair to \
-      that integer — `scaled_value`'s injectivity and order-preservation on canonical values — is \
-      **not** a theorem here, and neither are canonicalization, exact `+ - * /`, division's \
-      exact-or-error condition, the wire's minimal-byte form, the reducer's dispatch, or the cost \
-      model. Those are carried today by the Rust refinement (`Decimal::new`/`from_wire`, private \
-      fields) and its unit and corpus tests; the standalone `Rchain/Decimal.lean` plus the `decimal` \
-      corpus is **Law 87** (87a–e), whose boundary is the same: wire bytes/tag 35, serde ingress, the \
-      literal surface, reducer dispatch and the cost model remain Rust-tested, not modelled" },
+      **What the tie does not claim (2026-10-19, withdrawn 2026-10-31).** The retired `edecimal` \
+      payload was the canonical scaled integer, and the bridge from the Rust `(coefficient, scale)` \
+      pair to it — `scaled_value`'s injectivity and order-preservation on canonical values — was \
+      never a theorem here, and neither were canonicalization, exact `+ - * /`, division's \
+      exact-or-error condition, the wire's minimal-byte form, reducer dispatch or the cost model. \
+      Law 87 carried that boundary and is now `retired` with the type (issue #527); the archived \
+      algebra is `spec/Rchain/Decimal.lean`, and the record is `docs/src/formal/decimal-removed.md`" },
   { number := 1, clause := "b", layer := "Rholang",
     rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
@@ -3543,8 +3538,8 @@ def lawsB : List Law := [
       so the round trip descends structurally instead of through a label test the equation compiler \
       cannot see (`taggedRecord` is the same shape spelled as a record). **Three shapes are outside the \
       domain, named:** a `Float64` (Rholang has no float), a **small** `GBigInt` — Syrup's integer is \
-      one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form — and, until the type was
-      removed (issue #527), a `GDecimal` — there is no decimal left to refuse. **What the tie \
+      one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form — and, until the \
+      type was removed (issue #527), a `GDecimal` — there is no decimal left to refuse. **What the tie \
       does not reach:** the refusals' *reason strings* are the node's (`BridgeError`), tied by the \
       corpus's sources rather than by a theorem." },
   { number := 59, clause := "b", layer := "Wire",
