@@ -1,24 +1,34 @@
 {
   "schema": 1,
-  "source_dev_sha": "9e93c3d1f7787b0b9e67ee67e4ad7945c8d9474e",
-  "observed_date": "2026-10-30",
+  "source_dev_sha": "0186933004152efb4d7e1d9bc1804786efd88b22",
+  "observed_date": "2026-10-31",
   "tracker": "#51",
-  "boundary": "42 overlapping tracker obligations, not 42 defects. Maintainer deferrals are recorded with source links; this matrix grants no release authorization.",
+  "boundary": "44 overlapping tracker obligations, not 44 defects. Maintainer deferrals are recorded with source links; this matrix grants no release authorization.",
   "items": [
     {
       "id": "A:block-timestamp",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
-      "exact_file_function_or_invariant": "models block-header timestamp / hash_block",
+      "exact_file_function_or_invariant": "models block-header timestamp / hash_block; casper/src/validate.rs::block_summary (parent-relative bound retired by #529)",
       "related_issue_pr": [
-        "PR #44"
+        "PR #44",
+        "PR #529",
+        "#528",
+        "#51",
+        "#520",
+        "#428"
       ],
       "existing_evidence": {
         "pr": 44,
-        "merge_commit": "228b66742fb740b2e44828a580122f4dac91489c"
+        "merge_commit": "228b66742fb740b2e44828a580122f4dac91489c",
+        "validation_follow_up": {
+          "pr": 529,
+          "merge_commit": "d0fa65b12c9a6fbde386f7bde7bf31802f314fa4",
+          "ci_run": "https://github.com/rhovision-org/rholo/actions/runs/41198771466"
+        }
       },
-      "missing_proof": "Merged implementation alone does not establish historical replay, deployment compatibility or live rollout",
-      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
-      "required_acceptance_test": "Attachment-free and timestamped block wire/hash fixtures; cross-version replay",
+      "missing_proof": "Historical wire/hash replay and old/new validation compatibility; no coordinated validator activation evidence is supplied by #529 CI.",
+      "smallest_corrective_action": "Review the admitted-control timestamp regression and attach cross-version acceptance/replay evidence before coordinated activation.",
+      "required_acceptance_test": "Attachment-free and timestamped wire/hash fixtures; on-time admitted control plus hour-before/day-after/0/i64::MAX cases; old-bound negative control and cross-version replay",
       "decision_owner": "Jim / release operators",
       "recorded_owner_reason_deferral": false
     },
@@ -841,5 +851,6 @@
       "recorded_owner_reason_deferral": false
     }
   ],
-  "section6_inventory": "section6-gap-inventory.json"
+  "section6_inventory": "section6-gap-inventory.json",
+  "source_dev_base_sha": "d0fa65b12c9a6fbde386f7bde7bf31802f314fa4"
 }

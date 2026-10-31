@@ -1,6 +1,6 @@
 # Issue #51 — Hard-fork closeout ledger
 
-This packet follows the [close-clause decision of 21 October 2026](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93d16d7d865ddade5a47b19dbffa86b954407f05`.
+This packet follows the [close-clause decision of 21 October 2026](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The upstream dev baseline is `d0fa65b12c9a6fbde386f7bde7bf31802f314fa4` (includes #529). The authored register snapshot is `0186933004152efb4d7e1d9bc1804786efd88b22`, a documentation-only child of that baseline; the JSON field `source_dev_sha` and every source-row URL pin this snapshot, while `source_dev_base_sha` records the upstream baseline.
 
 ## Current result
 
@@ -8,7 +8,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
-| Timestamp, #44 | `228b66742f` | Release coordination remains distinct |
+| Timestamp, #44/#529 | #44: `228b66742f`; #529: `d0fa65b12c` | Parent-relative bound retired; mixed-version acceptance, historical replay and coordinated activation remain separate |
 | String functions, #47 | `f07a2628a7` | Client and historical behavior remain distinct |
 | Attachments, #53 | `9a04285a6b` | Appears in both §A and §B; uniform validator/client rollout is separate |
 | BigInt/Decimal, #49/#389/#390 | #389: `666ddb75e2` | #373 and #391 are also merged; archive scans, uniform validators and the new-genesis ceremony remain open |
@@ -23,7 +23,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Complete source inventory
 
-[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 93 current §6 rows**, with 46 conservative category-A candidates. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
+[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 93 current §6 rows**, with 46 conservative category-A candidates. The timestamp row retains its conservative A-candidate classification after #529; retirement is not an execution or release sign-off. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
 
 The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, existing evidence, missing proof, next action and acceptance condition. Source-row hashes, line numbers and evidence URLs must agree with the pinned register. A documented deferral must agree between the matrix and the validated ledger. Neither file can invent an independent sign-off or a passed execution.
 
