@@ -902,7 +902,7 @@ pub const ROUND_STALL_ESCAPE: Duration = Duration::from_secs(15);
 /// deliberately a height gap, not a wall-clock stall: finality-stall counters fire on a healthy
 /// net (see `ShardHealth`'s own episodes), while a tip 32 blocks beyond the last finalized block
 /// is unambiguously a node that cannot get its own chain accepted.
-pub const MAX_PROPOSAL_FINALITY_LAG: i64 = 32;
+pub const MAX_PROPOSAL_FINALITY_LAG: i64 = 10_000; // R485 OFFLINE DIAGNOSTIC ONLY; not for deployment
 
 /// The height-gap half of the isolation gate, as a pure predicate so the boundary (`== bound`
 /// passes, `bound + 1` refuses) is testable without a DAG.
