@@ -12349,3 +12349,17 @@ snapshot carries the 786-byte refused body and the reset anchor.
 **RC-B remains open.** The injected refusal has the incident's shape (`ReplayCostMismatch`), not its
 cause. The 274-phlo trigger is Aria's, and the one measurement that moves it is validator A's
 runtime environment.
+
+## 157. Reset deploy inventory must include missing bodies (C366)
+
+The reset preflight enumerated surviving body-store keys, silently skipping a DAG block whose body
+was absent. It now inventories DAG candidate hashes and refuses missing data before the reset
+marker and rewind. The real missing-body test fails at its intended assertion on the original
+reset file, then passes on the candidate. Source a2497f0 passed all executed workspace tests,
+including eleven reset cases and normal LMDB close/reopen, plus the pinned formatter and Clippy
+contract in the [fork-only run](https://github.com/aixaria0/rchain-rust/actions/runs/43047546442).
+[Receipts and scope](evidence/n564-reset-inventory/README.md) distinguish this from a process crash,
+power loss, signature verification or the three-arm devnet drill. Upstream CI remains blocked by
+protobuf-install DNS; no upstream workflow was changed. Laws 72/73/94 are unchanged. C366 closes
+this inventory defect. C361/C365 were separately closed by #568's recovery and evidence work;
+the original 274-phlo trigger remains open.
