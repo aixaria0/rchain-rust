@@ -1,0 +1,71 @@
+name: N564 RC-B M19/M20 isolated diagnostic
+on:
+  push:
+    branches: [verify/n564-m19-m20-20261111]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      RUST_TEST_THREADS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check source pin and changed files
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor f4feb1a83862b5b58e682b09ec4188ca59294df6 HEAD
+          git diff --stat f4feb1a83862b5b58e682b09ec4188ca59294df6 HEAD
+          mkdir -p n564-rcb-logs
+      - name: Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustc +1.95.0 --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          cache-on-failure: true
+      - name: Install checksum-pinned protoc without apt
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 2 --max-time 60 https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip -o /tmp/protoc.zip
+          python3 - <<'PY'
+          import os,pathlib,hashlib,zipfile
+          p=pathlib.Path("/tmp/protoc.zip")
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=="3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8"
+          with zipfile.ZipFile(p) as z: z.extractall("/tmp/n564-protoc")
+          (pathlib.Path("/tmp/n564-protoc/bin/protoc")).chmod(0o755)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("PROTOC=/tmp/n564-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/n564-protoc/include\n")
+          PY
+      - name: M19 cost census off/on
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_n564_m19_m20 omega_m19 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M19.log
+      - name: M20 failed COMM trace census
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_n564_m19_m20 omega_m20 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M20.log
+      - name: Existing census invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p rchain-rholang the_census_records_each_charge_without_moving_the_total -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/census-unit.log
+          git diff --exit-code f4feb1a83862b5b58e682b09ec4188ca59294df6 -- casper/src rholang/src rspace/src
+          sha256sum n564-rcb-logs/*.log > n564-rcb-logs/SHA256SUMS.txt
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: n564-rcb-m19-m20-diagnostic
+          path: n564-rcb-logs/
+          retention-days: 14
