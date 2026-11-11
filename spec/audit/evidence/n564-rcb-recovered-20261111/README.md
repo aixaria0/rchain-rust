@@ -21,3 +21,7 @@ The complete Merkle closures of both original pre-states, both declared post-sta
 ## M25 reproduced the exact incident
 
 Run [43100598230](https://github.com/aixaria0/rchain-rust/actions/runs/43100598230) passed on original source0a1e02362. Both original pre-states yield exactly5576 versus5302 and both original declared post-state hashes, in three deterministic repeats each. The rejected block body/recorded trace and exact timestamp are still not recovered; the trace is regenerated from authenticated deploys and complete Merkle-verified state. M26 adds observational charge logging, retaining the same arithmetic, costs, state hashes, and strict rejection.
+
+## M26 cost differential
+
+Run [43101149837](https://github.com/aixaria0/rchain-rust/actions/runs/43101149837) passed. All274 phlo are accounted for:141 play charges sum5576;109 replay charges sum5302. The first differing charge is index29, immediately after the first240-phlo inner consume charge: play matches and refunds, replay bills an unmatched event. Unobserved repetitions retain the same exact costs and original post-state hashes. M27 now tests only the binding-construction iteration order; M28 retains strict trace-corruption controls.

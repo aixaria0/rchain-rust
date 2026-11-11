@@ -422,11 +422,17 @@ async fn historical_matrix() {
             let rand =
                 BlockRandomSeed::random_generator_from("/testnet", height, sender.clone(), pre)
                     .unwrap();
+            let metadata_control = std::env::var_os("OMEGA_RCB_EXPECT_CORRECTED").is_some();
+            let timestamp = if metadata_control {
+                [0, 1794159386253, 1794159386483][repeat - 1]
+            } else {
+                0
+            };
             let data = BlockData {
                 block_number: BlockHeight::try_from(height).unwrap(),
                 sender,
                 seq_num: SeqNum::try_from(i64::from(parent.seq_num) + 1).unwrap(),
-                timestamp: 0,
+                timestamp,
             };
             let systems = vec![SystemDeploy::close_block(
                 height,
@@ -481,11 +487,18 @@ async fn historical_matrix() {
                 "exact original declared post-state"
             );
             assert_eq!(costs[0], 5576, "exact original play cost");
-            assert_eq!(
-                verdict, "REJECT ReplayCostMismatch { initial_cost: 5576, replay_cost: 5302 }",
-                "exact original replay mismatch"
-            );
-            println!("OMEGA_M25_RESULT case={label} repeat={repeat} scope=actual-historical-prestate timestamp_substitute=0 sequence_substitute={} participation_source=1073-fringe costs={costs:?} post={post_hex} declared_post_match={} verdict={verdict}",i64::from(parent.seq_num)+1,post_hex==expected_post);
+            if metadata_control {
+                assert_eq!(
+                    verdict, "ACCEPT state_match=true",
+                    "corrected replay must preserve cost and state"
+                );
+            } else {
+                assert_eq!(
+                    verdict, "REJECT ReplayCostMismatch { initial_cost: 5576, replay_cost: 5302 }",
+                    "exact original replay mismatch"
+                );
+            }
+            println!("OMEGA_M25_RESULT case={label} repeat={repeat} scope=actual-historical-prestate timestamp_substitute={timestamp} sequence_substitute={} participation_source=1073-fringe costs={costs:?} post={post_hex} declared_post_match={} verdict={verdict}",i64::from(parent.seq_num)+1,post_hex==expected_post);
             let observation = (costs, traces, post_hex, verdict);
             if let Some(p) = &prior {
                 assert_eq!(p, &observation, "deterministic historical-state repeat");
@@ -506,4 +519,11 @@ async fn omega_m26_observer_preserves_historical_results() {
     std::env::set_var("OMEGA_RCB_OBSERVER", "1");
     historical_matrix().await;
     std::env::remove_var("OMEGA_RCB_OBSERVER");
+}
+
+#[tokio::test]
+async fn omega_m27_chronological_replay_correction() {
+    std::env::set_var("OMEGA_RCB_EXPECT_CORRECTED", "1");
+    historical_matrix().await;
+    std::env::remove_var("OMEGA_RCB_EXPECT_CORRECTED");
 }
