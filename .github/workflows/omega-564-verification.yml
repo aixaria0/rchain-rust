@@ -1,0 +1,151 @@
+name: Issue 564 isolated Rust verification
+'on':
+  push:
+    branches:
+    - verify/n564-20261111
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: n564-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  SOURCE_COMMIT: a2497f0ea1f3b68fe2045e2adf6f7868fdaef39d
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: never
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_NET_RETRY: '1'
+  RUST_TEST_THREADS: '2'
+  RUST_BACKTRACE: '1'
+jobs:
+  verify:
+    name: Pinned compiler, negative control, workspace tests and Clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - name: Check out the isolated branch
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 12
+    - name: Verify production-source equivalence
+      id: pin
+      run: |
+        git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
+        git diff --exit-code "$SOURCE_COMMIT" -- . ':(exclude).github/workflows/omega-564-verification.yml'
+        git rev-parse HEAD
+    - name: Install pinned Rust compiler
+      run: |
+        rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+        rustc --version
+    - name: Reuse Cargo artifacts
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        cache-on-failure: true
+    - name: Install official checksum-pinned protoc
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/n564-logs"
+        curl --fail --location --silent --show-error --retry 1 --max-time 60 \
+          https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip \
+          -o "$RUNNER_TEMP/protoc.zip"
+        python3 - <<'PY'
+        import hashlib, os, pathlib, zipfile
+        root = pathlib.Path(os.environ["RUNNER_TEMP"])
+        archive = root / "protoc.zip"
+        assert hashlib.sha256(archive.read_bytes()).hexdigest() == "3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8"
+        with zipfile.ZipFile(archive) as source:
+            assert all(not pathlib.PurePosixPath(n).is_absolute() and ".." not in pathlib.PurePosixPath(n).parts for n in source.namelist())
+            source.extractall(root / "protoc")
+        (root / "protoc/bin/protoc").chmod(0o755)
+        with open(os.environ["GITHUB_ENV"], "a") as output:
+            output.write(f"PROTOC={root}/protoc/bin/protoc\nPROTOC_INCLUDE={root}/protoc/include\n")
+        PY
+        "$RUNNER_TEMP/protoc/bin/protoc" --version | tee "$RUNNER_TEMP/n564-logs/protoc-version.txt"
+    - name: Check formatting
+      id: formatting
+      run: |
+        set -o pipefail
+        cargo fmt --all -- --check 2>&1 | tee "$RUNNER_TEMP/n564-logs/format.log"
+    - name: Require the real baseline missing-body assertion
+      id: negative
+      run: |
+        python3 - <<'PY'
+        import hashlib, json, os, pathlib, re, subprocess
+        root = pathlib.Path.cwd()
+        logs = pathlib.Path(os.environ["RUNNER_TEMP"]) / "n564-logs"
+        logs.mkdir(exist_ok=True)
+        path = root / "casper/src/engine/reset.rs"
+        candidate = path.read_bytes()
+        baseline = subprocess.check_output(["git", "show", "f4feb1a83862b5b58e682b09ec4188ca59294df6:casper/src/engine/reset.rs"])
+        command = ["cargo", "test", "--locked", "-p", "rchain-casper", "--all-features", "--test", "reset", "a_self_replay_reset_refuses_a_dag_block_whose_body_is_missing", "--", "--exact", "--nocapture"]
+        try:
+            path.write_bytes(baseline)
+            with (logs / "baseline-negative.log").open("w") as output:
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in process.stdout:
+                    print(line, end="", flush=True)
+                    output.write(line)
+                status = process.wait()
+        finally:
+            path.write_bytes(candidate)
+        text = re.sub(r"\x1b\[[0-9;]*m", "", (logs / "baseline-negative.log").read_text())
+        expected = status == 101 and "test result: FAILED. 0 passed; 1 failed" in text and "the reset cannot recover deploys from a DAG block whose body is missing" in text
+        receipt = {"source_commit": os.environ["SOURCE_COMMIT"], "baseline_file_commit": "f4feb1a83862b5b58e682b09ec4188ca59294df6", "command": command, "exit": status, "expected_assertion_observed": expected, "candidate_restored": path.read_bytes() == candidate, "candidate_file_sha256": hashlib.sha256(candidate).hexdigest(), "baseline_file_sha256": hashlib.sha256(baseline).hexdigest(), "scope": "real Casper integration fixture; an expected test assertion, not a compile error"}
+        (logs / "negative-control.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        assert expected, "baseline did not fail at the intended missing-body assertion"
+        subprocess.run(["git", "diff", "--exit-code", "--", "casper/src/engine/reset.rs"], check=True)
+        PY
+    - name: Verify restored source and run all workspace tests
+      id: tests
+      run: |
+        set -euo pipefail
+        git diff --exit-code "$SOURCE_COMMIT" -- . ':(exclude).github/workflows/omega-564-verification.yml'
+        cargo test --locked --workspace --all-features 2>&1 | tee "$RUNNER_TEMP/n564-logs/workspace-tests.log"
+    - name: Run the repository's Clippy contract
+      id: lint
+      run: |
+        set -euo pipefail
+        CLIPPY_DEBT=$(python3 - <<'PY'
+        import pathlib, re
+        text = pathlib.Path(".github/workflows/ci.yml").read_text()
+        match = re.search(r"(?m)^      CLIPPY_DEBT: >-\n((?:        -A clippy::[a-z0-9-]+\n)+)", text)
+        assert match, "the pinned Clippy debt block was not found"
+        print(" ".join(line.strip() for line in match.group(1).splitlines()))
+        PY
+        )
+        cargo clippy --locked --workspace --all-targets --all-features -- -D warnings $CLIPPY_DEBT 2>&1 | tee "$RUNNER_TEMP/n564-logs/clippy.log"
+    - name: Record scoped results
+      if: always()
+      env:
+        PIN: ${{ steps.pin.outcome }}
+        NEGATIVE: ${{ steps.negative.outcome }}
+        FORMAT: ${{ steps.formatting.outcome }}
+        TESTS: ${{ steps.tests.outcome }}
+        LINT: ${{ steps.lint.outcome }}
+      run: |
+        python3 - <<'PY'
+        import datetime, hashlib, json, os, pathlib, platform, subprocess
+        logs = pathlib.Path(os.environ["RUNNER_TEMP"]) / "n564-logs"
+        logs.mkdir(exist_ok=True)
+        def command(args):
+            try:
+                result = subprocess.run(args, text=True, capture_output=True, timeout=15)
+                return {"exit": result.returncode, "output": result.stdout + result.stderr}
+            except Exception as error:
+                return {"error": type(error).__name__ + ": " + str(error)}
+        paths = ["casper/src/engine/reset.rs", "casper/tests/reset.rs", "casper/src/blocks/proposer/proposer.rs", "block-storage/src/dag/dag_storage.rs", "Cargo.lock"]
+        data = {"recorded_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "source_commit": os.environ["SOURCE_COMMIT"], "verification_commit": os.environ["GITHUB_SHA"], "workflow_run": os.environ["GITHUB_RUN_ID"], "platform": platform.platform(), "rust": command(["rustc", "--version"]), "protoc": command([os.environ.get("PROTOC", "protoc"), "--version"]), "outcomes": {name: os.environ.get(name) for name in ["PIN", "NEGATIVE", "FORMAT", "TESTS", "LINT"]}, "source_sha256": {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths if pathlib.Path(p).exists()}, "build_jobs": 2, "test_threads": 2, "debug_info": 0, "protoc_asset_sha256": "3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8", "scope": "pinned-source Rust tests and normal LMDB close/reopen; no multi-node drill, process-kill or power-loss claim"}
+        (logs / "verification-receipt.json").write_text(json.dumps(data, indent=2) + "\n")
+        PY
+    - name: Preserve verification logs
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: n564-rust-verification-${{ github.run_id }}
+        path: ${{ runner.temp }}/n564-logs
+        if-no-files-found: warn
+        retention-days: 14
+
+# — Ω-WITNESS
