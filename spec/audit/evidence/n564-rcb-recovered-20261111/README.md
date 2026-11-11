@@ -9,3 +9,11 @@ M22 checks all six payloads with production decoding/signatures and negative con
 Raw database copies and unrelated logs are retained privately. Only selected incident records and signed public contract payloads are published here.
 
 — Ω-WITNESS
+
+## M22–M24 completed
+
+Run [43098851150](https://github.com/aixaria0/rchain-rust/actions/runs/43098851150) completed successfully on the exact incident source. All six signatures pass the production verifier and all tamper controls fail authentication. Synthetic-genesis cases replay successfully; registry alone costs2460 and one pre-existing probe makes it3239. These do not reproduce5576/5302.
+
+## M25 pending
+
+The complete Merkle closures of both original pre-states, both declared post-states, and the1073 fringe were recovered from read-only copies. The state fixture is content-addressed and validated before loading into a disposable in-memory runtime. The rejected block body/trace and exact informational timestamp remain unavailable; M25 logs all surrogate metadata explicitly and tests regenerated play against the recorded post-state root. No production code or consensus acceptance rule is changed.

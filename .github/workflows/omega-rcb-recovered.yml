@@ -33,6 +33,7 @@ jobs:
           cp n564-recovered-logs/omega_rcb_recovered.rs casper/tests/omega_rcb_recovered.rs
           mkdir -p casper/tests/rcb_recovered
           cp n564-recovered-logs/inputs/*.bin casper/tests/rcb_recovered/
+          gzip -dc n564-recovered-logs/inputs/historical-state.bin.gz > casper/tests/rcb_recovered/historical-state.bin
       - name: Pinned compiler
         run: |
           rustup toolchain install 1.95.0 --profile minimal
@@ -54,13 +55,13 @@ jobs:
               f.write("PROTOC=/tmp/omega-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/omega-protoc/include\n")
           PY
           chmod +x /tmp/omega-protoc/bin/protoc
-      - name: M22 authenticate, M23 replay, M24 order controls
+      - name: M25 recovered historical state and seed
         shell: bash
         run: |
           set -euo pipefail
-          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_recovered -- --nocapture --test-threads=1 2>&1 | tee n564-recovered-logs/M22-M24.log
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_recovered omega_m25 -- --nocapture --test-threads=1 2>&1 | tee n564-recovered-logs/M25.log
           git diff --exit-code -- casper/src rholang/src rspace/src models/src crypto/src
-          (cd n564-recovered-logs && sha256sum M22-M24.log incident-source.txt harness-source.txt omega_rcb_recovered.rs > SHA256SUMS)
+          (cd n564-recovered-logs && sha256sum M25.log incident-source.txt harness-source.txt omega_rcb_recovered.rs > SHA256SUMS)
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
