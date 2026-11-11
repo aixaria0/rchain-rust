@@ -23,6 +23,7 @@ jobs:
           set -euo pipefail
           mkdir -p n564-recovered-logs/inputs
           cp spec/audit/evidence/n564-rcb-recovered-20261111/omega_rcb_recovered.rs n564-recovered-logs/
+          cp spec/audit/evidence/n564-rcb-recovered-20261111/apply_cost_observer.py n564-recovered-logs/
           cp spec/audit/evidence/n564-rcb-recovered-20261111/deploys/* n564-recovered-logs/inputs/
           (cd n564-recovered-logs/inputs && sha256sum -c SHA256SUMS)
           git rev-parse HEAD > n564-recovered-logs/harness-source.txt
@@ -34,6 +35,8 @@ jobs:
           mkdir -p casper/tests/rcb_recovered
           cp n564-recovered-logs/inputs/*.bin casper/tests/rcb_recovered/
           gzip -dc n564-recovered-logs/inputs/historical-state.bin.gz > casper/tests/rcb_recovered/historical-state.bin
+          python3 n564-recovered-logs/apply_cost_observer.py | tee n564-recovered-logs/observer-provenance.json
+          git diff -- rholang/src/accounting.rs > n564-recovered-logs/observer.patch
       - name: Pinned compiler
         run: |
           rustup toolchain install 1.95.0 --profile minimal
@@ -55,13 +58,14 @@ jobs:
               f.write("PROTOC=/tmp/omega-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/omega-protoc/include\n")
           PY
           chmod +x /tmp/omega-protoc/bin/protoc
-      - name: M25 recovered historical state and seed
+      - name: M26 observer OFF and ON on exact historical state
         shell: bash
         run: |
           set -euo pipefail
-          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_recovered omega_m25 -- --nocapture --test-threads=1 2>&1 | tee n564-recovered-logs/M25.log
-          git diff --exit-code -- casper/src rholang/src rspace/src models/src crypto/src
-          (cd n564-recovered-logs && sha256sum M25.log incident-source.txt harness-source.txt omega_rcb_recovered.rs > SHA256SUMS)
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_recovered omega_m26 -- --nocapture --test-threads=1 2>&1 | tee n564-recovered-logs/M26.log
+          git diff --exit-code -- casper/src rspace/src models/src crypto/src
+          test "$(git diff --name-only)" = rholang/src/accounting.rs
+          (cd n564-recovered-logs && sha256sum M26.log incident-source.txt harness-source.txt omega_rcb_recovered.rs observer.patch observer-provenance.json > SHA256SUMS)
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

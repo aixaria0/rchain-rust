@@ -17,3 +17,7 @@ Run [43098851150](https://github.com/aixaria0/rchain-rust/actions/runs/430988511
 ## M25 pending
 
 The complete Merkle closures of both original pre-states, both declared post-states, and the1073 fringe were recovered from read-only copies. The state fixture is content-addressed and validated before loading into a disposable in-memory runtime. The rejected block body/trace and exact informational timestamp remain unavailable; M25 logs all surrogate metadata explicitly and tests regenerated play against the recorded post-state root. No production code or consensus acceptance rule is changed.
+
+## M25 reproduced the exact incident
+
+Run [43100598230](https://github.com/aixaria0/rchain-rust/actions/runs/43100598230) passed on original source0a1e02362. Both original pre-states yield exactly5576 versus5302 and both original declared post-state hashes, in three deterministic repeats each. The rejected block body/recorded trace and exact timestamp are still not recovered; the trace is regenerated from authenticated deploys and complete Merkle-verified state. M26 adds observational charge logging, retaining the same arithmetic, costs, state hashes, and strict rejection.

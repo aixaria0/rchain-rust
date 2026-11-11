@@ -348,8 +348,7 @@ async fn historical_runtime(root: &str) -> rchain_casper::runtime_manager::Runti
     )
 }
 
-#[tokio::test]
-async fn omega_m25_actual_historical_prestate() {
+async fn historical_matrix() {
     use rchain_block_storage::dag::codecs::{BlockMessageCodec, BlockMetadataCodec};
     use rchain_casper::block_random_seed::BlockRandomSeed;
     use rchain_casper::system_deploy::SystemDeploy;
@@ -410,6 +409,13 @@ async fn omega_m25_actual_historical_prestate() {
         let mut prior = None;
         for repeat in 1..=3 {
             let rm = historical_runtime(pre).await;
+            let observing =
+                std::env::var_os("OMEGA_RCB_OBSERVER").is_some() && label == "1073" && repeat == 1;
+            if observing {
+                std::env::set_var("OMEGA_RCB_COST_TRACE", "1");
+            } else {
+                std::env::remove_var("OMEGA_RCB_COST_TRACE");
+            }
             let pre = Blake2b256Hash::from_byte_array(&unhex(pre));
             let fringe = Blake2b256Hash::from_byte_array(&unhex(fringe));
             let sender = PublicKey::new(parent.sender.as_bytes().to_vec());
@@ -428,6 +434,7 @@ async fn omega_m25_actual_historical_prestate() {
                 participation.clone(),
                 rand.split_byte(terms.len() as u8),
             )];
+            println!("OMEGA_M26_PHASE play case={label} repeat={repeat} observing={observing}");
             let (post, users, systems) = rm
                 .compute_state(&pre, &terms, &systems, &rand, data.clone(), &fringe)
                 .await
@@ -449,6 +456,7 @@ async fn omega_m25_actual_historical_prestate() {
                     }
                 }
             }
+            println!("OMEGA_M26_PHASE replay case={label} repeat={repeat} observing={observing}");
             let verdict = match rm
                 .replay_compute_state(
                     &pre,
@@ -468,6 +476,15 @@ async fn omega_m25_actual_historical_prestate() {
                 Err(e) => format!("REJECT {e:?}"),
             };
             let post_hex = hex_bytes(post.as_bytes());
+            assert_eq!(
+                post_hex, expected_post,
+                "exact original declared post-state"
+            );
+            assert_eq!(costs[0], 5576, "exact original play cost");
+            assert_eq!(
+                verdict, "REJECT ReplayCostMismatch { initial_cost: 5576, replay_cost: 5302 }",
+                "exact original replay mismatch"
+            );
             println!("OMEGA_M25_RESULT case={label} repeat={repeat} scope=actual-historical-prestate timestamp_substitute=0 sequence_substitute={} participation_source=1073-fringe costs={costs:?} post={post_hex} declared_post_match={} verdict={verdict}",i64::from(parent.seq_num)+1,post_hex==expected_post);
             let observation = (costs, traces, post_hex, verdict);
             if let Some(p) = &prior {
@@ -476,4 +493,17 @@ async fn omega_m25_actual_historical_prestate() {
             prior = Some(observation);
         }
     }
+    std::env::remove_var("OMEGA_RCB_COST_TRACE");
+}
+
+#[tokio::test]
+async fn omega_m25_actual_historical_prestate() {
+    historical_matrix().await;
+}
+
+#[tokio::test]
+async fn omega_m26_observer_preserves_historical_results() {
+    std::env::set_var("OMEGA_RCB_OBSERVER", "1");
+    historical_matrix().await;
+    std::env::remove_var("OMEGA_RCB_OBSERVER");
 }
