@@ -1,7 +1,7 @@
 name: RC-B original-source scheduler matrix
 on:
   push:
-    branches: [verify/n564-rcb-modes-20261111]
+    branches: [verify/n564-rcb-modes-20261111, verify/n564-trace-historical-20261111]
 permissions:
   contents: read
 jobs:
@@ -48,12 +48,25 @@ jobs:
               f.write("PROTOC=/tmp/omega-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/omega-protoc/include\n")
           PY
           chmod +x /tmp/omega-protoc/bin/protoc
+      - name: M21 trace integrity on original incident source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_modes omega_m21 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M21-historical.log
       - name: Run M09-M11 strictly on original source
         shell: bash
         run: |
           set -euo pipefail
           cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_modes omega_m09 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M09-M10.log
-          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_modes omega_m11 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M11.log
+          # The existing M11 test is a negative control on the historical source:
+          # its OMEGA_UNSAFE_RELAXED_BLOCK_ACCEPTED panic is the expected finding.
+          set +e
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_rcb_modes omega_m11 -- --nocapture --test-threads=1 > n564-rcb-logs/M11.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then echo "M11 unexpected success"; exit 1; fi
+          grep -q OMEGA_UNSAFE_RELAXED_BLOCK_ACCEPTED n564-rcb-logs/M11.log
+          echo "M11 expected unsafe historical mode observed"
           git diff --exit-code -- casper/src rholang/src rspace/src
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
