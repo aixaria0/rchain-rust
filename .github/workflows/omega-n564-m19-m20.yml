@@ -1,7 +1,7 @@
-name: N564 RC-B M19/M20 isolated diagnostic
+name: N564 RC-B M19/M20/M21 isolated diagnostic
 on:
   push:
-    branches: [verify/n564-m19-m20-20261111]
+    branches: [verify/n564-m19-m20-20261111, verify/n564-trace-falsify-20261111]
 permissions:
   contents: read
 jobs:
@@ -57,6 +57,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo +1.95.0 test --locked -p rchain-casper --test omega_n564_m19_m20 omega_m20 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M20.log
+      - name: M21 trace-event integrity falsifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test --locked -p rchain-casper --test omega_n564_m19_m20 omega_m21 -- --nocapture --test-threads=1 2>&1 | tee n564-rcb-logs/M21.log
       - name: Existing census invariant
         shell: bash
         run: |

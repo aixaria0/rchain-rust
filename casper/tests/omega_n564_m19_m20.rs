@@ -281,3 +281,127 @@ async fn omega_m20_failed_comm_trace_census() {
         "M20 must exercise COMM trace census"
     );
 }
+
+// M21: isolated trace-event deletion. No recorded cost, source, or acceptance path is changed.
+// A mutated event log is *not* the 2026-11-08 incident and must never be labeled as such.
+#[tokio::test]
+async fn omega_m21_trace_integrity_falsifier() {
+    use rchain_models::casper::protocol::casper_message::Event;
+    let cases = [
+        (
+            "failed-comm",
+            deploy(
+                111,
+                r#"new c, return in { c!(42) | for (@x <- c) { return!(1 + "not-a-number") } }"#,
+            ),
+        ),
+        ("transfer-comm", transfer(112, &target(12), true)),
+    ];
+    let mutations = [
+        "remove-comm",
+        "remove-produce",
+        "remove-consume",
+        "remove-all-comm",
+    ];
+    for (label, term) in cases {
+        for mutation in mutations {
+            let rm = common::build_runtime_manager().await;
+            let rand = Blake2b512Random::from_init(&[0u8; 32]);
+            let (_, pre, _) = rm
+                .compute_genesis(
+                    &[],
+                    &rand,
+                    BlockData::empty(),
+                    &PosGenesis::default(),
+                    &[seeded_vault()],
+                )
+                .await
+                .expect("genesis");
+            let (play_hash, user, sys) = rm
+                .compute_state(
+                    &pre,
+                    &[term.clone()],
+                    &[],
+                    &rand,
+                    BlockData::empty(),
+                    &fringe_state(1),
+                )
+                .await
+                .expect("play");
+            let original: Vec<ProcessedDeploy> = user.into_iter().map(|x| x.deploy).collect();
+            let systems: Vec<ProcessedSystemDeploy> = sys.into_iter().map(|x| x.deploy).collect();
+            let clean = rm
+                .replay_compute_state(
+                    &pre,
+                    &original,
+                    &systems,
+                    &rand,
+                    BlockData::empty(),
+                    &fringe_state(1),
+                    &BTreeMap::new(),
+                    true,
+                    &PosGenesis::default(),
+                    &[],
+                )
+                .await
+                .expect("clean baseline replay");
+            assert_eq!(clean.0, play_hash, "clean baseline must validate");
+            let mut dirty = original.clone();
+            let before = dirty[0].deploy_log.len();
+            if mutation == "remove-all-comm" {
+                dirty[0].deploy_log.retain(|x| !matches!(x, Event::Comm(_)));
+            } else {
+                let at = dirty[0].deploy_log.iter().position(|x| match mutation {
+                    "remove-comm" => matches!(x, Event::Comm(_)),
+                    "remove-produce" => matches!(x, Event::Produce(_)),
+                    "remove-consume" => matches!(x, Event::Consume(_)),
+                    _ => false,
+                });
+                if let Some(at) = at {
+                    dirty[0].deploy_log.remove(at);
+                }
+            }
+            let after = dirty[0].deploy_log.len();
+            assert_eq!(
+                dirty[0].cost.cost, original[0].cost.cost,
+                "cost may not be tampered"
+            );
+            assert_eq!(
+                dirty[0].is_failed, original[0].is_failed,
+                "status may not be tampered"
+            );
+            assert_eq!(
+                dirty[0].deploy.data.term, original[0].deploy.data.term,
+                "term may not be tampered"
+            );
+            assert!(
+                after < before,
+                "{label} {mutation} requires a real trace event"
+            );
+            let before_trace = rchain_rspace::replay_trace_census::snapshot();
+            let result = rm
+                .replay_compute_state(
+                    &pre,
+                    &dirty,
+                    &systems,
+                    &rand,
+                    BlockData::empty(),
+                    &fringe_state(1),
+                    &BTreeMap::new(),
+                    true,
+                    &PosGenesis::default(),
+                    &[],
+                )
+                .await;
+            let trace_delta = before_trace.delta(&rchain_rspace::replay_trace_census::snapshot());
+            let verdict = match result {
+                Ok((hash, _)) => format!("ACCEPT state_match={}", hash == play_hash),
+                Err(e) => format!("REJECT {e:?}"),
+            };
+            println!(
+                "OMEGA_M21 shape={label} mutation={mutation} trace={before}->{after} recorded_cost={} play_failed={} verdict={verdict} trace_census={trace_delta:?}",
+                original[0].cost.cost, original[0].is_failed,
+            );
+        }
+    }
+}
