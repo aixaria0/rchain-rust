@@ -23,6 +23,8 @@ const FIXTURES: &[(&str, &[u8])] = &[
     ("registry-short-9915", include_bytes!("rcb_recovered/registry-short-9915.bin")),
     ("simple-2e37", include_bytes!("rcb_recovered/simple-2e37.bin")),
     ("probe-98dd", include_bytes!("rcb_recovered/probe-98dd.bin")),
+    // Semantically authenticated reconstruction; not a contiguous pool carve.
+    ("registry-dd2d-reconstructed", include_bytes!("rcb_recovered/registry-dd2d-reconstructed.bin")),
 ];
 
 fn fixtures() -> Vec<(&'static str, SignedDeployData)> {
