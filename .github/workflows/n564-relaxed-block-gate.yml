@@ -1,0 +1,85 @@
+name: N564 relaxed block-path gate (isolated)
+on:
+  push:
+    branches: [fix/n564-relaxed-block-path-gate-20261111]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_COMMIT: f4feb1a83862b5b58e682b09ec4188ca59294df6
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      RUST_TEST_THREADS: "2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 4
+          persist-credentials: false
+      - name: Verify source scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_COMMIT^{commit}"
+          git merge-base --is-ancestor "$BASE_COMMIT" HEAD
+          mkdir -p n564-m11-logs
+          git diff --stat "$BASE_COMMIT" HEAD | tee n564-m11-logs/diffstat.txt
+      - name: Pin Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustc +1.95.0 --version
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          cache-on-failure: true
+      - name: Install pinned official protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 2 --max-time 60 https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip -o /tmp/protoc.zip
+          python3 - <<'PY'
+          import os,pathlib,hashlib,zipfile
+          p=pathlib.Path("/tmp/protoc.zip")
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=="3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8"
+          with zipfile.ZipFile(p) as z: z.extractall("/tmp/n564-protoc")
+          (pathlib.Path("/tmp/n564-protoc/bin/protoc")).chmod(0o755)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("PROTOC=/tmp/n564-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/n564-protoc/include\n")
+          PY
+      - name: Require the unpatched regression to fail at the block-path assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp casper/src/runtime_manager.rs /tmp/n564-fixed-runtime-manager.rs
+          git show "$BASE_COMMIT":casper/src/runtime_manager.rs > casper/src/runtime_manager.rs
+          set +e
+          cargo +1.95.0 test --locked -p rchain-casper --test scheduler block_paths_reject_relaxed_mode -- --nocapture --test-threads=1 > n564-m11-logs/negative.log 2>&1
+          status=$?
+          set -e
+          tail -n 18 n564-m11-logs/negative.log
+          cp /tmp/n564-fixed-runtime-manager.rs casper/src/runtime_manager.rs
+          test "$status" -eq 101
+          grep -q 'relaxed compute_state must reject even a valid effectful deploy' n564-m11-logs/negative.log
+          git diff --exit-code HEAD -- casper/src/runtime_manager.rs
+      - name: Verify corrected tests and formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee n564-m11-logs/format.log
+          cargo +1.95.0 test --locked -p rchain-casper --test scheduler -- --nocapture --test-threads=2 2>&1 | tee n564-m11-logs/scheduler.log
+          cargo +1.95.0 test --locked -p rchain-casper --test determinism -- --nocapture --test-threads=2 2>&1 | tee n564-m11-logs/determinism.log
+          git diff --exit-code HEAD -- casper/src/runtime_manager.rs casper/tests/scheduler.rs
+          sha256sum n564-m11-logs/*.log > n564-m11-logs/SHA256SUMS.txt
+      - name: Preserve verification receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: n564-relaxed-block-path-gate
+          path: n564-m11-logs/
+          retention-days: 14
