@@ -25,6 +25,7 @@ jobs:
           git rev-parse HEAD > n564-current-logs/verification-head.txt
           cp casper/tests/replay_trace_order.rs n564-current-logs/
           cp rspace/src/replay_rspace.rs n564-current-logs/corrected-replay.rs
+          git fetch --no-tags --depth=1 https://github.com/rhovision-org/rholo.git 87583050ceb1d908516e67bdbfffb16defa72e2e
           git diff 87583050ceb1d908516e67bdbfffb16defa72e2e HEAD -- rspace/src/replay_rspace.rs > n564-current-logs/correction.patch
           test -s n564-current-logs/correction.patch
           git fetch --no-tags --depth=1 https://github.com/aixaria0/rchain-rust.git e8ccf9dfae4274d1aae101abeb2078b0dc318078
