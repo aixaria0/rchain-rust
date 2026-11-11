@@ -1,0 +1,115 @@
+name: Issue 564 review and integration verification
+'on':
+  push:
+    branches:
+    - verify/n564-568-review-20261111
+permissions:
+  contents: read
+concurrency:
+  group: n568-review-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  SOURCE_COMMIT: 4be008d3df9ecec25162dc01f2843e57bba2b17e
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: never
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_NET_RETRY: '1'
+  RUST_TEST_THREADS: '2'
+  RUST_BACKTRACE: '1'
+  INCIDENT_COMMIT: 0a1e02362a7c34e474e068ffd47469c8d4be707a
+  C366_COMMIT: 1d17ebc0ffab39ebe38ed052a1b6f534bb114830
+  BASE_COMMIT: f4feb1a83862b5b58e682b09ec4188ca59294df6
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+    - name: Check out the isolated branch
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 64
+        persist-credentials: false
+    - name: Pin the reviewed source
+      id: pin
+      run: 'git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
+
+        git diff --exit-code "$SOURCE_COMMIT" -- . '':(exclude).github/workflows/omega-568-review.yml''
+
+        mkdir -p "$RUNNER_TEMP/n568-review-logs"
+
+        git rev-parse HEAD
+
+        '
+    - name: Install pinned Rust compiler
+      run: 'rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+
+        rustc --version
+
+        '
+    - name: Reuse Cargo artifacts
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        cache-on-failure: true
+    - name: Install official checksum-pinned protoc
+      run: "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/n568-review-logs\"\ncurl --fail --location --silent --show-error --retry 1 --max-time 60 \\\n  https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip \\\n  -o \"$RUNNER_TEMP/protoc.zip\"\npython3 - <<'PY'\nimport hashlib, os, pathlib, zipfile\nroot = pathlib.Path(os.environ[\"RUNNER_TEMP\"])\narchive = root / \"protoc.zip\"\nassert hashlib.sha256(archive.read_bytes()).hexdigest() == \"3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8\"\nwith zipfile.ZipFile(archive) as source:\n    assert all(not pathlib.PurePosixPath(n).is_absolute() and \"..\" not in pathlib.PurePosixPath(n).parts for n in source.namelist())\n    source.extractall(root / \"protoc\")\n(root / \"protoc/bin/protoc\").chmod(0o755)\nwith open(os.environ[\"GITHUB_ENV\"], \"a\") as output:\n    output.write(f\"PROTOC={root}/protoc/bin/protoc\\nPROTOC_INCLUDE={root}/protoc/include\\n\")\nPY\n\"$RUNNER_TEMP/protoc/bin/protoc\" --version | tee \"$RUNNER_TEMP/n568-review-logs/protoc-version.txt\"\n"
+    - name: Run existing recovery witnesses
+      id: baseline
+      run: 'set -euo pipefail
+
+        cargo test --locked -p rchain-casper --all-features --lib self_replay -- --nocapture 2>&1 | tee "$RUNNER_TEMP/n568-review-logs/reviewed-self-replay.log"
+
+        cargo test --locked -p rchain-casper --all-features --lib a_reset_at_an_anchor_already_attempted_is_refused -- --nocapture 2>&1 | tee "$RUNNER_TEMP/n568-review-logs/reviewed-bound.log"
+
+        cargo test --locked -p rchain-casper --all-features --test reset 2>&1 | tee "$RUNNER_TEMP/n568-review-logs/reviewed-reset.log"
+
+        '
+    - name: Require the failed-storage availability counterexample
+      id: negative
+      run: "python3 - <<'PY'\nimport hashlib, json, os, pathlib, subprocess\nlogs = pathlib.Path(os.environ['RUNNER_TEMP']) / 'n568-review-logs'\npath = pathlib.Path('casper/src/blocks/proposer/proposer.rs')\noriginal = path.read_bytes()\nmarker = \"    /// **The incident's arm** (#564): a self-built block fails its own replay\"\nassert original.decode().count(marker) == 1\nsnippet = '    #[tokio::test]\\n    async fn omega_review_failed_persistence_must_not_advertise_a_durable_body() {\\n        let writes = Arc::new(AtomicUsize::new(0));\\n        let proposer = proposer_recovering_a_self_replay(\\n            crate::rholang::ReplayFailure::replay_cost_mismatch(5576, 5302),\\n            Arc::new(Mutex::new(SelfReplayTracker::default())),\\n            Arc::new(Mutex::new(Vec::new())),\\n            Arc::new(Mutex::new(Vec::new())),\\n        )\\n        .with_self_replay_persist({\\n            let writes = writes.clone();\\n            Arc::new(move |_| {\\n                writes.fetch_add(1, Ordering::Relaxed);\\n                Box::pin(async { Err(\"injected storage write failure\".to_string()) })\\n            })\\n        });\\n        let (tx, _rx) = tokio::sync::oneshot::channel();\\n        let (result, _) = proposer\\n            .propose(ProposeSource::Explicit { is_async: false }, tx)\\n            .await\\n            .expect(\"the existing attestation recovery still succeeds\");\\n        assert_eq!(result.propose_status, ProposeStatus::SelfReplayRecovered);\\n        assert_eq!(writes.load(Ordering::Relaxed), 2);\\n        let refusal = proposer\\n            .self_validation_refusal\\n            .snapshot()\\n            .expect(\"the refusal remains visible\");\\n        assert!(refusal.refused_body_len > 0);\\n        eprintln!(\\n            \"OMEGA_OBSERVATION failed_writes={} refusedBodyAvailable={} refusedBodyLen={}\",\\n            writes.load(Ordering::Relaxed),\\n            refusal.refused_body_available,\\n            refusal.refused_body_len\\n        );\\n        assert!(\\n            !refusal.refused_body_available,\\n            \"a failed store write must not advertise a durable refused body\"\\n        );\\n    }\\n\\n'\npath.write_text(original.decode().replace(marker, snippet + marker, 1))\ncommand = ['cargo','test','--locked','-p','rchain-casper','--all-features','--lib',\n           'omega_review_failed_persistence_must_not_advertise_a_durable_body','--','--nocapture']\ntry:\n    with (logs/'availability-negative.log').open('w') as output:\n        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)\n        for line in p.stdout:\n            print(line, end='', flush=True)\n            output.write(line)\n        status = p.wait()\nfinally:\n    path.write_bytes(original)\ntext = (logs/'availability-negative.log').read_text()\nexpected = status == 101 and 'test result: FAILED. 0 passed; 1 failed' in text and 'a failed store write must not advertise a durable refused body' in text\ndata = {'source':os.environ['SOURCE_COMMIT'],'exit':status,'expected_assertion_observed':expected,\n        'source_restored':path.read_bytes()==original,'source_sha256':hashlib.sha256(original).hexdigest(),\n        'injected_test_sha256':hashlib.sha256(snippet.encode()).hexdigest(),\n        'scope':'real proposer recovery using its test fixture and an always-failing persistence callback; not a disk or crash drill'}\n(logs/'availability-negative.json').write_text(json.dumps(data,indent=2)+'\\n')\nassert expected, 'the review test did not fail at its intended assertion'\nsubprocess.run(['git','diff','--exit-code','--',str(path)],check=True)\nPY\n"
+    - name: Check C366 with the recovery follow-on
+      id: combined
+      run: 'set -euo pipefail
+
+        git fetch --no-tags --depth=1 https://github.com/rhovision-org/rholo.git "$C366_COMMIT" "$INCIDENT_COMMIT"
+
+        git diff "$BASE_COMMIT" "$C366_COMMIT" -- casper/src/engine/reset.rs casper/tests/reset.rs > "$RUNNER_TEMP/n568-review-logs/c366-rust.patch"
+
+        git apply --check "$RUNNER_TEMP/n568-review-logs/c366-rust.patch"
+
+        git apply "$RUNNER_TEMP/n568-review-logs/c366-rust.patch"
+
+        cargo test --locked -p rchain-casper --all-features --test reset 2>&1 | tee "$RUNNER_TEMP/n568-review-logs/combined-reset.log"
+
+        git restore --source "$SOURCE_COMMIT" -- casper/src/engine/reset.rs casper/tests/reset.rs
+
+        git diff --exit-code
+
+        '
+    - name: Prepare the original-source transient COMM probe
+      id: incident_pin
+      run: "python3 - <<'PY'\nimport hashlib, json, os, pathlib, subprocess\nroot = pathlib.Path.cwd()\nlogs = pathlib.Path(os.environ['RUNNER_TEMP'])/'n568-review-logs'\nprobe = '//! #564 matrix on the incident revision `0a1e02362`.\\n//!\\n//! Diagnostic only: prints the play per-deploy costs and the replay outcome for the shapes the issue\\n//! describes (same-key 30,000,000 transfers plus a Nil probe, a failed deploy with a COMM, the\\n//! result channel matched or not, and the batched play path). It asserts the play/replay state hash\\n//! where the replay succeeds; a `ReplayCostMismatch` is printed with both costs.\\n\\nmod common;\\nuse common::fringe_state;\\n\\nuse std::collections::BTreeMap;\\n\\nuse rchain_casper::genesis::contracts::Vault;\\nuse rchain_crypto::hash::blake2b512_random::Blake2b512Random;\\nuse rchain_crypto::public_key::PublicKey;\\nuse rchain_models::casper::protocol::casper_message::{\\n    DeployData, ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData,\\n};\\nuse rchain_rholang::native_state::PosGenesis;\\nuse rchain_rholang::system_processes::BlockData;\\nuse rchain_rholang::util::rev_address::RevAddress;\\nuse rchain_shared::refined::NonNegI64;\\n\\nfn deploy(sig: u8, term: &str) -> SignedDeployData {\\n    SignedDeployData {\\n        data: DeployData {\\n            attachments: Vec::new(),\\n            term: term.to_string(),\\n            timestamp: 0,\\n            phlo_price: 1,\\n            phlo_limit: 500_000,\\n            valid_after_block_number: 0,\\n            shard_id: \"root\".to_string(),\\n        },\\n        deployer: vec![0u8; 65],\\n        sig: vec![sig; 65],\\n        sig_algorithm: \"secp256k1\".to_string(),\\n    }\\n}\\n\\nfn seeded_vault() -> Vault {\\n    Vault {\\n        rev_address: RevAddress::from_public_key(&PublicKey::new(vec![0u8; 65]))\\n            .expect(\"valid rev address\"),\\n        initial_balance: NonNegI64::try_from(1_000_000_000).unwrap(),\\n    }\\n}\\n\\nasync fn run_shape(label: &str, terms: &[SignedDeployData], batch: Option<(bool, bool)>) {\\n    let mut rm = common::build_runtime_manager().await;\\n    if let Some((enabled, verify)) = batch {\\n        rm.set_batch_policy(rchain_casper::runtime_manager::BatchPolicy {\\n            enabled,\\n            verify,\\n            max_batch: 4,\\n        });\\n    }\\n    let rand = Blake2b512Random::from_init(&[0u8; 32]);\\n    let (_pre, post, _) = rm\\n        .compute_genesis(\\n            &[],\\n            &rand,\\n            BlockData::empty(),\\n            &PosGenesis::default(),\\n            &[seeded_vault()],\\n        )\\n        .await\\n        .expect(\"compute_genesis\");\\n    let (post_state, user, sys) = rm\\n        .compute_state(\\n            &post,\\n            terms,\\n            &[],\\n            &rand,\\n            BlockData::empty(),\\n            &fringe_state(1),\\n        )\\n        .await\\n        .expect(\"play\");\\n    let costs: Vec<u64> = user.iter().map(|r| r.deploy.cost.cost).collect();\\n    let failed: Vec<bool> = user.iter().map(|r| r.deploy.is_failed).collect();\\n    let trace_lengths: Vec<usize> = user.iter().map(|r| r.deploy.deploy_log.len()).collect();\\n    assert_eq!(user.len(), terms.len());\\n    println!(\"{label}: trace_lengths={trace_lengths:?}\");\\n    if label == \"CONTROL M04 failed COMM\" {\\n        assert!(failed[0]);\\n        assert!(trace_lengths[0] > 0, \"the failed control must execute before failing\");\\n    }\\n    if label == \"M15 transient variant 2\" {\\n        assert_eq!(failed, vec![false, true, false]);\\n        assert!(trace_lengths[1] > 0, \"the failed transient fixture must execute before failing\");\\n    }\\n    println!(\"{label}: play costs={costs:?} failed={failed:?} total={}\", costs.iter().sum::<u64>());\\n    let processed: Vec<ProcessedDeploy> = user.into_iter().map(|r| r.deploy).collect();\\n    let sys: Vec<ProcessedSystemDeploy> = sys.into_iter().map(|r| r.deploy).collect();\\n    match rm\\n        .replay_compute_state(\\n            &post,\\n            &processed,\\n            &sys,\\n            &rand,\\n            BlockData::empty(),\\n            &fringe_state(1),\\n            &BTreeMap::new(),\\n            true,\\n            &PosGenesis::default(),\\n            &[],\\n        )\\n        .await\\n    {\\n        Ok((replay_state, _)) => {\\n            println!(\"{label}: replay OK state_match={}\", replay_state == post_state);\\n            assert_eq!(replay_state, post_state, \"canonical replay state mismatch: {label}\");\\n        }\\n        Err(e) => panic!(\"canonical play/replay refusal in {label}: {e:?}\"),\\n    }\\n}\\n\\nfn target(seed: u8) -> String {\\n    RevAddress::from_public_key(&PublicKey::new(vec![seed; 65]))\\n        .expect(\"target\")\\n        .to_base58()\\n}\\n\\nfn transfer(sig: u8, target: &str, consume: bool) -> SignedDeployData {\\n    let term = if consume {\\n        format!(\\n            r#\"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`), r in {{ revVault!(\"transfer\", *deployerId, \"{target}\", 30000000, *r) | for (_ <- r) {{ Nil }} }}\"#\\n        )\\n    } else {\\n        format!(\\n            r#\"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`), r in {{ revVault!(\"transfer\", *deployerId, \"{target}\", 30000000, *r) }}\"#\\n        )\\n    };\\n    deploy(sig, &term)\\n}\\n\\n\\n#[tokio::test]\\nasync fn omega_rcb_original_transfer_control() {\\n    run_shape(\"CONTROL M01 transfer+Nil\", &[transfer(1, &target(7), true), deploy(2, \"Nil\")], None).await;\\n}\\n\\n#[tokio::test]\\nasync fn omega_rcb_original_failed_comm_control() {\\n    let term = r#\"new c, return in { c!(42) | for (@x <- c) { return!(1 + \"not-a-number\") } }\"#;\\n    run_shape(\"CONTROL M04 failed COMM\", &[deploy(4, term)], None).await;\\n}\\n\\n#[tokio::test]\\nasync fn omega_rcb_original_transient_comm_m15() {\\n    for (index, term) in [\\n        \"new c in { c!(42) | for (@x <- c) { Nil } }\",\\n        \"new c, d in { c!(42) | for (@x <- c) { d!(x) } | for (@y <- d) { Nil } }\",\\n        r#\"new c, d, return in { c!(42) | for (@x <- c) { d!(x) } | for (@y <- d) { return!(1 + \"not-a-number\") } }\"#,\\n    ].iter().enumerate() {\\n        let label = format!(\"M15 transient variant {index}\");\\n        let terms = [transfer(11, &target(21), true), deploy(12, term), transfer(13, &target(22), true)];\\n        run_shape(&label, &terms, None).await;\\n    }\\n}\\n'\nsubprocess.run(['git','diff','--exit-code'],check=True)\nsubprocess.run(['git','switch','--detach',os.environ['INCIDENT_COMMIT']],check=True)\nsubprocess.run(['git','diff','--exit-code',os.environ['INCIDENT_COMMIT']],check=True)\npath=root/'casper/tests/omega_rcb_m15.rs'\nassert not path.exists()\npath.write_text(probe)\n(logs/'omega_rcb_m15.rs').write_text(probe)\ndata={'source_commit':os.environ['INCIDENT_COMMIT'],'source_scope':'all tracked production files unchanged; only a new integration fixture',\n      'probe_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'signature_bytes':'opaque fixture data; no authentication claim',\n      'scope':'M15 transient COMM variants and two controls on the incident source; no original incident terms or state, no per-category census'}\n(logs/'incident-probe.json').write_text(json.dumps(data,indent=2)+'\\n')\nPY\n"
+    - name: Measure M15 and the original-source controls
+      id: incident
+      run: "set -euo pipefail\nrestore_review() {\n  rm -f casper/tests/omega_rcb_m15.rs\n  git switch --detach \"$GITHUB_SHA\"\n}\ntrap restore_review EXIT\ncargo test --locked -p rchain-casper --all-features --test omega_rcb_m15 -- --nocapture 2>&1 | tee \"$RUNNER_TEMP/n568-review-logs/incident-m15.log\"\ngit diff --exit-code \"$INCIDENT_COMMIT\"\n"
+    - name: Record the scoped review outcomes
+      if: always()
+      env:
+        PIN: ${{ steps.pin.outcome }}
+        BASELINE: ${{ steps.baseline.outcome }}
+        NEGATIVE: ${{ steps.negative.outcome }}
+        COMBINED: ${{ steps.combined.outcome }}
+        INCIDENT_PIN: ${{ steps.incident_pin.outcome }}
+        INCIDENT: ${{ steps.incident.outcome }}
+      run: "python3 - <<'PY'\nimport datetime,hashlib,json,os,pathlib,subprocess\nlogs=pathlib.Path(os.environ['RUNNER_TEMP'])/'n568-review-logs'\nlogs.mkdir(exist_ok=True)\nkeys=['PIN','BASELINE','NEGATIVE','COMBINED','INCIDENT_PIN','INCIDENT']\ndata={'recorded_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),\n 'reviewed_source':os.environ['SOURCE_COMMIT'],'c366_source':os.environ['C366_COMMIT'],\n 'incident_source':os.environ['INCIDENT_COMMIT'],'workflow_commit':os.environ['GITHUB_SHA'],\n 'run':os.environ['GITHUB_RUN_ID'],'outcomes':{k:os.environ.get(k) for k in keys},\n 'rust':subprocess.check_output(['rustc','--version'],text=True).strip(),\n 'log_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(logs.iterdir()) if p.is_file()},\n 'scope':'focused recovery tests, expected failing availability assertion, combined C366 fixture and bounded original-source M15 probes; no live validator, incident reproduction or full verification claim'}\n(logs/'review-receipt.json').write_text(json.dumps(data,indent=2)+'\\n')\nPY\n"
+    - name: Preserve review receipts and logs
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: n568-review-${{ github.run_id }}
+        path: ${{ runner.temp }}/n568-review-logs
+        if-no-files-found: warn
+        retention-days: 14
+
+# — Ω-WITNESS
