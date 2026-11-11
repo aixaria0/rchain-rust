@@ -1,0 +1,68 @@
+name: N564 reset inventory integration check
+on:
+  push:
+    branches: [integration/n564-567-after-568-20261111]
+permissions:
+  contents: read
+jobs:
+  integrated-reset:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Source and merged-head provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show -s --format='%H %s' HEAD
+          mkdir -p n564-integration-logs
+          git diff --stat 87583050ceb1d908516e67bdbfffb16defa72e2e HEAD | tee n564-integration-logs/diffstat.txt || true
+      - name: Audit register and recovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/emit-findings-register.sh --check 2>&1 | tee n564-integration-logs/audit.txt
+          python3 tools/evidence-pack.py verify --record spec/audit/evidence/n564-self-replay-recovery-drill-20261111 2>&1 | tee n564-integration-logs/pack.txt
+      - name: Pin Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustc +1.95.0 --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          cache-on-failure: true
+      - name: Install checksum-pinned protoc without apt
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 2 --max-time 60 https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip -o /tmp/protoc.zip
+          python3 - <<'PY'
+          import os, pathlib, hashlib, zipfile
+          p=pathlib.Path("/tmp/protoc.zip")
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=="3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8"
+          with zipfile.ZipFile(p) as z: z.extractall("/tmp/n564-protoc")
+          (pathlib.Path("/tmp/n564-protoc/bin/protoc")).chmod(0o755)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("PROTOC=/tmp/n564-protoc/bin/protoc\nPROTOC_INCLUDE=/tmp/n564-protoc/include\n")
+          PY
+      - name: Format and integrated reset tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee n564-integration-logs/format.log
+          cargo +1.95.0 test --locked -p rchain-casper --test reset -- --nocapture --test-threads=2 2>&1 | tee n564-integration-logs/reset.log
+          cargo +1.95.0 test --locked -p rchain-casper --test determinism -- --nocapture --test-threads=2 2>&1 | tee n564-integration-logs/determinism.log
+          sha256sum n564-integration-logs/*.log n564-integration-logs/*.txt > n564-integration-logs/SHA256SUMS.txt
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: n564-567-after-568-integrated
+          path: n564-integration-logs/
+          retention-days: 14
