@@ -1,0 +1,51 @@
+name: QKB isolated runtime acceptance
+on:
+  push:
+    branches: [verify/qkb-execute-20261113]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch the exact QLF input
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: rhovision-org/quantum-logical-framework
+          ref: 7667443c7feb14efeb01aa50b86171be0cd38f0a
+          path: qlf-input
+      - name: Fetch source-pinned runtime artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 43466083379 --repo aixaria0/rchain-rust -n qkb-rnode-79e5504 -D runtime
+          test "$(cat runtime/source-sha.txt)" = "79e550400114b32a0292b9103cb5e83c6e1e1c72"
+          expected="$(cut -d' ' -f1 runtime/rnode.sha256)"
+          test "$(sha256sum runtime/rnode | cut -d' ' -f1)" = "$expected"
+          chmod +x runtime/rnode
+          python3 -m pip install pycryptodome==3.23.0
+      - name: Execute original QKB through signed deploys
+        run: |
+          mkdir -p target/qkb-original
+          python3 tools/qkb-runtime-conformance.py --rnode runtime/rnode --rholo . --qlf qlf-input --contract qlf-input/rholang/QKB.rho --out target/qkb-original 2>&1 | tee target/qkb-original/suite.log
+      - name: Collect bounded evidence
+        if: always()
+        run: |
+          rm -rf target/qkb-original/node-data
+          rm -f target/qkb-original/validator.hex
+          cp runtime/source-sha.txt runtime/rnode.sha256 runtime/version.txt target/qkb-original/ 2>/dev/null || true
+          git rev-parse HEAD > target/qkb-original/harness-sha.txt
+          git -C qlf-input rev-parse HEAD > target/qkb-original/qlf-sha.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: qkb-runtime-original
+          path: target/qkb-original/
+          if-no-files-found: error
