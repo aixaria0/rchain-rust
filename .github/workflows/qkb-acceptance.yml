@@ -79,5 +79,7 @@ jobs:
         if: always()
         with:
           name: qkb-runtime-original
-          path: |\n            target/qkb-original/\n            target/qkb-weakened-gate/
+          path: |
+            target/qkb-original/
+            target/qkb-weakened-gate/
           if-no-files-found: error
