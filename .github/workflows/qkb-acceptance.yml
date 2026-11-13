@@ -35,6 +35,10 @@ jobs:
         run: |
           mkdir -p target/qkb-original
           python3 tools/qkb-runtime-conformance.py --rnode runtime/rnode --expected-binary-sha256 2cffda31f4d7d03cb2e7644340449d153da40e9e5db39f5b4c407791c6504201 --rholo . --qlf qlf-input --contract qlf-input/rholang/QKB.rho --out target/qkb-original 2>&1 | tee target/qkb-original/suite.log
+      - name: Exhaustive logic on a separate fresh node
+        run: |
+          mkdir -p target/qkb-logic
+          python3 tools/qkb-runtime-conformance.py --rnode runtime/rnode --expected-binary-sha256 2cffda31f4d7d03cb2e7644340449d153da40e9e5db39f5b4c407791c6504201 --rholo . --qlf qlf-input --contract qlf-input/rholang/QKB.rho --suite logic --logic-batch-size 16 --out target/qkb-logic 2>&1 | tee target/qkb-logic/suite.log
       - name: Falsify the per-axis admission guard
         run: |
           mkdir -p target/qkb-weakened-gate
@@ -70,8 +74,8 @@ jobs:
       - name: Collect bounded evidence
         if: always()
         run: |
-          rm -rf target/qkb-original/node-data target/qkb-weakened-gate/node-data
-          rm -f target/qkb-original/validator.hex target/qkb-weakened-gate/validator.hex
+          rm -rf target/qkb-original/node-data target/qkb-weakened-gate/node-data target/qkb-logic/node-data
+          rm -f target/qkb-original/validator.hex target/qkb-weakened-gate/validator.hex target/qkb-logic/validator.hex
           cp runtime/source-sha.txt runtime/rnode.sha256 runtime/version.txt target/qkb-original/ 2>/dev/null || true
           git rev-parse HEAD > target/qkb-original/harness-sha.txt
           git -C qlf-input rev-parse HEAD > target/qkb-original/qlf-sha.txt
@@ -82,4 +86,5 @@ jobs:
           path: |
             target/qkb-original/
             target/qkb-weakened-gate/
+            target/qkb-logic/
           if-no-files-found: error
