@@ -1,4 +1,4 @@
-name: N576 missing-verdict-body regression
+name: Own-key halt parallel regression
 on:
   push:
     branches: [verify/c357-binary-20261113]
@@ -13,17 +13,17 @@ defaults:
   run:
     shell: bash
 jobs:
-  regression:
+  parallel:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - name: Exact test source
+      - name: Pin source and toolchain
         run: |
-          git fetch origin 94b97cd66fd7624fc79c2896414550ecfb42ff8c
-          git worktree add --detach /tmp/c357-source 94b97cd66fd7624fc79c2896414550ecfb42ff8c
+          git fetch origin bf0592aca8a9cc3a1d543642955cc81912f7748c
+          git worktree add --detach /tmp/c357-source bf0592aca8a9cc3a1d543642955cc81912f7748c
           mkdir receipts
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
           sudo tools/ci-apt-install.sh protobuf-compiler libprotobuf-dev
@@ -32,37 +32,18 @@ jobs:
           workspaces: /tmp/c357-source
           shared-key: c357-binary-20261113
           cache-on-failure: true
-      - name: Green regression and module suite
+      - name: Full Casper library and repeated parallel controls
         working-directory: /tmp/c357-source
         run: |
           set -euo pipefail
           cargo +1.95.0 fmt --all --check
-          cargo +1.95.0 test --locked -p rchain-casper --lib block_disposition::tests -- --test-threads=1 2>&1 | tee "$GITHUB_WORKSPACE/receipts/green.log"
-      - name: Single-variable red control
-        working-directory: /tmp/c357-source
-        run: |
-          set -euo pipefail
-          cp casper/src/block_disposition.rs "$GITHUB_WORKSPACE/receipts/corrected.rs"
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path("casper/src/block_disposition.rs")
-          s=p.read_text()
-          start=s.index("            // Without the body we cannot tell")
-          end=s.index("\n        };\n        if block.sender == *own_key",start)
-          s=s[:start]+"            continue;"+s[end:]
-          p.write_text(s)
-          PY
-          set +e
-          cargo +1.95.0 test --locked -p rchain-casper --lib an_equivocation_verdict_without_its_body_fails_closed -- --test-threads=1 > "$GITHUB_WORKSPACE/receipts/red.log" 2>&1
-          result=$?
-          set -e
-          cp "$GITHUB_WORKSPACE/receipts/corrected.rs" casper/src/block_disposition.rs
-          test "$result" -ne 0
-          grep -q 'missing offence history must not return a clean key: None' "$GITHUB_WORKSPACE/receipts/red.log"
-          cargo +1.95.0 test --locked -p rchain-casper --lib an_equivocation_verdict_without_its_body_fails_closed -- --test-threads=1 2>&1 | tee "$GITHUB_WORKSPACE/receipts/restored.log"
+          cargo +1.95.0 test --locked -p rchain-casper --lib -- --test-threads=8 2>&1 | tee "$GITHUB_WORKSPACE/receipts/full.log"
+          for i in $(seq 1 40); do
+            cargo +1.95.0 test --locked -p rchain-casper --lib equivocation_verdict -- --test-threads=8 > "$GITHUB_WORKSPACE/receipts/parallel-$i.log" 2>&1
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: n576-missing-body-regression
+          name: own-key-parallel-regression
           path: receipts/
           if-no-files-found: error
